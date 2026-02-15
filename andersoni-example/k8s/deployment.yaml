@@ -14,6 +14,10 @@ spec:
         app: andersoni-example
     spec:
       serviceAccountName: andersoni-example
+      hostAliases:
+        - ip: "GATEWAY_IP"
+          hostnames:
+            - "infra-gateway"
       containers:
         - name: app
           image: andersoni-example:latest
@@ -22,11 +26,11 @@ spec:
             - containerPort: 8080
           env:
             - name: POSTGRES_HOST
-              value: "host.k3s.internal"
+              value: "infra-gateway"
             - name: KAFKA_BOOTSTRAP_SERVERS
-              value: "host.k3s.internal:9092"
+              value: "infra-gateway:9092"
             - name: MINIO_ENDPOINT
-              value: "http://host.k3s.internal:9000"
+              value: "http://infra-gateway:9000"
             - name: K8S_NAMESPACE
               value: "andersoni-example"
             - name: POSTGRES_USER
@@ -43,11 +47,11 @@ spec:
             httpGet:
               path: /events/info
               port: 8080
-            initialDelaySeconds: 10
+            initialDelaySeconds: 15
             periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /events/info
               port: 8080
-            initialDelaySeconds: 30
+            initialDelaySeconds: 45
             periodSeconds: 10

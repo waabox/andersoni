@@ -48,19 +48,17 @@ cleanup() {
 case "${1:-up}" in
   up|start)  ACTION="up" ;;
   down|stop) $COMPOSE down -v; ok "Everything stopped."; exit 0 ;;
-  logs)      $COMPOSE logs -f "${2:-}"; exit 0 ;;
+  logs)      shift; $COMPOSE logs -f "$@"; exit 0 ;;
   status)
     $COMPOSE ps
     echo ""
-    if command -v kubectl &>/dev/null; then
-      KUBECONFIG=$(docker volume inspect devcontainer_k3s-output -f '{{.Mountpoint}}')/kubeconfig.yaml
-      if [ -f "$KUBECONFIG" ]; then
-        kubectl --kubeconfig="$KUBECONFIG" -n andersoni-example get pods 2>/dev/null || true
-      fi
+    KUBECONFIG_FILE=$(ls -t /tmp/andersoni-kubeconfig-* 2>/dev/null | head -1 || true)
+    if [ -n "$KUBECONFIG_FILE" ] && [ -f "$KUBECONFIG_FILE" ]; then
+      KUBECONFIG="$KUBECONFIG_FILE" kubectl -n andersoni-example get pods 2>/dev/null || true
     fi
     exit 0
     ;;
-  *)         echo "Usage: $0 {up|down|logs|status}"; exit 1 ;;
+  *)         echo "Usage: $0 {up|down|logs [service]|status}"; exit 1 ;;
 esac
 
 trap cleanup INT TERM
@@ -85,25 +83,20 @@ wait_for_healthy kafka 60
 wait_for_healthy minio
 
 info "Waiting for K3s to be ready..."
-K3S_READY=false
 for i in $(seq 1 60); do
-  KUBECONFIG_PATH=$($COMPOSE exec k3s cat /output/kubeconfig.yaml 2>/dev/null) && K3S_READY=true && break
+  if $COMPOSE exec k3s cat /output/kubeconfig.yaml >/dev/null 2>&1; then
+    ok "K3s is ready"
+    break
+  fi
+  [ "$i" -eq 60 ] && fail "K3s did not start in time"
   sleep 3
 done
 
-if [ "$K3S_READY" = false ]; then
-  fail "K3s did not start in time"
-fi
-
-# Extract kubeconfig to a temp file
-KUBECONFIG_FILE=$(mktemp)
+# Extract kubeconfig
+KUBECONFIG_FILE="/tmp/andersoni-kubeconfig-$$"
 $COMPOSE exec k3s cat /output/kubeconfig.yaml > "$KUBECONFIG_FILE"
-
-# Fix the server address (K3s writes 127.0.0.1 but we need localhost:6443)
-sed -i.bak 's|server:.*|server: https://localhost:6443|' "$KUBECONFIG_FILE" 2>/dev/null || \
-  sed -i '' 's|server:.*|server: https://localhost:6443|' "$KUBECONFIG_FILE"
-rm -f "${KUBECONFIG_FILE}.bak"
-
+sed -i '' 's|server:.*|server: https://localhost:6443|' "$KUBECONFIG_FILE" 2>/dev/null || \
+  sed -i 's|server:.*|server: https://localhost:6443|' "$KUBECONFIG_FILE"
 export KUBECONFIG="$KUBECONFIG_FILE"
 
 # Wait for K3s node to be Ready
@@ -117,7 +110,15 @@ for i in $(seq 1 30); do
 done
 
 # ---------------------------------------------------------------------------
-# Step 3: Build the application
+# Step 3: Detect Docker bridge gateway IP
+# ---------------------------------------------------------------------------
+info "Detecting infrastructure gateway IP..."
+GATEWAY_IP=$($COMPOSE exec k3s sh -c "ip route | head -1 | awk '{print \$3}'")
+GATEWAY_IP=$(echo "$GATEWAY_IP" | tr -d '[:space:]')
+ok "Gateway IP: $GATEWAY_IP"
+
+# ---------------------------------------------------------------------------
+# Step 4: Build the application
 # ---------------------------------------------------------------------------
 info "Building the application..."
 cd "$SCRIPT_DIR"
@@ -125,7 +126,7 @@ mvn clean package -DskipTests -q || fail "Maven build failed"
 ok "Application built"
 
 # ---------------------------------------------------------------------------
-# Step 4: Build Docker image and import into K3s
+# Step 5: Build Docker image and import into K3s
 # ---------------------------------------------------------------------------
 info "Building Docker image..."
 docker build -t andersoni-example:latest "$SCRIPT_DIR" -q || fail "Docker build failed"
@@ -136,27 +137,35 @@ docker save andersoni-example:latest | docker exec -i "$($COMPOSE ps -q k3s)" ct
 ok "Image imported into K3s"
 
 # ---------------------------------------------------------------------------
-# Step 5: Deploy to K8s
+# Step 6: Deploy to K8s (patch gateway IP into deployment)
 # ---------------------------------------------------------------------------
-info "Deploying to K8s (3 replicas)..."
+info "Deploying to K8s (3 replicas, gateway=$GATEWAY_IP)..."
 kubectl apply -f "$K8S_DIR/namespace.yaml"
 kubectl apply -f "$K8S_DIR/rbac.yaml"
-kubectl apply -f "$K8S_DIR/deployment.yaml"
+
+# Patch the GATEWAY_IP placeholder in deployment before applying
+sed "s|GATEWAY_IP|$GATEWAY_IP|g" "$K8S_DIR/deployment.yaml" | kubectl apply -f -
+
 kubectl apply -f "$K8S_DIR/service.yaml"
 ok "K8s manifests applied"
 
 # ---------------------------------------------------------------------------
-# Step 6: Wait for pods
+# Step 7: Wait for pods
 # ---------------------------------------------------------------------------
-info "Waiting for pods to be ready (this may take ~60s)..."
-kubectl -n andersoni-example wait --for=condition=Ready pod --all --timeout=120s 2>/dev/null || {
+info "Waiting for pods to be ready (this may take ~90s)..."
+if kubectl -n andersoni-example wait --for=condition=Ready pod --all --timeout=120s 2>/dev/null; then
+  ok "All pods are ready"
+else
   warn "Not all pods ready yet. Current status:"
   kubectl -n andersoni-example get pods
+  echo ""
+  info "Checking pod logs..."
+  kubectl -n andersoni-example logs "$(kubectl -n andersoni-example get pods -o name | head -1)" --tail=20 2>/dev/null || true
   warn "Some pods may still be starting. Check with: $0 status"
-}
+fi
 
 # ---------------------------------------------------------------------------
-# Step 7: Show status
+# Step 8: Show status
 # ---------------------------------------------------------------------------
 echo ""
 echo -e "${GREEN}========================================${NC}"
@@ -172,9 +181,8 @@ echo "  Refresh: curl -X POST http://localhost:30080/events/refresh"
 echo ""
 info "Management:"
 echo "  Status:  $0 status"
-echo "  Logs:    $0 logs"
+echo "  Logs:    $0 logs [service]"
 echo "  Stop:    $0 down"
 echo ""
 info "KUBECONFIG=$KUBECONFIG_FILE"
-echo "  kubectl --kubeconfig=$KUBECONFIG_FILE -n andersoni-example get pods"
 echo ""
