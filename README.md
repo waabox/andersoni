@@ -8,12 +8,12 @@ Add the starter and your preferred sync strategy:
 
 ```xml
 <dependency>
-    <groupId>org.waabox</groupId>
+    <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-spring-boot-starter</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>org.waabox</groupId>
+    <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-sync-kafka</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
