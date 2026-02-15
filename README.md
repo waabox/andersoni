@@ -31,6 +31,50 @@
 
 In-memory indexed cache library for Java 21. Define search indices over your domain objects with a fluent DSL, get lock-free reads via immutable snapshots, and sync across nodes with pluggable strategies.
 
+## Why Andersoni?
+
+Andersoni solves a problem that existing caching libraries don't address: **multi-index search over domain objects, in-process, with zero-lock reads**.
+
+### vs Caffeine
+
+Caffeine is a key-value cache. One key, one value. If you need to find events by venue, by sport, and by team, you maintain three separate caches and three separate loading strategies. Andersoni loads your data **once** and builds all indices from the same dataset. No redundant queries, no inconsistency between caches, no manual invalidation of N entries across N caches.
+
+| | Caffeine | Andersoni |
+|---|---|---|
+| Model | key → value | dataset → N indices |
+| Load data | Per entry, per cache | Once, all indices built |
+| Search | Single key lookup | Multi-index search |
+| Consistency | Manual across caches | Guaranteed (single snapshot) |
+| Eviction | Per entry (size/time) | Full snapshot swap |
+
+### vs Redis / Hazelcast / Infinispan
+
+These are **external infrastructure**: a separate process, a separate cluster, network hops, serialization on every read. Andersoni lives **inside your JVM**. Reads are a pointer dereference to an immutable object — zero network latency, zero serialization, zero locks. No infrastructure to deploy, monitor, or maintain. When you need sync between nodes, plug in Kafka, HTTP, or DB polling — but reads are always local.
+
+| | Redis / Hazelcast | Andersoni |
+|---|---|---|
+| Deployment | External cluster | In-process (JAR) |
+| Read latency | Network + deserialization | Pointer dereference |
+| Locks on read | Depends on mode | Never |
+| Infrastructure | Dedicated servers | None |
+| Sync | Built into cluster | Pluggable (Kafka, HTTP, DB) |
+
+### vs Spring Cache (@Cacheable)
+
+Spring Cache is an **annotation-based per-method cache**. It caches the return value of a method call for a given key. It has no concept of indexing a dataset, searching by multiple criteria, or maintaining a consistent view across indices. Under the hood, it delegates to Caffeine or Redis — inheriting their limitations. Andersoni is **domain-oriented**: you model your data with indices, not cache individual method calls.
+
+| | Spring Cache | Andersoni |
+|---|---|---|
+| Approach | Cache method results | Index domain data |
+| Multi-index | No | Yes, N indices per catalog |
+| Consistency | Per method/key | Per snapshot (all indices) |
+| DSL | Annotations | Fluent builder |
+| Provider | Wraps Caffeine/Redis | Standalone engine |
+
+### When to use Andersoni
+
+Andersoni is the right choice when you have **reference data or read-heavy datasets** that you need to query by multiple criteria with sub-microsecond latency: product catalogs, event listings, configuration data, sports fixtures, pricing tables. If you need single key-value caching with TTL eviction, use Caffeine. If you need a shared mutable store across services, use Redis.
+
 ## Quick Start
 
 Add the starter and your preferred sync strategy:
@@ -39,12 +83,12 @@ Add the starter and your preferred sync strategy:
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-spring-boot-starter</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-sync-kafka</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 
