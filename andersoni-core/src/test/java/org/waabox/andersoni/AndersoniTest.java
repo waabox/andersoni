@@ -1,0 +1,385 @@
+package org.waabox.andersoni;
+
+import static org.easymock.EasyMock.anyObject;
+import static org.easymock.EasyMock.capture;
+import static org.easymock.EasyMock.createMock;
+import static org.easymock.EasyMock.expectLastCall;
+import static org.easymock.EasyMock.newCapture;
+import static org.easymock.EasyMock.replay;
+import static org.easymock.EasyMock.verify;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.time.Duration;
+import java.util.Collection;
+import java.util.List;
+import java.util.UUID;
+
+import org.easymock.Capture;
+import org.junit.jupiter.api.Test;
+import org.waabox.andersoni.leader.LeaderElectionStrategy;
+import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.RefreshListener;
+import org.waabox.andersoni.sync.SyncStrategy;
+
+/**
+ * Tests for {@link Andersoni}.
+ *
+ * @author waabox(waabox[at]gmail[dot]com)
+ */
+class AndersoniTest {
+
+  /** A sport domain object used for testing. */
+  record Sport(String name) {}
+
+  /** A venue domain object used for testing. */
+  record Venue(String name) {}
+
+  /** An event domain object used for testing. */
+  record Event(String id, Sport sport, Venue venue) {}
+
+  @Test
+  void whenBuilding_givenDefaults_shouldCreateWithAutoNodeId() {
+    final Andersoni andersoni = Andersoni.builder().build();
+
+    assertNotNull(andersoni.nodeId());
+
+    // Verify it is a valid UUID format.
+    UUID.fromString(andersoni.nodeId());
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenBuilding_givenCustomNodeId_shouldUseIt() {
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("custom-node-1")
+        .build();
+
+    assertEquals("custom-node-1", andersoni.nodeId());
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenRegistering_givenCatalog_shouldMakeItSearchable() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final List<?> results = andersoni.search("events", "by-sport", "Football");
+
+    assertEquals(1, results.size());
+    assertEquals(e1, results.get(0));
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenRegistering_givenDuplicateName_shouldThrow() {
+    final Catalog<Event> catalog1 = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of())
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Catalog<Event> catalog2 = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.register(catalog1);
+
+    assertThrows(IllegalArgumentException.class,
+        () -> andersoni.register(catalog2));
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenSearching_givenUnknownCatalog_shouldThrow() {
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.start();
+
+    assertThrows(IllegalArgumentException.class,
+        () -> andersoni.search("unknown", "by-sport", "Football"));
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenStarting_givenMultipleCatalogs_shouldBootstrapAll() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> eventsCatalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Catalog<Sport> sportsCatalog = Catalog.of(Sport.class)
+        .named("sports")
+        .data(List.of(football))
+        .index("by-name").by(s -> s, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.register(eventsCatalog);
+    andersoni.register(sportsCatalog);
+    andersoni.start();
+
+    final List<?> eventResults = andersoni.search(
+        "events", "by-sport", "Football");
+    assertEquals(1, eventResults.size());
+
+    final List<?> sportResults = andersoni.search(
+        "sports", "by-name", "Football");
+    assertEquals(1, sportResults.size());
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenRefreshAndSync_givenSyncStrategy_shouldPublishEvent() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+
+    // Expect subscribe to be called on start.
+    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    expectLastCall().once();
+
+    // Expect start to be called.
+    syncStrategy.start();
+    expectLastCall().once();
+
+    // Expect publish with a RefreshEvent for "events" catalog.
+    final Capture<RefreshEvent> eventCapture = newCapture();
+    syncStrategy.publish(capture(eventCapture));
+    expectLastCall().once();
+
+    // Expect stop to be called on cleanup.
+    syncStrategy.stop();
+    expectLastCall().once();
+
+    replay(syncStrategy);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .syncStrategy(syncStrategy)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    andersoni.refreshAndSync("events");
+
+    final RefreshEvent published = eventCapture.getValue();
+    assertEquals("events", published.catalogName());
+    assertEquals("node-1", published.sourceNodeId());
+    assertNotNull(published.hash());
+    assertNotNull(published.timestamp());
+
+    andersoni.stop();
+
+    verify(syncStrategy);
+  }
+
+  @Test
+  void whenReceivingRefreshEvent_givenDifferentHash_shouldRefreshCatalog() {
+    final Sport football = new Sport("Football");
+    final Sport rugby = new Sport("Rugby");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    // Use a mutable list holder to change data on refresh.
+    final List<Event>[] dataHolder = new List[]{List.of(e1)};
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> dataHolder[0])
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    // Capture the RefreshListener registered via subscribe.
+    final Capture<RefreshListener> listenerCapture = newCapture();
+
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    syncStrategy.subscribe(capture(listenerCapture));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+    replay(syncStrategy);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .syncStrategy(syncStrategy)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    // Verify initial data.
+    final List<?> initialResults = andersoni.search(
+        "events", "by-sport", "Football");
+    assertEquals(1, initialResults.size());
+
+    // Change the data that DataLoader will return.
+    final Event e2 = new Event("2", rugby, maracana);
+    dataHolder[0] = List.of(e1, e2);
+
+    // Simulate receiving a refresh event from another node with a
+    // different hash.
+    final RefreshListener listener = listenerCapture.getValue();
+    final RefreshEvent event = new RefreshEvent(
+        "events", "node-2", 2L, "different-hash",
+        java.time.Instant.now());
+    listener.onRefresh(event);
+
+    // Verify the catalog was refreshed with new data.
+    final List<?> rugbyResults = andersoni.search(
+        "events", "by-sport", "Rugby");
+    assertEquals(1, rugbyResults.size());
+
+    andersoni.stop();
+
+    verify(syncStrategy);
+  }
+
+  @Test
+  void whenReceivingRefreshEvent_givenSameNodeId_shouldIgnore() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final int[] loadCount = {0};
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          loadCount[0]++;
+          return List.of(e1);
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Capture<RefreshListener> listenerCapture = newCapture();
+
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    syncStrategy.subscribe(capture(listenerCapture));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+    replay(syncStrategy);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .syncStrategy(syncStrategy)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    // Record load count after bootstrap.
+    final int loadCountAfterBootstrap = loadCount[0];
+
+    // Simulate receiving an event from the same node.
+    final RefreshListener listener = listenerCapture.getValue();
+    final RefreshEvent event = new RefreshEvent(
+        "events", "node-1", 2L, "some-hash",
+        java.time.Instant.now());
+    listener.onRefresh(event);
+
+    // Load count should not have increased since our own event is ignored.
+    assertEquals(loadCountAfterBootstrap, loadCount[0]);
+
+    andersoni.stop();
+
+    verify(syncStrategy);
+  }
+
+  @Test
+  void whenStopping_shouldStopSyncAndLeader() {
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+
+    // Expect start lifecycle.
+    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+
+    leaderElection.start();
+    expectLastCall().once();
+    leaderElection.isLeader();
+    expectLastCall().andReturn(true).anyTimes();
+
+    // Expect stop lifecycle.
+    syncStrategy.stop();
+    expectLastCall().once();
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(syncStrategy, leaderElection);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .syncStrategy(syncStrategy)
+        .leaderElection(leaderElection)
+        .build();
+
+    andersoni.start();
+    andersoni.stop();
+
+    verify(syncStrategy, leaderElection);
+  }
+
+  @Test
+  void whenCatalogs_givenRegisteredCatalogs_shouldReturnUnmodifiable() {
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of())
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.register(catalog);
+
+    final Collection<Catalog<?>> catalogs = andersoni.catalogs();
+    assertEquals(1, catalogs.size());
+
+    assertThrows(UnsupportedOperationException.class,
+        () -> catalogs.add(catalog));
+
+    andersoni.stop();
+  }
+}
