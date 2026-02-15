@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Andersoni Admin Console</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    [v-cloak] { display: none; }
+  </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+
+<div id="app" v-cloak>
+
+  <!-- Header -->
+  <header class="bg-gray-900 text-white shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+      <h1 class="text-xl font-bold tracking-tight">Andersoni Admin Console</h1>
+      <span class="text-sm text-gray-400" v-if="lastUpdated">
+        Last updated: {{ lastUpdated }}
+      </span>
+    </div>
+  </header>
+
+  <!-- Config bar -->
+  <div class="max-w-7xl mx-auto px-4 mt-6">
+    <div class="bg-white rounded-lg shadow p-4 flex flex-wrap items-end gap-4">
+
+      <div class="flex-1 min-w-[180px]">
+        <label class="block text-xs font-medium text-gray-500 mb-1">
+          Namespace
+        </label>
+        <input v-model="namespace" type="text"
+          class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm
+                 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+      </div>
+
+      <div class="flex-1 min-w-[200px]">
+        <label class="block text-xs font-medium text-gray-500 mb-1">
+          Label Selector
+        </label>
+        <input v-model="labelSelector" type="text"
+          class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm
+                 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+      </div>
+
+      <div class="flex items-center gap-3">
+        <button @click="fetchCluster"
+          class="bg-blue-600 text-white px-4 py-1.5 rounded text-sm
+                 font-medium hover:bg-blue-700 transition"
+          :disabled="loading">
+          {{ loading ? 'Loading...' : 'Refresh' }}
+        </button>
+
+        <label class="flex items-center gap-1.5 text-sm text-gray-600
+                      cursor-pointer select-none">
+          <input type="checkbox" v-model="autoRefresh"
+            class="rounded border-gray-300">
+          Auto (5s)
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error -->
+  <div v-if="error" class="max-w-7xl mx-auto px-4 mt-4">
+    <div class="bg-red-50 border border-red-200 text-red-700 rounded-lg
+                p-4 text-sm">
+      {{ error }}
+    </div>
+  </div>
+
+  <!-- Leader info -->
+  <div v-if="cluster" class="max-w-7xl mx-auto px-4 mt-4">
+    <div class="text-sm text-gray-500">
+      Leader:
+      <span class="font-medium text-gray-800">
+        {{ cluster.leaderIdentity || 'none' }}
+      </span>
+      &middot; {{ cluster.nodes.length }} node(s)
+    </div>
+  </div>
+
+  <!-- Node cards -->
+  <div v-if="cluster" class="max-w-7xl mx-auto px-4 mt-4 mb-8">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+
+      <div v-for="node in cluster.nodes" :key="node.podName"
+        class="bg-white rounded-lg shadow border-l-4 p-4"
+        :class="borderClass(node.status)">
+
+        <!-- Pod header -->
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span class="inline-block w-2.5 h-2.5 rounded-full"
+              :class="dotClass(node.status)"></span>
+            <span class="font-mono text-sm font-semibold text-gray-800">
+              {{ node.podName }}
+            </span>
+          </div>
+          <span v-if="node.leader"
+            class="bg-yellow-100 text-yellow-800 text-xs font-bold
+                   px-2 py-0.5 rounded-full border border-yellow-300">
+            LEADER
+          </span>
+        </div>
+
+        <!-- Pod details -->
+        <div class="space-y-1 text-sm text-gray-600">
+          <div class="flex justify-between">
+            <span>IP</span>
+            <span class="font-mono text-gray-800">
+              {{ node.podIp || '-' }}
+            </span>
+          </div>
+          <div class="flex justify-between">
+            <span>Phase</span>
+            <span>{{ node.phase }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Ready</span>
+            <span :class="node.ready ? 'text-green-600' : 'text-red-500'">
+              {{ node.ready ? 'Yes' : 'No' }}
+            </span>
+          </div>
+          <div class="flex justify-between">
+            <span>Status</span>
+            <span class="font-medium" :class="statusTextClass(node.status)">
+              {{ node.status }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Info section -->
+        <div v-if="node.info" class="mt-3 pt-3 border-t border-gray-100">
+          <div class="space-y-1 text-sm text-gray-600">
+            <div class="flex justify-between">
+              <span>Version</span>
+              <span class="font-mono text-gray-800">
+                {{ node.info.version }}
+              </span>
+            </div>
+            <div class="flex justify-between">
+              <span>Hash</span>
+              <span class="font-mono text-gray-800" :title="node.info.hash">
+                {{ truncate(node.info.hash, 12) }}
+              </span>
+            </div>
+            <div class="flex justify-between">
+              <span>Items</span>
+              <span class="font-mono text-gray-800">
+                {{ formatNumber(node.info.itemCount) }}
+              </span>
+            </div>
+            <div class="flex justify-between">
+              <span>Node ID</span>
+              <span class="font-mono text-gray-800 text-xs">
+                {{ truncate(node.info.nodeId, 20) }}
+              </span>
+            </div>
+            <div class="flex justify-between">
+              <span>Created</span>
+              <span class="text-gray-800 text-xs">
+                {{ node.info.createdAt }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Error message -->
+        <div v-if="node.error"
+          class="mt-3 pt-3 border-t border-gray-100 text-xs text-red-500
+                 truncate" :title="node.error">
+          {{ node.error }}
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Empty state -->
+  <div v-if="!cluster && !loading && !error"
+    class="max-w-7xl mx-auto px-4 mt-16 text-center text-gray-400">
+    <p class="text-lg">Click Refresh to load cluster status</p>
+  </div>
+
+</div>
+
+<script>
+const { createApp, ref, watch, onMounted, onUnmounted } = Vue;
+
+createApp({
+  setup() {
+    const namespace = ref('andersoni-example');
+    const labelSelector = ref('app=andersoni-example');
+    const cluster = ref(null);
+    const loading = ref(false);
+    const error = ref(null);
+    const lastUpdated = ref(null);
+    const autoRefresh = ref(false);
+
+    let timer = null;
+
+    async function fetchCluster() {
+      loading.value = true;
+      error.value = null;
+      try {
+        const params = new URLSearchParams({
+          namespace: namespace.value,
+          labelSelector: labelSelector.value,
+        });
+        const res = await fetch('/api/cluster?' + params);
+        const data = await res.json();
+        if (data.error) {
+          error.value = data.message || data.error;
+        } else {
+          cluster.value = data;
+        }
+        lastUpdated.value = new Date().toLocaleTimeString();
+      } catch (e) {
+        error.value = 'Failed to reach admin API: ' + e.message;
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    function startAutoRefresh() {
+      stopAutoRefresh();
+      timer = setInterval(fetchCluster, 5000);
+    }
+
+    function stopAutoRefresh() {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    }
+
+    watch(autoRefresh, (on) => {
+      if (on) {
+        fetchCluster();
+        startAutoRefresh();
+      } else {
+        stopAutoRefresh();
+      }
+    });
+
+    onMounted(() => fetchCluster());
+    onUnmounted(() => stopAutoRefresh());
+
+    function borderClass(status) {
+      switch (status) {
+        case 'OK': return 'border-green-500';
+        case 'UNREACHABLE': return 'border-red-500';
+        case 'STARTING': return 'border-yellow-400';
+        default: return 'border-gray-300';
+      }
+    }
+
+    function dotClass(status) {
+      switch (status) {
+        case 'OK': return 'bg-green-500';
+        case 'UNREACHABLE': return 'bg-red-500';
+        case 'STARTING': return 'bg-yellow-400';
+        default: return 'bg-gray-400';
+      }
+    }
+
+    function statusTextClass(status) {
+      switch (status) {
+        case 'OK': return 'text-green-600';
+        case 'UNREACHABLE': return 'text-red-600';
+        case 'STARTING': return 'text-yellow-600';
+        default: return 'text-gray-600';
+      }
+    }
+
+    function truncate(str, len) {
+      if (!str) return '-';
+      return str.length > len ? str.substring(0, len) + '...' : str;
+    }
+
+    function formatNumber(n) {
+      if (n == null) return '-';
+      return n.toLocaleString();
+    }
+
+    return {
+      namespace, labelSelector, cluster, loading, error,
+      lastUpdated, autoRefresh, fetchCluster,
+      borderClass, dotClass, statusTextClass,
+      truncate, formatNumber,
+    };
+  },
+}).mount('#app');
+</script>
+
+</body>
+</html>

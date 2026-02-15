@@ -1,0 +1,8 @@
+server:
+  port: 9090
+
+admin:
+  default-namespace: ${ADMIN_NAMESPACE:andersoni-example}
+  default-label-selector: ${ADMIN_LABEL_SELECTOR:app=andersoni-example}
+  default-lease-name: ${ADMIN_LEASE_NAME:andersoni-example-leader}
+  default-info-path: ${ADMIN_INFO_PATH:/events/info}
