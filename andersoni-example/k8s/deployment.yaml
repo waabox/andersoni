@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: andersoni-example
+  namespace: andersoni-example
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: andersoni-example
+  template:
+    metadata:
+      labels:
+        app: andersoni-example
+    spec:
+      serviceAccountName: andersoni-example
+      containers:
+        - name: app
+          image: andersoni-example:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: POSTGRES_HOST
+              value: "host.k3s.internal"
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "host.k3s.internal:9092"
+            - name: MINIO_ENDPOINT
+              value: "http://host.k3s.internal:9000"
+            - name: K8S_NAMESPACE
+              value: "andersoni-example"
+          readinessProbe:
+            httpGet:
+              path: /events/info
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /events/info
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
