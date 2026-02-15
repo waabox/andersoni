@@ -26,7 +26,7 @@ This is a complete Spring Boot application demonstrating all Andersoni features 
              │           │           │
              └────┬──────┴──────┬────┘
                   │             │
-             ┌────▼─────┐ ┌────▼─────┐
+             ┌────▼─────┐ ┌─────▼────┐
              │  Kafka   │ │  MinIO   │
              │ (Sync)   │ │(Snapshot)│
              └──────────┘ └──────────┘
