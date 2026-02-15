@@ -17,19 +17,19 @@ This is a complete Spring Boot application demonstrating all Andersoni features 
                     │  PostgreSQL  │  (Source of truth)
                     └──────┬───────┘
                            │ DataLoader.load()
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
+              ┌────────────┼─────────┐
+              ▼            ▼         ▼
          ┌────────┐  ┌────────┐  ┌────────┐
          │ Pod 1  │  │ Pod 2  │  │ Pod 3  │
          │(Leader)│  │        │  │        │
          └───┬────┘  └───┬────┘  └───┬────┘
-             │            │            │
-             └─────┬──────┴──────┬─────┘
-                   │             │
-             ┌─────▼─────┐ ┌────▼─────┐
-             │   Kafka   │ │  MinIO   │
-             │  (Sync)   │ │(Snapshot)│
-             └───────────┘ └──────────┘
+             │           │           │
+             └────┬──────┴──────┬────┘
+                  │             │
+             ┌────▼─────┐ ┌────▼─────┐
+             │  Kafka   │ │  MinIO   │
+             │ (Sync)   │ │(Snapshot)│
+             └──────────┘ └──────────┘
 ```
 
 ## Prerequisites
