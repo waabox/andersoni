@@ -238,4 +238,4 @@ Requires Java 21.
 
 ## License
 
-TBD
+[Apache License 2.0](LICENSE)
