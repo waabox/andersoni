@@ -47,6 +47,7 @@
     <module>andersoni-snapshot-s3</module>
     <module>andersoni-snapshot-fs</module>
     <module>andersoni-spring-boot-starter</module>
+    <module>andersoni-example</module>
   </modules>
 
   <properties>
