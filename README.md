@@ -31,49 +31,85 @@
 
 In-memory indexed cache library for Java 21. Define search indices over your domain objects with a fluent DSL, get lock-free reads via immutable snapshots, and sync across nodes with pluggable strategies.
 
-## Why Andersoni?
+## Performance
 
-Andersoni solves a problem that existing caching libraries don't address: **multi-index search over domain objects, in-process, with zero-lock reads**.
+Benchmarked on Apple M-series, JDK 21, 8 threads. Catalog with 3 indices (by-category, by-region, by-status):
+
+| Items | Build Time | Avg Search Latency | Concurrent Throughput | Memory |
+|---|---|---|---|---|
+| 10,000 | 9 ms | ~55 ns | ~10M ops/s | ~2 MB |
+| 100,000 | 38 ms | ~29 ns | ~85M ops/s | ~14 MB |
+| 500,000 | 112 ms | ~28 ns | ~93M ops/s | ~70 MB |
+
+Search latency is a `HashMap.get()` on an immutable snapshot — no locks, no synchronization, no copying. Throughput scales linearly with cores because readers never contend with each other.
+
+Build time is the cost of a full refresh: iterate all items, extract keys, populate index maps, wrap in unmodifiable collections, and atomic swap. This happens in a background thread; readers are never blocked during a rebuild.
+
+## How It Compares
+
+Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.
 
 ### vs Caffeine
 
-Caffeine is a key-value cache. One key, one value. If you need to find events by venue, by sport, and by team, you maintain three separate caches and three separate loading strategies. Andersoni loads your data **once** and builds all indices from the same dataset. No redundant queries, no inconsistency between caches, no manual invalidation of N entries across N caches.
+Caffeine is a key-value cache with excellent per-entry eviction (size, TTL, weight). If you need to find events by venue, by sport, and by team, you maintain three separate Caffeine caches with three loaders and three invalidation strategies. Andersoni loads your data **once** and builds all indices atomically. You can build secondary indices on top of Caffeine manually, but you own the consistency between them.
 
 | | Caffeine | Andersoni |
 |---|---|---|
 | Model | key → value | dataset → N indices |
 | Load data | Per entry, per cache | Once, all indices built |
-| Search | Single key lookup | Multi-index search |
+| Eviction | TTL, size, weight | Full snapshot swap |
 | Consistency | Manual across caches | Guaranteed (single snapshot) |
-| Eviction | Per entry (size/time) | Full snapshot swap |
+| Maturity | Battle-tested, widely adopted | New |
+
+**Caffeine wins at**: per-entry TTL, size-bounded caches, single key lookups, production track record.
+
+**Andersoni wins at**: multi-index search, cross-index consistency, zero-lock concurrent reads.
 
 ### vs Redis / Hazelcast / Infinispan
 
-These are **external infrastructure**: a separate process, a separate cluster, network hops, serialization on every read. Andersoni lives **inside your JVM**. Reads are a pointer dereference to an immutable object — zero network latency, zero serialization, zero locks. No infrastructure to deploy, monitor, or maintain. When you need sync between nodes, plug in Kafka, HTTP, or DB polling — but reads are always local.
+These provide distributed shared state. Andersoni provides **local read-only views** with optional sync. The difference matters: Redis gives you a single mutable store that all nodes read/write over the network. Andersoni gives each node its own immutable snapshot — reads are a pointer dereference (~30ns), not a network call (~0.5-1ms). The tradeoff is that Andersoni data is eventually consistent across nodes (sync delay depends on strategy: Kafka ~ms, HTTP ~ms, DB polling ~seconds).
+
+Note: Hazelcast and Infinispan support embedded mode with near-cache, which reduces read latency significantly. If you already run one of these, adding Andersoni may not be justified.
 
 | | Redis / Hazelcast | Andersoni |
 |---|---|---|
-| Deployment | External cluster | In-process (JAR) |
-| Read latency | Network + deserialization | Pointer dereference |
-| Locks on read | Depends on mode | Never |
-| Infrastructure | Dedicated servers | None |
-| Sync | Built into cluster | Pluggable (Kafka, HTTP, DB) |
+| Deployment | External or embedded | In-process JAR |
+| Read latency | ~0.5-1ms (remote) | ~30ns (local) |
+| Write model | Mutable shared state | Immutable snapshots |
+| Consistency | Strong (single source) | Eventually consistent |
+| Infrastructure | Servers to manage | None |
+
+**They win at**: mutable shared state, strong consistency, operational tooling, large-scale clusters.
+
+**Andersoni wins at**: read latency, operational simplicity, zero infrastructure overhead.
 
 ### vs Spring Cache (@Cacheable)
 
-Spring Cache is an **annotation-based per-method cache**. It caches the return value of a method call for a given key. It has no concept of indexing a dataset, searching by multiple criteria, or maintaining a consistent view across indices. Under the hood, it delegates to Caffeine or Redis — inheriting their limitations. Andersoni is **domain-oriented**: you model your data with indices, not cache individual method calls.
+Spring Cache is annotation-based: it caches method return values by key. Under the hood it delegates to Caffeine or Redis, inheriting their trade-offs. It has no concept of indexing a dataset or maintaining a consistent view across multiple search criteria. Andersoni is complementary — you can use Spring Cache for method-level caching and Andersoni for indexed domain data.
 
 | | Spring Cache | Andersoni |
 |---|---|---|
 | Approach | Cache method results | Index domain data |
 | Multi-index | No | Yes, N indices per catalog |
 | Consistency | Per method/key | Per snapshot (all indices) |
-| DSL | Annotations | Fluent builder |
 | Provider | Wraps Caffeine/Redis | Standalone engine |
 
-### When to use Andersoni
+## When to Use It
 
-Andersoni is the right choice when you have **reference data or read-heavy datasets** that you need to query by multiple criteria with sub-microsecond latency: product catalogs, event listings, configuration data, sports fixtures, pricing tables. If you need single key-value caching with TTL eviction, use Caffeine. If you need a shared mutable store across services, use Redis.
+Andersoni fits when you have **read-heavy reference data** queried by multiple criteria:
+
+- Product catalogs, event listings, pricing tables, sports fixtures
+- Configuration data that changes infrequently (minutes/hours, not seconds)
+- Datasets that fit in memory (tens of thousands to low millions of items)
+- Systems where cross-index consistency matters (no stale index A while index B is fresh)
+
+## When NOT to Use It
+
+- **You need per-entry TTL or size-bounded eviction** — use Caffeine. Andersoni refreshes entire snapshots; there is no per-item expiration.
+- **Your data changes every few seconds** — full snapshot rebuilds on every change are wasteful. Andersoni is designed for data that refreshes on the order of minutes, not seconds.
+- **You already have Redis/Hazelcast running and it works** — adding another caching layer introduces complexity. If your current setup meets latency requirements, keep it.
+- **You need strong consistency across nodes** — Andersoni syncs are eventually consistent. The lag depends on your sync strategy (Kafka is near-realtime, DB polling can be seconds).
+- **Your dataset is very large (tens of millions+)** — snapshots live fully in heap. At 500K items with 3 indices, expect ~70MB. Scale accordingly and consider GC pressure from snapshot swaps on very large datasets.
 
 ## Quick Start
 
