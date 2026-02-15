@@ -29,6 +29,10 @@
   <img src="https://img.shields.io/badge/License-Apache%202.0-yellow" alt="Apache 2.0 License" />
 </p>
 
+<p align="center">
+  <img src="./assets/logo.png" width="300"/>
+</p>
+
 In-memory indexed cache library for Java 21. Define search indices over your domain objects with a fluent DSL, get lock-free reads via immutable snapshots, and sync across nodes with pluggable strategies.
 
 ## Performance
