@@ -1,5 +1,34 @@
 # Andersoni
 
+<p align="left">
+  <!-- Build -->
+  <a href="https://github.com/waabox/andersoni/actions">
+    <img src="https://github.com/waabox/andersoni/actions/workflows/ci.yml/badge.svg" alt="Build Status" />
+  </a>
+
+  <!-- Java -->
+  <img src="https://img.shields.io/badge/Java-21-orange?logo=java" alt="Java 21" />
+
+  <!-- Spring Boot -->
+  <img src="https://img.shields.io/badge/Spring%20Boot-3.x-brightgreen?logo=springboot" alt="Spring Boot" />
+
+  <!-- Maven Central -->
+  <a href="https://central.sonatype.com/search?q=io.github.waabox.andersoni">
+    <img src="https://img.shields.io/maven-central/v/io.github.waabox/andersoni-core?color=blue" alt="Maven Central" />
+  </a>
+
+  <!-- Kafka -->
+  <img src="https://img.shields.io/badge/Kafka-sync-black?logo=apachekafka" alt="Kafka Sync" />
+
+  <!-- Release -->
+  <a href="https://github.com/waabox/andersoni/releases">
+    <img src="https://img.shields.io/github/v/release/waabox/andersoni?color=blue" alt="Latest Release" />
+  </a>
+
+  <!-- License -->
+  <img src="https://img.shields.io/badge/License-Apache%202.0-yellow" alt="Apache 2.0 License" />
+</p>
+
 In-memory indexed cache library for Java 21. Define search indices over your domain objects with a fluent DSL, get lock-free reads via immutable snapshots, and sync across nodes with pluggable strategies.
 
 ## Quick Start
