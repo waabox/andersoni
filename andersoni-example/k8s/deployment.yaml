@@ -29,6 +29,16 @@ spec:
               value: "http://host.k3s.internal:9000"
             - name: K8S_NAMESPACE
               value: "andersoni-example"
+            - name: POSTGRES_USER
+              value: "andersoni"
+            - name: POSTGRES_PASSWORD
+              value: "andersoni"
+            - name: MINIO_ACCESS_KEY
+              value: "minioadmin"
+            - name: MINIO_SECRET_KEY
+              value: "minioadmin"
+            - name: MINIO_BUCKET
+              value: "andersoni-snapshots"
           readinessProbe:
             httpGet:
               path: /events/info

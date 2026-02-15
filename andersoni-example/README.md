@@ -142,82 +142,47 @@ All configuration is provided via environment variables with sensible defaults. 
 
 ### Key Configuration Properties
 
+The actual configuration from `application.yaml`:
+
 ```yaml
-# Cache configuration
 andersoni:
-  cache-name: events-cache
-  snapshot:
-    enabled: true
-    storage: s3
-    s3:
-      bucket: andersoni-snapshots
-      endpoint: http://minio:9000
-      access-key: minioadmin
-      secret-key: minioadmin
-  sync:
-    enabled: true
-    type: kafka
-    kafka:
-      bootstrap-servers: kafka:9092
-      topic: andersoni-events
-  leader:
-    enabled: true
-    type: k8s
-    k8s:
-      namespace: andersoni-example
-      lease-name: andersoni-leader
+  node-id: ${HOSTNAME:local-dev}
 
-# Database
-spring:
-  datasource:
-    url: jdbc:postgresql://postgres:5432/events
-    username: andersoni
-    password: andersoni
+kafka:
+  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
-# Kafka
-spring:
-  kafka:
-    bootstrap-servers: kafka:9092
+k8s:
+  lease:
+    namespace: ${K8S_NAMESPACE:andersoni-example}
+
+minio:
+  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  access-key: ${MINIO_ACCESS_KEY:minioadmin}
+  secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  bucket: ${MINIO_BUCKET:andersoni-snapshots}
 ```
 
-### Environment Variables
-
-Override any property using environment variables with the `ANDERSONI_` prefix:
-
-```bash
-ANDERSONI_CACHE_NAME=events-cache
-ANDERSONI_SNAPSHOT_ENABLED=true
-ANDERSONI_SNAPSHOT_STORAGE=s3
-ANDERSONI_SNAPSHOT_S3_BUCKET=andersoni-snapshots
-ANDERSONI_SNAPSHOT_S3_ENDPOINT=http://minio:9000
-ANDERSONI_SNAPSHOT_S3_ACCESSKEY=minioadmin
-ANDERSONI_SNAPSHOT_S3_SECRETKEY=minioadmin
-ANDERSONI_SYNC_ENABLED=true
-ANDERSONI_SYNC_TYPE=kafka
-ANDERSONI_SYNC_KAFKA_BOOTSTRAPSERVERS=kafka:9092
-ANDERSONI_SYNC_KAFKA_TOPIC=andersoni-events
-ANDERSONI_LEADER_ENABLED=true
-ANDERSONI_LEADER_TYPE=k8s
-ANDERSONI_LEADER_K8S_NAMESPACE=andersoni-example
-ANDERSONI_LEADER_K8S_LEASENAME=andersoni-leader
-```
+Infrastructure beans (Kafka sync, K8s leader election, S3 snapshots) are wired in `AndersoniConfig.java` using these properties. Override any value via environment variables.
 
 ## Project Structure
 
 ```
 andersoni-example/
 ├── src/main/java/org/waabox/andersoni/example/
-│   ├── AndersoniExampleApplication.java    # Main entry point
-│   ├── Event.java                           # Domain model
-│   ├── EventDataLoader.java                 # Loads data from PostgreSQL
-│   ├── EventService.java                    # Cache operations
-│   └── EventController.java                 # REST endpoints
+│   ├── ExampleApplication.java              # Main entry point
+│   ├── config/
+│   │   └── AndersoniConfig.java             # Andersoni infrastructure beans
+│   ├── domain/
+│   │   ├── Event.java                       # Domain model (JPA entity)
+│   │   ├── EventRepository.java             # Loads events from PostgreSQL
+│   │   └── EventSnapshotSerializer.java     # Jackson snapshot serializer
+│   └── application/
+│       └── EventController.java             # REST endpoints
 ├── src/main/resources/
-│   ├── application.yaml                     # Configuration
-│   └── schema.sql                           # Database schema
+│   └── application.yaml                     # Configuration
 ├── devcontainer/
 │   ├── docker-compose.yml                   # Local infrastructure
-│   └── init-db.sql                         # Sample data
+│   └── init-db.sql                          # Sample data
 ├── k8s/
 │   ├── namespace.yaml                       # Kubernetes namespace
 │   ├── rbac.yaml                            # Service account & roles
@@ -261,8 +226,8 @@ kubectl -n andersoni-example exec <pod-name> -- curl -v http://minio:9000
 ## Next Steps
 
 - Explore the source code to understand how Andersoni is configured
-- Modify the `EventDataLoader` to load data from your own source
-- Add custom indexes by implementing `IndexStrategy`
+- Modify `EventRepository` to load data from your own source
+- Add custom indexes in `AndersoniConfig.eventsCatalogRegistrar()`
 - Configure different snapshot storage (filesystem, custom S3)
 - Integrate with your existing Spring Boot application
 

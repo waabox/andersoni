@@ -97,39 +97,54 @@ public class AndersoniConfig {
     return new K8sLeaseLeaderElection(config);
   }
 
-  /** Creates an S3-backed snapshot store for persisting catalog data.
+  /** Creates an S3Client bean managed by Spring so its lifecycle
+   * (including close) is handled properly.
    *
    * <p>Uses an S3-compatible endpoint (such as MinIO for local development)
-   * with static credentials and path-style access. Snapshots are stored
-   * in the configured bucket under the default {@code andersoni/} prefix.
+   * with static credentials and path-style access.
    *
    * @param endpoint the S3-compatible endpoint URL (e.g.
    *        "http://localhost:9000"), never null
    * @param accessKey the access key for authentication, never null
    * @param secretKey the secret key for authentication, never null
+   *
+   * @return the configured S3 client, never null
+   */
+  @Bean(destroyMethod = "close")
+  S3Client s3Client(
+      @Value("${minio.endpoint}") final String endpoint,
+      @Value("${minio.access-key}") final String accessKey,
+      @Value("${minio.secret-key}") final String secretKey) {
+
+    return S3Client.builder()
+        .region(Region.US_EAST_1)
+        .endpointOverride(URI.create(endpoint))
+        .credentialsProvider(StaticCredentialsProvider.create(
+            AwsBasicCredentials.create(accessKey, secretKey)))
+        .forcePathStyle(true)
+        .build();
+  }
+
+  /** Creates an S3-backed snapshot store for persisting catalog data.
+   *
+   * <p>Snapshots are stored in the configured bucket under the default
+   * {@code andersoni/} prefix. The S3Client is injected as a
+   * Spring-managed bean so it is closed properly on shutdown.
+   *
+   * @param s3Client the Spring-managed S3 client, never null
    * @param bucket the S3 bucket where snapshots are stored, never null
    *
    * @return the configured S3 snapshot store, never null
    */
   @Bean
-  public S3SnapshotStore s3SnapshotStore(
-      @Value("${minio.endpoint}") final String endpoint,
-      @Value("${minio.access-key}") final String accessKey,
-      @Value("${minio.secret-key}") final String secretKey,
+  S3SnapshotStore s3SnapshotStore(
+      final S3Client s3Client,
       @Value("${minio.bucket}") final String bucket) {
-
-    final S3Client client = S3Client.builder()
-        .endpointOverride(URI.create(endpoint))
-        .forcePathStyle(true)
-        .region(Region.US_EAST_1)
-        .credentialsProvider(StaticCredentialsProvider.create(
-            AwsBasicCredentials.create(accessKey, secretKey)))
-        .build();
 
     final S3SnapshotConfig config = S3SnapshotConfig.builder()
         .bucket(bucket)
         .region(Region.US_EAST_1)
-        .s3Client(client)
+        .s3Client(s3Client)
         .build();
 
     return new S3SnapshotStore(config);
