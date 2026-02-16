@@ -169,10 +169,11 @@ public final class Andersoni {
    *
    * <p>This method performs the following steps in order:
    * <ol>
-   *   <li>Bootstraps all registered catalogs with retry support.</li>
+   *   <li>Starts the leader election so nodes know their role.</li>
+   *   <li>Bootstraps all registered catalogs with leader-aware retry
+   *       support.</li>
    *   <li>If a sync strategy is configured, subscribes a refresh listener
    *       and starts the sync transport.</li>
-   *   <li>Starts the leader election strategy.</li>
    *   <li>For catalogs with a refresh interval, if this node is the leader,
    *       schedules periodic refresh tasks.</li>
    * </ol>
@@ -181,17 +182,21 @@ public final class Andersoni {
    * <ul>
    *   <li>First tries to load from the SnapshotStore (if configured and
    *       the catalog has a serializer).</li>
-   *   <li>If that fails or is not configured, falls back to the catalog's
-   *       own bootstrap (DataLoader or static data).</li>
-   *   <li>On failure, retries per the configured RetryPolicy.</li>
+   *   <li>If that fails and this node is the leader, falls back to the
+   *       catalog's DataLoader with retry support and saves the result
+   *       to the SnapshotStore.</li>
+   *   <li>If that fails and this node is a follower, retries loading
+   *       from the SnapshotStore (waiting for the leader to upload),
+   *       with failover to the DataLoader path if this node becomes
+   *       leader mid-bootstrap.</li>
    *   <li>After exhausting retries, the catalog is marked as FAILED and
    *       the error is logged. Other catalogs continue bootstrapping.</li>
    * </ul>
    */
   public void start() {
+    leaderElection.start();
     bootstrapAllCatalogs();
     wireSyncListener();
-    leaderElection.start();
     schedulePeriodicRefreshes();
   }
 
@@ -314,47 +319,147 @@ public final class Andersoni {
   }
 
   /**
-   * Bootstraps a single catalog with retry support.
+   * Bootstraps a single catalog with leader-aware retry support.
+   *
+   * <p>First attempts to load from the SnapshotStore. If that fails:
+   * <ul>
+   *   <li>Leaders fall back to the DataLoader with retry support and
+   *       save the result to the SnapshotStore for followers.</li>
+   *   <li>Followers retry loading from the SnapshotStore, waiting for
+   *       the leader to upload a new snapshot. If a follower becomes
+   *       leader mid-bootstrap, it switches to the DataLoader path.</li>
+   * </ul>
    *
    * @param name    the catalog name, never null
    * @param catalog the catalog to bootstrap, never null
    */
   private void bootstrapWithRetry(final String name,
       final Catalog<?> catalog) {
+
+    // Step 1: try S3 once.
+    try {
+      if (tryLoadFromSnapshotStore(name, catalog)) {
+        metrics.snapshotLoaded(name, "snapshotStore");
+        return;
+      }
+    } catch (final Exception e) {
+      log.warn("Catalog '{}': snapshot store load failed: {}", name,
+          e.getMessage());
+    }
+
+    // Step 2: role-aware fallback.
+    if (leaderElection.isLeader()) {
+      bootstrapAsLeader(name, catalog);
+    } else {
+      bootstrapAsFollower(name, catalog);
+    }
+  }
+
+  /**
+   * Bootstraps a catalog as leader using the DataLoader with retry support.
+   *
+   * <p>On success, saves the result to the SnapshotStore so followers can
+   * pick it up immediately.
+   *
+   * @param name    the catalog name, never null
+   * @param catalog the catalog to bootstrap, never null
+   */
+  private void bootstrapAsLeader(final String name,
+      final Catalog<?> catalog) {
     final int maxAttempts = retryPolicy.maxRetries();
     final Duration backoff = retryPolicy.backoff();
 
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        if (tryLoadFromSnapshotStore(name, catalog)) {
-          metrics.snapshotLoaded(name, "snapshotStore");
-          return;
-        }
-
         catalog.bootstrap();
         metrics.snapshotLoaded(name, "dataLoader");
+        saveSnapshotIfPossible(catalog);
         return;
       } catch (final Exception e) {
-        log.warn("Bootstrap attempt {}/{} failed for catalog '{}': {}",
-            attempt, maxAttempts, name, e.getMessage());
+        log.warn("Catalog '{}': leader DataLoader attempt {}/{} failed: {}",
+            name, attempt, maxAttempts, e.getMessage());
 
         if (attempt < maxAttempts) {
-          try {
-            Thread.sleep(backoff.toMillis());
-          } catch (final InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            log.error("Bootstrap interrupted for catalog '{}'", name);
-            failedCatalogs.add(name);
-            metrics.refreshFailed(name, ie);
-            return;
-          }
+          sleepOrAbort(name, backoff);
         } else {
-          log.error("All {} bootstrap attempts exhausted for catalog '{}'. "
-              + "Marking as FAILED.", maxAttempts, name);
+          log.error("Catalog '{}': all {} leader DataLoader attempts "
+              + "exhausted. Marking as FAILED.", name, maxAttempts);
           failedCatalogs.add(name);
           metrics.refreshFailed(name, e);
         }
       }
+    }
+  }
+
+  /**
+   * Bootstraps a catalog as follower by retrying the SnapshotStore.
+   *
+   * <p>Waits for the leader to upload a new snapshot. On each attempt,
+   * re-checks leadership status so a follower that gets promoted to leader
+   * mid-bootstrap switches to the DataLoader path. Logs a warning every
+   * 10 failed attempts.
+   *
+   * @param name    the catalog name, never null
+   * @param catalog the catalog to bootstrap, never null
+   */
+  private void bootstrapAsFollower(final String name,
+      final Catalog<?> catalog) {
+    final int maxAttempts = retryPolicy.maxRetries() * 10;
+    final Duration backoff = retryPolicy.backoff();
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+
+      // Re-check leadership: if promoted, switch to leader path.
+      if (leaderElection.isLeader()) {
+        log.info("Catalog '{}': follower promoted to leader at attempt {},"
+            + " switching to DataLoader path", name, attempt);
+        bootstrapAsLeader(name, catalog);
+        return;
+      }
+
+      try {
+        if (tryLoadFromSnapshotStore(name, catalog)) {
+          metrics.snapshotLoaded(name, "snapshotStore");
+          return;
+        }
+      } catch (final Exception e) {
+        log.debug("Catalog '{}': follower snapshot store attempt {} failed:"
+            + " {}", name, attempt, e.getMessage());
+      }
+
+      if (attempt % 10 == 0) {
+        log.warn("Catalog '{}': follower waiting for leader to upload "
+            + "snapshot, attempt {}/{}", name, attempt, maxAttempts);
+      }
+
+      if (attempt < maxAttempts) {
+        sleepOrAbort(name, backoff);
+      } else {
+        log.error("Catalog '{}': all {} follower snapshot store attempts "
+            + "exhausted. Marking as FAILED.", name, maxAttempts);
+        failedCatalogs.add(name);
+        metrics.refreshFailed(name,
+            new RuntimeException("Follower bootstrap exhausted for " + name));
+      }
+    }
+  }
+
+  /**
+   * Sleeps for the given duration. If interrupted, marks the catalog as
+   * failed and restores the interrupt flag.
+   *
+   * @param catalogName the catalog name for logging, never null
+   * @param backoff     the duration to sleep, never null
+   */
+  private void sleepOrAbort(final String catalogName,
+      final Duration backoff) {
+    try {
+      Thread.sleep(backoff.toMillis());
+    } catch (final InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      log.error("Bootstrap interrupted for catalog '{}'", catalogName);
+      failedCatalogs.add(catalogName);
+      metrics.refreshFailed(catalogName, ie);
     }
   }
 

@@ -1,8 +1,11 @@
 package org.waabox.andersoni;
 
 import static org.easymock.EasyMock.anyObject;
+import static org.easymock.EasyMock.anyString;
 import static org.easymock.EasyMock.capture;
 import static org.easymock.EasyMock.createMock;
+import static org.easymock.EasyMock.eq;
+import static org.easymock.EasyMock.expect;
 import static org.easymock.EasyMock.expectLastCall;
 import static org.easymock.EasyMock.newCapture;
 import static org.easymock.EasyMock.replay;
@@ -13,13 +16,19 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.easymock.Capture;
 import org.junit.jupiter.api.Test;
 import org.waabox.andersoni.leader.LeaderElectionStrategy;
+import org.waabox.andersoni.metrics.AndersoniMetrics;
+import org.waabox.andersoni.snapshot.SerializedSnapshot;
+import org.waabox.andersoni.snapshot.SnapshotSerializer;
+import org.waabox.andersoni.snapshot.SnapshotStore;
 import org.waabox.andersoni.sync.RefreshEvent;
 import org.waabox.andersoni.sync.RefreshListener;
 import org.waabox.andersoni.sync.SyncStrategy;
@@ -332,16 +341,16 @@ class AndersoniTest {
     final LeaderElectionStrategy leaderElection =
         createMock(LeaderElectionStrategy.class);
 
-    // Expect start lifecycle.
-    syncStrategy.subscribe(anyObject(RefreshListener.class));
-    expectLastCall().once();
-    syncStrategy.start();
-    expectLastCall().once();
-
+    // Expect start lifecycle: leader election starts before sync.
     leaderElection.start();
     expectLastCall().once();
     leaderElection.isLeader();
     expectLastCall().andReturn(true).anyTimes();
+
+    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
 
     // Expect stop lifecycle.
     syncStrategy.stop();
@@ -381,5 +390,273 @@ class AndersoniTest {
         () -> catalogs.add(catalog));
 
     andersoni.stop();
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  void whenBootstrap_givenLeaderAndS3Fails_shouldFallbackToDataLoaderAndSaveToS3() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final SnapshotSerializer<Event> serializer =
+        createMock(SnapshotSerializer.class);
+    final SnapshotStore snapshotStore = createMock(SnapshotStore.class);
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
+
+    // Leader election starts and this node is leader.
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader()).andReturn(true).anyTimes();
+
+    // S3 load returns empty (simulating no snapshot or incompatible).
+    expect(snapshotStore.load("events")).andReturn(Optional.empty()).once();
+
+    // serialize is called twice: once by Catalog.computeHash during
+    // bootstrap, and once by saveSnapshotIfPossible after.
+    expect(serializer.serialize(anyObject(List.class)))
+        .andReturn(new byte[]{1, 2, 3}).times(2);
+    snapshotStore.save(eq("events"), anyObject(SerializedSnapshot.class));
+    expectLastCall().once();
+
+    // Metrics.
+    metrics.snapshotLoaded("events", "dataLoader");
+    expectLastCall().once();
+
+    // Stop.
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(serializer, snapshotStore, leaderElection, metrics);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .serializer(serializer)
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .snapshotStore(snapshotStore)
+        .leaderElection(leaderElection)
+        .metrics(metrics)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    // Verify the catalog was loaded and is searchable.
+    final List<?> results = andersoni.search(
+        "events", "by-sport", "Football");
+    assertEquals(1, results.size());
+
+    andersoni.stop();
+
+    verify(serializer, snapshotStore, leaderElection, metrics);
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  void whenBootstrap_givenFollower_shouldRetryS3UntilSuccess() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final SnapshotSerializer<Event> serializer =
+        createMock(SnapshotSerializer.class);
+    final SnapshotStore snapshotStore = createMock(SnapshotStore.class);
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
+
+    // Leader election starts and this node is a follower.
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader()).andReturn(false).anyTimes();
+
+    // First S3 attempt: returns empty (initial try).
+    // Then follower retries: empty twice, then succeeds on 3rd.
+    final byte[] serializedBytes = new byte[]{1, 2, 3};
+    final SerializedSnapshot snapshot = new SerializedSnapshot(
+        "events", "hash-1", 1L, Instant.now(), serializedBytes);
+
+    expect(snapshotStore.load("events"))
+        .andReturn(Optional.empty())   // initial try in bootstrapWithRetry
+        .andReturn(Optional.empty())   // follower attempt 1
+        .andReturn(Optional.empty())   // follower attempt 2
+        .andReturn(Optional.of(snapshot)); // follower attempt 3
+
+    expect(serializer.deserialize(serializedBytes))
+        .andReturn(List.of(e1)).once();
+
+    // serialize is called by Catalog.computeHash when building the
+    // snapshot from deserialized data.
+    expect(serializer.serialize(anyObject(List.class)))
+        .andReturn(new byte[]{1, 2, 3}).once();
+
+    // Metrics: loaded from snapshot store.
+    metrics.snapshotLoaded("events", "snapshotStore");
+    expectLastCall().once();
+
+    // Stop.
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(serializer, snapshotStore, leaderElection, metrics);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .serializer(serializer)
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .snapshotStore(snapshotStore)
+        .leaderElection(leaderElection)
+        .retryPolicy(RetryPolicy.of(3, Duration.ofMillis(10)))
+        .metrics(metrics)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    // Verify the catalog was loaded from snapshot and is searchable.
+    final List<?> results = andersoni.search(
+        "events", "by-sport", "Football");
+    assertEquals(1, results.size());
+
+    andersoni.stop();
+
+    verify(serializer, snapshotStore, leaderElection, metrics);
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  void whenBootstrap_givenFollowerPromotedToLeader_shouldSwitchToDataLoader() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final SnapshotSerializer<Event> serializer =
+        createMock(SnapshotSerializer.class);
+    final SnapshotStore snapshotStore = createMock(SnapshotStore.class);
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
+
+    // Leader election starts, initially this node is a follower.
+    leaderElection.start();
+    expectLastCall().once();
+
+    // Initial S3 try returns empty.
+    expect(snapshotStore.load("events"))
+        .andReturn(Optional.empty()).once();
+
+    // First isLeader check: false (enters follower path).
+    // Second isLeader check inside follower loop: true (promoted!).
+    expect(leaderElection.isLeader())
+        .andReturn(false)    // role check -> follower
+        .andReturn(true);    // re-check in follower loop -> promoted
+
+    // After promotion, leader calls DataLoader and saves to S3.
+    // serialize is called twice: once by computeHash, once by
+    // saveSnapshotIfPossible.
+    expect(serializer.serialize(anyObject(List.class)))
+        .andReturn(new byte[]{1, 2, 3}).times(2);
+    snapshotStore.save(eq("events"), anyObject(SerializedSnapshot.class));
+    expectLastCall().once();
+
+    metrics.snapshotLoaded("events", "dataLoader");
+    expectLastCall().once();
+
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(serializer, snapshotStore, leaderElection, metrics);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .serializer(serializer)
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .snapshotStore(snapshotStore)
+        .leaderElection(leaderElection)
+        .retryPolicy(RetryPolicy.of(3, Duration.ofMillis(10)))
+        .metrics(metrics)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final List<?> results = andersoni.search(
+        "events", "by-sport", "Football");
+    assertEquals(1, results.size());
+
+    andersoni.stop();
+
+    verify(serializer, snapshotStore, leaderElection, metrics);
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  void whenBootstrap_givenFollowerWaiting_shouldLogWarningEvery10Attempts() {
+    final SnapshotSerializer<Event> serializer =
+        createMock(SnapshotSerializer.class);
+    final SnapshotStore snapshotStore = createMock(SnapshotStore.class);
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
+
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader()).andReturn(false).anyTimes();
+
+    // S3 always returns empty: exhaust all 30 attempts (maxRetries=3 * 10).
+    expect(snapshotStore.load("events"))
+        .andReturn(Optional.empty()).anyTimes();
+
+    // Expect failure metric when all attempts exhausted.
+    metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
+    expectLastCall().once();
+
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(serializer, snapshotStore, leaderElection, metrics);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of())
+        .serializer(serializer)
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .snapshotStore(snapshotStore)
+        .leaderElection(leaderElection)
+        .retryPolicy(RetryPolicy.of(3, Duration.ofMillis(1)))
+        .metrics(metrics)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    // Catalog should be marked as failed.
+    assertThrows(CatalogNotAvailableException.class,
+        () -> andersoni.search("events", "by-sport", "Football"));
+
+    andersoni.stop();
+
+    verify(serializer, snapshotStore, leaderElection, metrics);
   }
 }
