@@ -1,6 +1,5 @@
 package org.waabox.andersoni;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -32,7 +31,7 @@ public record CatalogInfo(String catalogName, int itemCount,
   public CatalogInfo {
     Objects.requireNonNull(catalogName, "catalogName must not be null");
     Objects.requireNonNull(indices, "indices must not be null");
-    indices = Collections.unmodifiableList(List.copyOf(indices));
+    indices = List.copyOf(indices);
   }
 
   /**

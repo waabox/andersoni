@@ -303,6 +303,7 @@ public final class Andersoni {
     }
     final Catalog<?> catalog = requireCatalog(catalogName);
     catalog.refresh();
+    reportIndexSizes(catalog);
   }
 
   /**

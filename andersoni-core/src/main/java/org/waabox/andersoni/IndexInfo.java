@@ -19,7 +19,8 @@ import java.util.Objects;
 public record IndexInfo(String name, int uniqueKeys, int totalEntries,
     long estimatedSizeBytes) {
 
-  /** Creates a new IndexInfo instance.
+  /**
+   * Creates a new IndexInfo instance.
    *
    * @param name               the index name, never null
    * @param uniqueKeys         the number of distinct keys
