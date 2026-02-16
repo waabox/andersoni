@@ -35,7 +35,7 @@ mvn clean package
 
 ```bash
 export KUBECONFIG=$(ls -t /tmp/andersoni-kubeconfig-* | head -1)
-java -jar target/andersoni-admin-1.0.0.jar
+mvn spring-boot:run
 ```
 
 Open http://localhost:9090
