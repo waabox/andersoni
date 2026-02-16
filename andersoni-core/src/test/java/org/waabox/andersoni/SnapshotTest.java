@@ -213,4 +213,80 @@ class SnapshotTest {
     assertThrows(NullPointerException.class,
         () -> snapshot.search("index", null));
   }
+
+  @Test
+  void whenComputingIndexInfo_givenPopulatedIndices_shouldReturnCorrectStats() {
+    final List<String> data = List.of("alpha", "beta", "gamma", "delta");
+
+    final Map<Object, List<String>> byLength = new HashMap<>();
+    byLength.put(4, List.of("beta"));
+    byLength.put(5, List.of("alpha", "gamma", "delta"));
+
+    final Map<Object, List<String>> byFirst = new HashMap<>();
+    byFirst.put("a", List.of("alpha"));
+    byFirst.put("b", List.of("beta"));
+    byFirst.put("g", List.of("gamma"));
+    byFirst.put("d", List.of("delta"));
+
+    final Map<String, Map<Object, List<String>>> indices = new HashMap<>();
+    indices.put("byLength", byLength);
+    indices.put("byFirst", byFirst);
+
+    final Snapshot<String> snapshot = Snapshot.of(data, indices, 1L, "hash");
+
+    final List<IndexInfo> infos = snapshot.indexInfo();
+
+    assertEquals(2, infos.size());
+
+    final IndexInfo byLengthInfo = infos.stream()
+        .filter(i -> "byLength".equals(i.name())).findFirst().orElseThrow();
+    assertEquals(2, byLengthInfo.uniqueKeys());
+    assertEquals(4, byLengthInfo.totalEntries());
+    assertTrue(byLengthInfo.estimatedSizeBytes() > 0);
+
+    final IndexInfo byFirstInfo = infos.stream()
+        .filter(i -> "byFirst".equals(i.name())).findFirst().orElseThrow();
+    assertEquals(4, byFirstInfo.uniqueKeys());
+    assertEquals(4, byFirstInfo.totalEntries());
+    assertTrue(byFirstInfo.estimatedSizeBytes() > 0);
+    assertTrue(byFirstInfo.estimatedSizeBytes() > byLengthInfo.estimatedSizeBytes(),
+        "Index with more unique keys should have larger estimated size");
+  }
+
+  @Test
+  void whenComputingIndexInfo_givenEmptySnapshot_shouldReturnEmptyList() {
+    final Snapshot<String> snapshot = Snapshot.empty();
+    final List<IndexInfo> infos = snapshot.indexInfo();
+    assertNotNull(infos);
+    assertTrue(infos.isEmpty());
+  }
+
+  @Test
+  void whenComputingIndexInfo_givenStringKeys_shouldEstimateLargerThanIntegerKeys() {
+    final List<String> data = List.of("alpha", "beta");
+
+    final Map<Object, List<String>> byString = new HashMap<>();
+    byString.put("longKeyNameHere", List.of("alpha"));
+    byString.put("anotherLongKey", List.of("beta"));
+
+    final Map<Object, List<String>> byInt = new HashMap<>();
+    byInt.put(1, List.of("alpha"));
+    byInt.put(2, List.of("beta"));
+
+    final Map<String, Map<Object, List<String>>> indices = new HashMap<>();
+    indices.put("byString", byString);
+    indices.put("byInt", byInt);
+
+    final Snapshot<String> snapshot = Snapshot.of(data, indices, 1L, "hash");
+
+    final List<IndexInfo> infos = snapshot.indexInfo();
+
+    final IndexInfo stringInfo = infos.stream()
+        .filter(i -> "byString".equals(i.name())).findFirst().orElseThrow();
+    final IndexInfo intInfo = infos.stream()
+        .filter(i -> "byInt".equals(i.name())).findFirst().orElseThrow();
+
+    assertTrue(stringInfo.estimatedSizeBytes() > intInfo.estimatedSizeBytes(),
+        "String keys should produce a larger estimated size than Integer keys");
+  }
 }
