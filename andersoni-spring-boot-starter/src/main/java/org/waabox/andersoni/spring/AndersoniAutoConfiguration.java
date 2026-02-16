@@ -1,6 +1,7 @@
 package org.waabox.andersoni.spring;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,6 +73,9 @@ public class AndersoniAutoConfiguration {
       final ObjectProvider<AndersoniMetrics> metricsProvider,
       final ObjectProvider<RetryPolicy> retryPolicyProvider,
       final List<CatalogRegistrar> catalogRegistrars) {
+
+    requireAtMostOne(syncStrategyProvider, SyncStrategy.class);
+    requireAtMostOne(snapshotStoreProvider, SnapshotStore.class);
 
     final Andersoni.Builder builder = Andersoni.builder();
 
@@ -169,5 +173,36 @@ public class AndersoniAutoConfiguration {
         return Integer.MAX_VALUE - 1;
       }
     };
+  }
+
+  /**
+   * Validates that at most one bean of the given type is present in the
+   * application context.
+   *
+   * <p>Andersoni supports exactly one instance of each strategy bean. If
+   * multiple beans are found, this method throws an
+   * {@link IllegalStateException} with a clear error message listing the
+   * conflicting bean classes.
+   *
+   * @param provider the object provider to validate, never null
+   * @param type     the bean type for error reporting, never null
+   * @param <T>      the bean type
+   *
+   * @throws IllegalStateException if more than one bean of the given type
+   *                               is present
+   */
+  private <T> void requireAtMostOne(final ObjectProvider<T> provider,
+      final Class<T> type) {
+
+    final List<String> beanNames = provider.orderedStream()
+        .map(bean -> bean.getClass().getSimpleName())
+        .collect(Collectors.toList());
+
+    if (beanNames.size() > 1) {
+      throw new IllegalStateException(
+          "Andersoni requires at most one " + type.getSimpleName()
+              + " bean, but found " + beanNames.size() + ": "
+              + String.join(", ", beanNames));
+    }
   }
 }
