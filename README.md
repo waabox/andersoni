@@ -123,12 +123,12 @@ Add the starter and your preferred sync strategy:
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-spring-boot-starter</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 </dependency>
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-sync-kafka</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 
