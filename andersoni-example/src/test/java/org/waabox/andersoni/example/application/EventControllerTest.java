@@ -121,6 +121,21 @@ class EventControllerTest {
       assertNotNull(info.get("hash"));
       assertNotNull(info.get("createdAt"));
       assertEquals(2, info.get("itemCount"));
+
+      // Verify index size info is present.
+      assertNotNull(info.get("totalEstimatedSizeMB"));
+      assertTrue((double) info.get("totalEstimatedSizeMB") > 0);
+
+      @SuppressWarnings("unchecked")
+      final List<Map<String, Object>> indices =
+          (List<Map<String, Object>>) info.get("indices");
+      assertEquals(3, indices.size());
+
+      final Map<String, Object> firstIndex = indices.get(0);
+      assertNotNull(firstIndex.get("name"));
+      assertNotNull(firstIndex.get("uniqueKeys"));
+      assertNotNull(firstIndex.get("totalEntries"));
+      assertNotNull(firstIndex.get("estimatedSizeMB"));
     } finally {
       andersoni.stop();
     }

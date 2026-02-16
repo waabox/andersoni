@@ -166,6 +166,32 @@
                 {{ node.info.createdAt }}
               </span>
             </div>
+            <div v-if="node.info.totalEstimatedSizeMB != null"
+              class="flex justify-between">
+              <span>Total Index Size</span>
+              <span class="font-mono text-gray-800">
+                {{ formatMB(node.info.totalEstimatedSizeMB) }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Per-index details -->
+          <div v-if="node.info.indices && node.info.indices.length"
+            class="mt-2 pt-2 border-t border-gray-50">
+            <div class="text-xs font-medium text-gray-500 mb-1">Indices</div>
+            <div v-for="idx in node.info.indices" :key="idx.name"
+              class="flex items-center justify-between text-xs text-gray-600
+                     py-0.5">
+              <span class="font-mono">{{ idx.name }}</span>
+              <span class="flex gap-3">
+                <span :title="'Unique keys'">
+                  {{ formatNumber(idx.uniqueKeys) }} keys
+                </span>
+                <span class="font-mono text-gray-800">
+                  {{ formatMB(idx.estimatedSizeMB) }}
+                </span>
+              </span>
+            </div>
           </div>
         </div>
 
@@ -287,11 +313,17 @@ createApp({
       return n.toLocaleString();
     }
 
+    function formatMB(mb) {
+      if (mb == null) return '-';
+      if (mb < 0.01) return '< 0.01 MB';
+      return mb.toFixed(2) + ' MB';
+    }
+
     return {
       namespace, labelSelector, cluster, loading, error,
       lastUpdated, autoRefresh, fetchCluster,
       borderClass, dotClass, statusTextClass,
-      truncate, formatNumber,
+      truncate, formatNumber, formatMB,
     };
   },
 }).mount('#app');

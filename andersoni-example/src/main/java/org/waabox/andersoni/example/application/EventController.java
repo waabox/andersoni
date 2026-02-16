@@ -7,9 +7,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import org.waabox.andersoni.Andersoni;
-import org.waabox.andersoni.Snapshot;
+import org.waabox.andersoni.CatalogInfo;
+import org.waabox.andersoni.IndexInfo;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -92,29 +95,44 @@ public class EventController {
    *   <li>{@code hash} - the content hash of the current snapshot</li>
    *   <li>{@code createdAt} - when the current snapshot was created</li>
    *   <li>{@code itemCount} - the number of events in the snapshot</li>
+   *   <li>{@code indices} - per-index statistics including estimated
+   *       memory size in MB</li>
+   *   <li>{@code totalEstimatedSizeMB} - total estimated memory for all
+   *       indices</li>
    * </ul>
    *
-   * <p>If the events catalog is not found or has no snapshot, only
-   * the {@code nodeId} is returned.
+   * <p>If the events catalog is not found, only the {@code nodeId} is
+   * returned.
    *
    * @return a map containing the catalog metadata, never null
    */
   @GetMapping("/info")
   public Map<String, Object> info() {
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
     result.put("nodeId", andersoni.nodeId());
 
     andersoni.catalogs().stream()
         .filter(c -> CATALOG_NAME.equals(c.name()))
         .findFirst()
         .ifPresent(catalog -> {
-          final Snapshot<?> snapshot = catalog.currentSnapshot();
-          if (snapshot != null) {
-            result.put("version", snapshot.version());
-            result.put("hash", snapshot.hash());
-            result.put("createdAt", snapshot.createdAt());
-            result.put("itemCount", snapshot.data().size());
+          final CatalogInfo catalogInfo = catalog.info();
+          result.put("version", catalog.currentSnapshot().version());
+          result.put("hash", catalog.currentSnapshot().hash());
+          result.put("createdAt", catalog.currentSnapshot().createdAt());
+          result.put("itemCount", catalogInfo.itemCount());
+          result.put("totalEstimatedSizeMB",
+              catalogInfo.totalEstimatedSizeMB());
+
+          final List<Map<String, Object>> indexList = new ArrayList<>();
+          for (final IndexInfo idx : catalogInfo.indices()) {
+            final Map<String, Object> indexMap = new LinkedHashMap<>();
+            indexMap.put("name", idx.name());
+            indexMap.put("uniqueKeys", idx.uniqueKeys());
+            indexMap.put("totalEntries", idx.totalEntries());
+            indexMap.put("estimatedSizeMB", idx.estimatedSizeMB());
+            indexList.add(indexMap);
           }
+          result.put("indices", indexList);
         });
 
     return result;
