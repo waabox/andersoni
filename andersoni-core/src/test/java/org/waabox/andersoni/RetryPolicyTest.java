@@ -45,4 +45,25 @@ class RetryPolicyTest {
     assertEquals(3, policy.maxRetries());
     assertEquals(Duration.ofSeconds(2), policy.backoff());
   }
+
+  @Test
+  void whenCreating_givenNegativeRetries_shouldThrow() {
+    assertThrows(IllegalArgumentException.class, () ->
+        RetryPolicy.of(-1, Duration.ofSeconds(1))
+    );
+  }
+
+  @Test
+  void whenCreating_givenNegativeBackoff_shouldThrow() {
+    assertThrows(IllegalArgumentException.class, () ->
+        RetryPolicy.of(3, Duration.ofSeconds(-5))
+    );
+  }
+
+  @Test
+  void whenCreating_givenZeroBackoff_shouldThrow() {
+    assertThrows(IllegalArgumentException.class, () ->
+        RetryPolicy.of(3, Duration.ZERO)
+    );
+  }
 }

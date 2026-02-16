@@ -158,7 +158,13 @@ public final class IndexDefinition<T> {
       Objects.requireNonNull(first, "first function must not be null");
       Objects.requireNonNull(second, "second function must not be null");
 
-      final Function<T, ?> composed = first.andThen(second);
+      final Function<T, ?> composed = item -> {
+        final I intermediate = first.apply(item);
+        if (intermediate == null) {
+          return null;
+        }
+        return second.apply(intermediate);
+      };
       return new IndexDefinition<>(name, composed);
     }
   }

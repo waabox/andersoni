@@ -87,6 +87,12 @@ public final class Andersoni {
   /** The set of catalog names that failed to bootstrap. */
   private final Set<String> failedCatalogs;
 
+  /** Whether this instance has been started. */
+  private volatile boolean started;
+
+  /** Whether this instance has been stopped. */
+  private volatile boolean stopped;
+
   /** The scheduled executor for periodic refresh tasks. */
   private ScheduledExecutorService scheduler;
 
@@ -156,6 +162,11 @@ public final class Andersoni {
   public void register(final Catalog<?> catalog) {
     Objects.requireNonNull(catalog, "catalog must not be null");
 
+    if (started) {
+      throw new IllegalStateException(
+          "Cannot register catalogs after start() has been called");
+    }
+
     final String name = catalog.name();
     final Catalog<?> existing = catalogsByName.putIfAbsent(name, catalog);
     if (existing != null) {
@@ -194,6 +205,11 @@ public final class Andersoni {
    * </ul>
    */
   public void start() {
+    if (started) {
+      throw new IllegalStateException(
+          "Andersoni has already been started");
+    }
+    started = true;
     leaderElection.start();
     bootstrapAllCatalogs();
     wireSyncListener();
@@ -215,6 +231,10 @@ public final class Andersoni {
    */
   public List<?> search(final String catalogName, final String indexName,
       final Object key) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+
     final Catalog<?> catalog = requireCatalog(catalogName);
 
     if (failedCatalogs.contains(catalogName)) {
@@ -239,6 +259,11 @@ public final class Andersoni {
    *                                  is registered
    */
   public void refreshAndSync(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    if (stopped) {
+      throw new IllegalStateException(
+          "Cannot refresh after stop() has been called");
+    }
     final Catalog<?> catalog = requireCatalog(catalogName);
 
     catalog.refresh();
@@ -270,6 +295,11 @@ public final class Andersoni {
    *                                  is registered
    */
   public void refresh(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    if (stopped) {
+      throw new IllegalStateException(
+          "Cannot refresh after stop() has been called");
+    }
     final Catalog<?> catalog = requireCatalog(catalogName);
     catalog.refresh();
   }
@@ -281,6 +311,11 @@ public final class Andersoni {
    * strategy and leader election, and clears internal state.
    */
   public void stop() {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+
     cancelScheduledRefreshes();
 
     if (syncStrategy != null) {
@@ -404,7 +439,8 @@ public final class Andersoni {
    */
   private void bootstrapAsFollower(final String name,
       final Catalog<?> catalog) {
-    final int maxAttempts = retryPolicy.maxRetries() * 10;
+    final int maxAttempts = Math.min(retryPolicy.maxRetries(),
+        Integer.MAX_VALUE / 10) * 10;
     final Duration backoff = retryPolicy.backoff();
 
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {

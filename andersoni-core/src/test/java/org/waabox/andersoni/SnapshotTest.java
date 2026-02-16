@@ -129,4 +129,88 @@ class SnapshotTest {
     assertNotNull(result);
     assertTrue(result.isEmpty());
   }
+
+  @Test
+  void whenCreating_givenNullData_shouldThrowNpe() {
+    final Map<String, Map<Object, List<String>>> indices = new HashMap<>();
+
+    assertThrows(NullPointerException.class, () ->
+        Snapshot.of(null, indices, 1L, "hash")
+    );
+  }
+
+  @Test
+  void whenCreating_givenNullIndices_shouldThrowNpe() {
+    final List<String> data = List.of("alpha");
+
+    assertThrows(NullPointerException.class, () ->
+        Snapshot.of(data, null, 1L, "hash")
+    );
+  }
+
+  @Test
+  void whenCreating_givenNullHash_shouldThrowNpe() {
+    final List<String> data = List.of("alpha");
+    final Map<String, Map<Object, List<String>>> indices = new HashMap<>();
+
+    assertThrows(NullPointerException.class, () ->
+        Snapshot.of(data, indices, 1L, null)
+    );
+  }
+
+  @Test
+  void whenCreating_givenMutableData_shouldDefensivelyCopy() {
+    final List<String> mutableData = new java.util.ArrayList<>(
+        List.of("alpha", "beta"));
+
+    final Map<String, Map<Object, List<String>>> indices = new HashMap<>();
+
+    final Snapshot<String> snapshot = Snapshot.of(
+        mutableData, indices, 1L, "hash");
+
+    mutableData.add("gamma");
+
+    assertEquals(2, snapshot.data().size(),
+        "Mutating the original data should not affect the snapshot");
+  }
+
+  @Test
+  void whenCreating_givenMutableIndices_shouldDefensivelyCopy() {
+    final List<String> data = List.of("alpha", "beta");
+
+    final Map<Object, List<String>> innerMap = new HashMap<>();
+    innerMap.put("key", List.of("alpha"));
+
+    final Map<String, Map<Object, List<String>>> indices = new HashMap<>();
+    indices.put("byKey", innerMap);
+
+    final Snapshot<String> snapshot = Snapshot.of(data, indices, 1L, "hash");
+
+    indices.put("injected", new HashMap<>());
+    innerMap.put("injected-key", List.of("beta"));
+
+    assertEquals(1, snapshot.search("byKey", "key").size());
+    assertTrue(snapshot.search("injected", "anything").isEmpty(),
+        "Mutating the original indices should not affect the snapshot");
+    assertTrue(snapshot.search("byKey", "injected-key").isEmpty(),
+        "Mutating the original inner map should not affect the snapshot");
+  }
+
+  @Test
+  void whenSearching_givenNullIndexName_shouldThrowNpe() {
+    final Snapshot<String> snapshot = Snapshot.of(
+        List.of("alpha"), new HashMap<>(), 1L, "hash");
+
+    assertThrows(NullPointerException.class,
+        () -> snapshot.search(null, "key"));
+  }
+
+  @Test
+  void whenSearching_givenNullKey_shouldThrowNpe() {
+    final Snapshot<String> snapshot = Snapshot.of(
+        List.of("alpha"), new HashMap<>(), 1L, "hash");
+
+    assertThrows(NullPointerException.class,
+        () -> snapshot.search("index", null));
+  }
 }

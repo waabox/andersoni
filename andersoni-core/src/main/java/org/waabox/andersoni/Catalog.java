@@ -60,6 +60,10 @@ public final class Catalog<T> {
   /** The hex characters used for hash string conversion. */
   private static final char[] HEX_CHARS = "0123456789abcdef".toCharArray();
 
+  /** Delimiter byte used to separate items in hash computation, preventing
+   *  collisions between concatenated toString() representations. */
+  private static final byte[] ITEM_DELIMITER = new byte[]{0x00};
+
   /** The current snapshot, atomically swapped on refresh. */
   private final AtomicReference<Snapshot<T>> current;
 
@@ -147,6 +151,9 @@ public final class Catalog<T> {
       final List<T> data;
       if (dataLoader != null) {
         data = dataLoader.load();
+        Objects.requireNonNull(data,
+            "DataLoader.load() must not return null for catalog '"
+                + name + "'");
       } else {
         data = initialData;
       }
@@ -176,6 +183,9 @@ public final class Catalog<T> {
     refreshLock.lock();
     try {
       final List<T> data = dataLoader.load();
+      Objects.requireNonNull(data,
+          "DataLoader.load() must not return null for catalog '"
+              + name + "'");
       buildAndSwapSnapshot(data);
     } finally {
       refreshLock.unlock();
@@ -214,6 +224,8 @@ public final class Catalog<T> {
    * @return an unmodifiable list of matching items, never null
    */
   public List<T> search(final String indexName, final Object key) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
     return current.get().search(indexName, key);
   }
 
@@ -309,6 +321,7 @@ public final class Catalog<T> {
           final byte[] bytes = item.toString()
               .getBytes(StandardCharsets.UTF_8);
           digest.update(bytes);
+          digest.update(ITEM_DELIMITER);
         }
       }
 
@@ -441,6 +454,9 @@ public final class Catalog<T> {
     /** The accumulated index definitions. */
     private final List<IndexDefinition<T>> indexDefinitions;
 
+    /** The set of registered index names for duplicate detection. */
+    private final java.util.Set<String> indexNames;
+
     /**
      * Creates a new BuildStep.
      *
@@ -455,6 +471,7 @@ public final class Catalog<T> {
       this.dataLoader = dataLoader;
       this.initialData = initialData;
       this.indexDefinitions = new ArrayList<>();
+      this.indexNames = new java.util.HashSet<>();
     }
 
     /**
@@ -533,8 +550,15 @@ public final class Catalog<T> {
      * by {@link IndexStep}.
      *
      * @param indexDefinition the index definition to add, never null
+     *
+     * @throws IllegalArgumentException if an index with the same name
+     *                                  has already been added
      */
     void addIndex(final IndexDefinition<T> indexDefinition) {
+      if (!indexNames.add(indexDefinition.name())) {
+        throw new IllegalArgumentException(
+            "Duplicate index name: '" + indexDefinition.name() + "'");
+      }
       indexDefinitions.add(indexDefinition);
     }
   }

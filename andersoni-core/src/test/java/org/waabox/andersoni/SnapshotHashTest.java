@@ -134,4 +134,109 @@ class SnapshotHashTest {
     assertEquals(hashAfterBootstrap, hashAfterRefresh,
         "Refreshing with the same data must produce the same hash");
   }
+
+  @Test
+  void whenBootstrapping_givenDifferentOrder_shouldProduceDifferentHash() {
+    final Category tools = new Category("Tools");
+    final Category paint = new Category("Paint");
+    final Product hammer = new Product("HAMMER-01", tools);
+    final Product brush = new Product("BRUSH-01", paint);
+
+    final Catalog<Product> catalog1 = Catalog.of(Product.class)
+        .named("order-1")
+        .data(List.of(hammer, brush))
+        .index("by-category").by(Product::category, Category::name)
+        .build();
+
+    final Catalog<Product> catalog2 = Catalog.of(Product.class)
+        .named("order-2")
+        .data(List.of(brush, hammer))
+        .index("by-category").by(Product::category, Category::name)
+        .build();
+
+    catalog1.bootstrap();
+    catalog2.bootstrap();
+
+    final String hash1 = catalog1.currentSnapshot().hash();
+    final String hash2 = catalog2.currentSnapshot().hash();
+
+    assertNotEquals(hash1, hash2,
+        "Different item order must produce different hashes");
+  }
+
+  @Test
+  void whenBootstrapping_givenEmptyData_shouldProduceConsistentHash() {
+    final Catalog<Product> catalog1 = Catalog.of(Product.class)
+        .named("empty-1")
+        .data(List.of())
+        .index("by-category").by(Product::category, Category::name)
+        .build();
+
+    final Catalog<Product> catalog2 = Catalog.of(Product.class)
+        .named("empty-2")
+        .data(List.of())
+        .index("by-category").by(Product::category, Category::name)
+        .build();
+
+    catalog1.bootstrap();
+    catalog2.bootstrap();
+
+    final String hash1 = catalog1.currentSnapshot().hash();
+    final String hash2 = catalog2.currentSnapshot().hash();
+
+    assertNotNull(hash1);
+    assertFalse(hash1.isEmpty());
+    assertEquals(hash1, hash2,
+        "Empty data must produce the same hash deterministically");
+  }
+
+  @Test
+  void whenBootstrapping_givenConcatenationAmbiguity_shouldProduceDifferentHashes() {
+    // Without separators, "ab" + "cd" and "a" + "bcd" would be the same.
+    record SimpleItem(String value) {
+      @Override
+      public String toString() {
+        return value;
+      }
+    }
+
+    final Catalog<SimpleItem> catalog1 = Catalog.of(SimpleItem.class)
+        .named("concat-1")
+        .data(List.of(new SimpleItem("ab"), new SimpleItem("cd")))
+        .index("by-value").by(i -> i, SimpleItem::value)
+        .build();
+
+    final Catalog<SimpleItem> catalog2 = Catalog.of(SimpleItem.class)
+        .named("concat-2")
+        .data(List.of(new SimpleItem("a"), new SimpleItem("bcd")))
+        .index("by-value").by(i -> i, SimpleItem::value)
+        .build();
+
+    catalog1.bootstrap();
+    catalog2.bootstrap();
+
+    assertNotEquals(catalog1.currentSnapshot().hash(),
+        catalog2.currentSnapshot().hash(),
+        "Items with concatenation ambiguity must produce different hashes");
+  }
+
+  @Test
+  void whenBootstrapping_givenSingleItem_shouldProduceValidHash() {
+    final Category tools = new Category("Tools");
+    final Product hammer = new Product("HAMMER-01", tools);
+
+    final Catalog<Product> catalog = Catalog.of(Product.class)
+        .named("single-item")
+        .data(List.of(hammer))
+        .index("by-category").by(Product::category, Category::name)
+        .build();
+
+    catalog.bootstrap();
+
+    final String hash = catalog.currentSnapshot().hash();
+    assertNotNull(hash);
+    assertFalse(hash.isEmpty());
+    assertEquals(64, hash.length(),
+        "SHA-256 hex string must be 64 characters");
+  }
 }

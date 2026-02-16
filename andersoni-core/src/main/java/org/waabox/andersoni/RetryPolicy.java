@@ -59,6 +59,10 @@ public final class RetryPolicy {
           "maxRetries must be greater than 0, got: " + maxRetries);
     }
     Objects.requireNonNull(backoff, "backoff must not be null");
+    if (backoff.isNegative() || backoff.isZero()) {
+      throw new IllegalArgumentException(
+          "backoff must be a positive duration, got: " + backoff);
+    }
     return new RetryPolicy(maxRetries, backoff);
   }
 

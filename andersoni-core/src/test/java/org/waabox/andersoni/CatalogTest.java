@@ -340,4 +340,238 @@ class CatalogTest {
     assertNotNull(catalogWithout.currentSnapshot().hash());
     assertFalse(catalogWithout.currentSnapshot().hash().isEmpty());
   }
+
+  // --- Corner case tests ---
+
+  @Test
+  void whenBuilding_givenNullType_shouldThrowNpe() {
+    assertThrows(NullPointerException.class, () ->
+        Catalog.of(null)
+    );
+  }
+
+  @Test
+  void whenBuilding_givenNullName_shouldThrowNpe() {
+    assertThrows(NullPointerException.class, () ->
+        Catalog.of(Event.class).named(null)
+    );
+  }
+
+  @Test
+  void whenBuilding_givenEmptyName_shouldThrowIllegalArgument() {
+    assertThrows(IllegalArgumentException.class, () ->
+        Catalog.of(Event.class).named("")
+    );
+  }
+
+  @Test
+  void whenBuilding_givenNullDataLoader_shouldThrowNpe() {
+    assertThrows(NullPointerException.class, () ->
+        Catalog.of(Event.class)
+            .named("events")
+            .loadWith(null)
+    );
+  }
+
+  @Test
+  void whenBuilding_givenNullStaticData_shouldThrowNpe() {
+    assertThrows(NullPointerException.class, () ->
+        Catalog.of(Event.class)
+            .named("events")
+            .data(null)
+    );
+  }
+
+  @Test
+  void whenBuilding_givenNoIndices_shouldThrowIllegalState() {
+    assertThrows(IllegalStateException.class, () ->
+        Catalog.of(Event.class)
+            .named("events")
+            .data(List.of())
+            .build()
+    );
+  }
+
+  @Test
+  void whenBuilding_givenNullSerializer_shouldThrowNpe() {
+    assertThrows(NullPointerException.class, () ->
+        Catalog.of(Event.class)
+            .named("events")
+            .data(List.of())
+            .serializer(null)
+    );
+  }
+
+  @Test
+  void whenBuilding_givenNullRefreshInterval_shouldThrowNpe() {
+    assertThrows(NullPointerException.class, () ->
+        Catalog.of(Event.class)
+            .named("events")
+            .data(List.of())
+            .refreshEvery(null)
+    );
+  }
+
+  @Test
+  void whenBuilding_givenNullIndexName_shouldThrowNpe() {
+    assertThrows(NullPointerException.class, () ->
+        Catalog.of(Event.class)
+            .named("events")
+            .data(List.of())
+            .index(null)
+    );
+  }
+
+  @Test
+  void whenBuilding_givenEmptyIndexName_shouldThrowIllegalArgument() {
+    assertThrows(IllegalArgumentException.class, () ->
+        Catalog.of(Event.class)
+            .named("events")
+            .data(List.of())
+            .index("")
+    );
+  }
+
+  @Test
+  void whenBootstrapping_givenDataLoaderReturnsNull_shouldThrowNpeWithMessage() {
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> null)
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+
+    final NullPointerException exception = assertThrows(
+        NullPointerException.class, catalog::bootstrap);
+    assertTrue(exception.getMessage().contains("events"),
+        "Exception message should contain the catalog name");
+  }
+
+  @Test
+  void whenBootstrapping_givenDataLoaderThrows_shouldPreservePreviousState() {
+    final Event e1 = new Event("1", new Sport("Football"),
+        new Venue("Maracana"));
+
+    final boolean[] shouldThrow = {false};
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          if (shouldThrow[0]) {
+            throw new RuntimeException("DataLoader failure");
+          }
+          return List.of(e1);
+        })
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+
+    catalog.bootstrap();
+    assertEquals(1L, catalog.currentSnapshot().version());
+    assertEquals(1, catalog.currentSnapshot().data().size());
+
+    shouldThrow[0] = true;
+
+    assertThrows(RuntimeException.class, catalog::refresh);
+
+    assertEquals(1L, catalog.currentSnapshot().version(),
+        "Version should remain unchanged after failed refresh");
+    assertEquals(1, catalog.currentSnapshot().data().size(),
+        "Data should remain unchanged after failed refresh");
+  }
+
+  @Test
+  void whenRefreshing_givenNullData_shouldThrowNpe() {
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(new Event("1", new Sport("Football"),
+            new Venue("Maracana"))))
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+
+    catalog.bootstrap();
+
+    assertThrows(NullPointerException.class, () ->
+        catalog.refresh(null)
+    );
+  }
+
+  @Test
+  void whenRefreshing_givenEmptyData_shouldSwapToEmptySnapshot() {
+    final Event e1 = new Event("1", new Sport("Football"),
+        new Venue("Maracana"));
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+
+    catalog.bootstrap();
+    assertEquals(1, catalog.currentSnapshot().data().size());
+
+    catalog.refresh(List.of());
+
+    assertEquals(2L, catalog.currentSnapshot().version());
+    assertTrue(catalog.currentSnapshot().data().isEmpty());
+    assertTrue(catalog.search("by-venue", "Maracana").isEmpty());
+  }
+
+  @Test
+  void whenBuilding_givenStaticData_shouldDefensivelyCopy() {
+    final Event e1 = new Event("1", new Sport("Football"),
+        new Venue("Maracana"));
+
+    final List<Event> mutableData = new ArrayList<>(List.of(e1));
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(mutableData)
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+
+    mutableData.add(new Event("2", new Sport("Rugby"),
+        new Venue("Wembley")));
+
+    catalog.bootstrap();
+
+    assertEquals(1, catalog.currentSnapshot().data().size(),
+        "Mutating the original list should not affect the catalog");
+  }
+
+  @Test
+  void whenBuilding_givenDuplicateIndexName_shouldThrowIllegalArgument() {
+    assertThrows(IllegalArgumentException.class, () ->
+        Catalog.of(Event.class)
+            .named("events")
+            .data(List.of())
+            .index("by-venue").by(Event::venue, Venue::name)
+            .index("by-venue").by(Event::sport, Sport::name)
+            .build()
+    );
+  }
+
+  @Test
+  void whenSearching_givenNullIndexName_shouldThrowNpe() {
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+
+    assertThrows(NullPointerException.class,
+        () -> catalog.search(null, "key"));
+  }
+
+  @Test
+  void whenSearching_givenNullKey_shouldThrowNpe() {
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+
+    assertThrows(NullPointerException.class,
+        () -> catalog.search("by-venue", null));
+  }
 }

@@ -125,6 +125,8 @@ public final class Snapshot<T> {
    * @return an unmodifiable list of matching items, never null
    */
   public List<T> search(final String indexName, final Object key) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
     final Map<Object, List<T>> index = indices.get(indexName);
     if (index == null) {
       return Collections.emptyList();

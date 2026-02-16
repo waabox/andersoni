@@ -1,6 +1,7 @@
 package org.waabox.andersoni.leader;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -43,6 +44,7 @@ public class SingleNodeLeaderElection implements LeaderElectionStrategy {
   /** {@inheritDoc} */
   @Override
   public void onLeaderChange(final LeaderChangeListener listener) {
+    Objects.requireNonNull(listener, "listener must not be null");
     listeners.add(listener);
   }
 
