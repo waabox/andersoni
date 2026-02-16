@@ -32,4 +32,10 @@ public class NoopAndersoniMetrics implements AndersoniMetrics {
   @Override
   public void refreshFailed(final String catalogName, final Throwable cause) {
   }
+
+  /** {@inheritDoc} */
+  @Override
+  public void indexSizeReported(final String catalogName,
+      final String indexName, final long estimatedSizeBytes) {
+  }
 }

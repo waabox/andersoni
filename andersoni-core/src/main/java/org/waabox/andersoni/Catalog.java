@@ -278,6 +278,23 @@ public final class Catalog<T> {
   }
 
   /**
+   * Returns statistics about this catalog, including per-index memory
+   * estimation based on the current snapshot.
+   *
+   * <p>This method is lock-free and delegates to the current snapshot.
+   *
+   * @return the catalog info, never null
+   */
+  public CatalogInfo info() {
+    final Snapshot<T> snapshot = current.get();
+    final List<IndexInfo> indexInfos = snapshot.indexInfo();
+    final long totalSize = indexInfos.stream()
+        .mapToLong(IndexInfo::estimatedSizeBytes).sum();
+    return new CatalogInfo(name, snapshot.data().size(), indexInfos,
+        totalSize);
+  }
+
+  /**
    * Builds all index maps from the given data, computes the hash, creates
    * a new Snapshot, and atomically swaps the current reference.
    *

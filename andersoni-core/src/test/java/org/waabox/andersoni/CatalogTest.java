@@ -538,6 +538,51 @@ class CatalogTest {
   }
 
   @Test
+  void whenInfo_givenBootstrappedCatalog_shouldReturnCatalogInfo() {
+    final Venue maracana = new Venue("Maracana");
+    final Venue wembley = new Venue("Wembley");
+    final Sport football = new Sport("Football");
+    final Sport rugby = new Sport("Rugby");
+
+    final Event e1 = new Event("1", football, maracana);
+    final Event e2 = new Event("2", rugby, wembley);
+    final Event e3 = new Event("3", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1, e2, e3))
+        .index("by-venue").by(Event::venue, Venue::name)
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    catalog.bootstrap();
+
+    final CatalogInfo info = catalog.info();
+
+    assertEquals("events", info.catalogName());
+    assertEquals(3, info.itemCount());
+    assertEquals(2, info.indices().size());
+    assertTrue(info.totalEstimatedSizeBytes() > 0);
+    assertTrue(info.totalEstimatedSizeMB() > 0);
+  }
+
+  @Test
+  void whenInfo_givenNotBootstrapped_shouldReturnEmptyInfo() {
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+
+    final CatalogInfo info = catalog.info();
+
+    assertEquals("events", info.catalogName());
+    assertEquals(0, info.itemCount());
+    assertTrue(info.indices().isEmpty());
+    assertEquals(0L, info.totalEstimatedSizeBytes());
+  }
+
+  @Test
   void whenBuilding_givenDuplicateIndexName_shouldThrowIllegalArgument() {
     assertThrows(IllegalArgumentException.class, () ->
         Catalog.of(Event.class)

@@ -52,4 +52,16 @@ public interface AndersoniMetrics {
    * @param cause       the throwable that caused the failure, never null
    */
   void refreshFailed(String catalogName, Throwable cause);
+
+  /**
+   * Records the estimated memory size of an index after a refresh or
+   * bootstrap.
+   *
+   * @param catalogName        the name of the catalog, never null
+   * @param indexName          the name of the index, never null
+   * @param estimatedSizeBytes the estimated structural memory footprint
+   *                           in bytes
+   */
+  void indexSizeReported(String catalogName, String indexName,
+      long estimatedSizeBytes);
 }
