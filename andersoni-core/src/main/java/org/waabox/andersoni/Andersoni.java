@@ -267,6 +267,7 @@ public final class Andersoni {
     final Catalog<?> catalog = requireCatalog(catalogName);
 
     catalog.refresh();
+    reportIndexSizes(catalog);
 
     saveSnapshotIfPossible(catalog);
 
@@ -338,6 +339,23 @@ public final class Andersoni {
   }
 
   /**
+   * Returns statistics about a registered catalog, including per-index
+   * memory estimation.
+   *
+   * @param catalogName the name of the catalog, never null
+   *
+   * @return the catalog info, never null
+   *
+   * @throws NullPointerException     if catalogName is null
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   */
+  public CatalogInfo info(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    return requireCatalog(catalogName).info();
+  }
+
+  /**
    * Bootstraps all registered catalogs with retry support.
    *
    * <p>For each catalog, first attempts to load from the snapshot store
@@ -375,6 +393,7 @@ public final class Andersoni {
     try {
       if (tryLoadFromSnapshotStore(name, catalog)) {
         metrics.snapshotLoaded(name, "snapshotStore");
+        reportIndexSizes(catalog);
         return;
       }
     } catch (final Exception e) {
@@ -409,6 +428,7 @@ public final class Andersoni {
         catalog.bootstrap();
         metrics.snapshotLoaded(name, "dataLoader");
         saveSnapshotIfPossible(catalog);
+        reportIndexSizes(catalog);
         return;
       } catch (final Exception e) {
         log.warn("Catalog '{}': leader DataLoader attempt {}/{} failed: {}",
@@ -456,6 +476,7 @@ public final class Andersoni {
       try {
         if (tryLoadFromSnapshotStore(name, catalog)) {
           metrics.snapshotLoaded(name, "snapshotStore");
+          reportIndexSizes(catalog);
           return;
         }
       } catch (final Exception e) {
@@ -603,12 +624,14 @@ public final class Andersoni {
           typedCatalog.refresh(data);
           log.info("Refreshed catalog '{}' from snapshot store",
               catalogName);
+          reportIndexSizes(catalog);
           return;
         }
       }
 
       catalog.refresh();
       log.info("Refreshed catalog '{}' from DataLoader", catalogName);
+      reportIndexSizes(catalog);
     } catch (final Exception e) {
       log.error("Failed to refresh catalog '{}' from sync event: {}",
           catalogName, e.getMessage(), e);
@@ -710,6 +733,20 @@ public final class Andersoni {
     if (scheduler != null) {
       scheduler.shutdownNow();
       scheduler = null;
+    }
+  }
+
+  /**
+   * Reports index sizes to the metrics interface for the given catalog.
+   *
+   * @param catalog the catalog whose index sizes should be reported,
+   *                never null
+   */
+  private void reportIndexSizes(final Catalog<?> catalog) {
+    final CatalogInfo info = catalog.info();
+    for (final IndexInfo indexInfo : info.indices()) {
+      metrics.indexSizeReported(catalog.name(), indexInfo.name(),
+          indexInfo.estimatedSizeBytes());
     }
   }
 

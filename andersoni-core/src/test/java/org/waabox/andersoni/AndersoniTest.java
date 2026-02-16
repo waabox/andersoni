@@ -1,5 +1,6 @@
 package org.waabox.andersoni;
 
+import static org.easymock.EasyMock.anyLong;
 import static org.easymock.EasyMock.anyObject;
 import static org.easymock.EasyMock.anyString;
 import static org.easymock.EasyMock.capture;
@@ -425,6 +426,9 @@ class AndersoniTest {
     metrics.snapshotLoaded("events", "dataLoader");
     expectLastCall().once();
 
+    metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
+    expectLastCall().once();
+
     // Stop.
     leaderElection.stop();
     expectLastCall().once();
@@ -501,6 +505,9 @@ class AndersoniTest {
     metrics.snapshotLoaded("events", "snapshotStore");
     expectLastCall().once();
 
+    metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
+    expectLastCall().once();
+
     // Stop.
     leaderElection.stop();
     expectLastCall().once();
@@ -572,6 +579,9 @@ class AndersoniTest {
     expectLastCall().once();
 
     metrics.snapshotLoaded("events", "dataLoader");
+    expectLastCall().once();
+
+    metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
     expectLastCall().once();
 
     leaderElection.stop();
@@ -848,6 +858,9 @@ class AndersoniTest {
     metrics.snapshotLoaded("events", "dataLoader");
     expectLastCall().once();
 
+    metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
+    expectLastCall().once();
+
     // Expect the failure metric when sync refresh fails.
     metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
     expectLastCall().once();
@@ -924,6 +937,9 @@ class AndersoniTest {
     expectLastCall().once();
 
     metrics.snapshotLoaded("events", "dataLoader");
+    expectLastCall().once();
+
+    metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
     expectLastCall().once();
 
     leaderElection.stop();
@@ -1269,5 +1285,98 @@ class AndersoniTest {
 
     assertThrows(IllegalStateException.class,
         () -> andersoni.refresh("events"));
+  }
+
+  // --- info() tests ---
+
+  @Test
+  void whenInfo_givenRegisteredCatalog_shouldReturnCatalogInfo() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final CatalogInfo info = andersoni.info("events");
+
+    assertEquals("events", info.catalogName());
+    assertEquals(1, info.itemCount());
+    assertEquals(1, info.indices().size());
+    assertTrue(info.totalEstimatedSizeBytes() > 0);
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenInfo_givenUnknownCatalog_shouldThrow() {
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.start();
+
+    assertThrows(IllegalArgumentException.class,
+        () -> andersoni.info("unknown"));
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenInfo_givenNullCatalogName_shouldThrowNpe() {
+    final Andersoni andersoni = Andersoni.builder().build();
+
+    assertThrows(NullPointerException.class,
+        () -> andersoni.info(null));
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenBootstrap_givenMetrics_shouldReportIndexSizes() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
+
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader()).andReturn(true).anyTimes();
+
+    metrics.snapshotLoaded("events", "dataLoader");
+    expectLastCall().once();
+
+    metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
+    expectLastCall().once();
+
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(leaderElection, metrics);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .leaderElection(leaderElection)
+        .metrics(metrics)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+    andersoni.stop();
+
+    verify(leaderElection, metrics);
   }
 }
