@@ -241,6 +241,7 @@ andersoni.stop();
 | `andersoni-snapshot-s3` | S3 snapshot persistence | aws-sdk-s3 |
 | `andersoni-snapshot-fs` | Filesystem snapshot (dev/test) | None |
 | `andersoni-spring-boot-starter` | Spring Boot auto-configuration | spring-boot-autoconfigure |
+| `andersoni-admin` | K8s admin console for monitoring Andersoni instances | spring-boot-starter-web, kubernetes-client |
 
 Pick only what you need. The core has zero external dependencies.
 

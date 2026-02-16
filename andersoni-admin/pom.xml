@@ -5,9 +5,13 @@
          https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>io.github.waabox</groupId>
+  <parent>
+    <groupId>io.github.waabox</groupId>
+    <artifactId>andersoni</artifactId>
+    <version>1.0.1</version>
+  </parent>
+
   <artifactId>andersoni-admin</artifactId>
-  <version>1.0.0</version>
   <packaging>jar</packaging>
 
   <name>Andersoni Admin Console</name>
@@ -17,16 +21,9 @@
   </description>
 
   <properties>
-    <java.version>21</java.version>
-    <maven.compiler.source>21</maven.compiler.source>
-    <maven.compiler.target>21</maven.compiler.target>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-
     <spring-boot.version>3.4.2</spring-boot.version>
     <kubernetes-client.version>21.0.2</kubernetes-client.version>
     <jackson.version>2.17.0</jackson.version>
-    <junit.version>5.11.4</junit.version>
-    <easymock.version>5.5.0</easymock.version>
   </properties>
 
   <dependencies>
@@ -63,14 +60,12 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
-      <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
 
     <dependency>
       <groupId>org.easymock</groupId>
       <artifactId>easymock</artifactId>
-      <version>${easymock.version}</version>
       <scope>test</scope>
     </dependency>
 
@@ -81,7 +76,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
         <configuration>
           <parameters>true</parameters>
         </configuration>
