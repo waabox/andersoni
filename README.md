@@ -123,12 +123,22 @@ Add the starter and your preferred sync strategy:
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-spring-boot-starter</artifactId>
-    <version>1.0.2</version>
+    <version>1.1.0</version>
 </dependency>
 <dependency>
     <groupId>io.github.waabox</groupId>
+    <artifactId>andersoni-spring-sync-kafka</artifactId>
+    <version>1.1.0</version>
+</dependency>
+```
+
+Or if you're not using Spring, use the plain Kafka module instead:
+
+```xml
+<dependency>
+    <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-sync-kafka</artifactId>
-    <version>1.0.2</version>
+    <version>1.1.0</version>
 </dependency>
 ```
 
@@ -235,6 +245,7 @@ andersoni.stop();
 |---|---|---|
 | `andersoni-core` | Engine, DSL, Snapshot, interfaces | None (pure Java 21) |
 | `andersoni-sync-kafka` | Kafka broadcast sync | kafka-clients |
+| `andersoni-spring-sync-kafka` | Spring Kafka auto-configured sync | spring-kafka |
 | `andersoni-sync-http` | HTTP peer-to-peer sync | java.net.http (built-in) |
 | `andersoni-sync-db` | JDBC polling sync | javax.sql |
 | `andersoni-leader-k8s` | K8s Lease leader election | kubernetes-client |
