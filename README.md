@@ -44,37 +44,49 @@ In-memory indexed cache library for Java 21. Define search indices over your dom
 
 ## Performance
 
-Benchmarked on Apple M-series, JDK 21, 8 threads. Catalog with 3 indices (by-category, by-region, by-status):
+Benchmarked on Apple M-series, JDK 21, 8 threads. Catalog with 3 regular indices + 3 sorted indices (score, category, date):
 
 | Items | Build Time | Avg Search Latency | Concurrent Throughput | Memory |
 |---|---|---|---|---|
-| 10,000 | 9 ms | ~55 ns | ~10M ops/s | ~2 MB |
-| 100,000 | 38 ms | ~29 ns | ~85M ops/s | ~14 MB |
-| 500,000 | 112 ms | ~28 ns | ~93M ops/s | ~70 MB |
+| 10,000 | 35 ms | ~65 ns | ~12M ops/s | ~14 MB |
+| 100,000 | 130 ms | ~33 ns | ~83M ops/s | ~25 MB |
+| 500,000 | 490 ms | ~30 ns | ~130M ops/s | ~13 MB |
 
 Search latency is a `HashMap.get()` on an immutable snapshot — no locks, no synchronization, no copying. Throughput scales linearly with cores because readers never contend with each other.
 
-Build time is the cost of a full refresh: iterate all items, extract keys, populate index maps, wrap in unmodifiable collections, and atomic swap. This happens in a background thread; readers are never blocked during a rebuild.
+Build time is the cost of a full refresh: iterate all items, extract keys, populate index maps (HashMap + TreeMap for sorted indexes), wrap in unmodifiable collections, and atomic swap. This happens in a background thread; readers are never blocked during a rebuild.
+
+### Query DSL
+
+Sorted indexes (`indexSorted()`) enable range queries and text pattern matching via a fluent Query DSL. Average latency per query (100K iterations):
+
+| Operation | Structure | 10,000 | 100,000 | 500,000 |
+|---|---|---|---|---|
+| `equalTo` | HashMap | ~90 ns | ~55 ns | ~28 ns |
+| `between` | TreeMap subMap | ~1.4 us | ~3.5 us | ~10.5 us |
+| `greaterThan` | TreeMap tailMap | ~0.7 us | ~2.0 us | ~8.4 us |
+| `greaterOrEqual` | TreeMap tailMap | ~0.8 us | ~2.2 us | ~9.1 us |
+| `lessThan` | TreeMap headMap | ~0.7 us | ~1.7 us | ~9.3 us |
+| `lessOrEqual` | TreeMap headMap | ~0.8 us | ~1.9 us | ~9.5 us |
+| `startsWith` | TreeMap subMap | ~1.3 us | ~9.6 us | ~43 us |
+| `endsWith` | reversed TreeMap | ~0.3 us | ~0.5 us | ~2.2 us |
+| `contains` | key scan | ~2.1 us | ~9.9 us | ~44 us |
+
+### Date Queries (ISO String index)
+
+Dates indexed as ISO strings (`"2024-01-15"`) enable date range and pattern queries. Lexicographic ordering matches chronological ordering, so all sorted index operations work naturally:
+
+| Operation | Example | 10,000 | 100,000 | 500,000 |
+|---|---|---|---|---|
+| `between` | `"2024-01-01"` to `"2024-03-31"` | ~3.5 us | ~7.2 us | ~19 us |
+| `startsWith` | `"2024-06"` (all June 2024) | ~1.3 us | ~2.7 us | ~7.2 us |
+| `contains` | `"-15"` (all 15th of month) | ~30 us | ~38 us | ~59 us |
+
+Range operations (`between`, `greaterThan`, etc.) are O(log n + k) where k is the number of matching entries. Text operations (`startsWith`, `endsWith`) use TreeMap prefix scans; `contains` performs a full key scan O(keys). Latency scales with result set size — queries returning fewer items are proportionally faster.
 
 ## How It Compares
 
 Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.
-
-### vs Caffeine
-
-Caffeine is a key-value cache with excellent per-entry eviction (size, TTL, weight). If you need to find events by venue, by sport, and by team, you maintain three separate Caffeine caches with three loaders and three invalidation strategies. Andersoni loads your data **once** and builds all indices atomically. You can build secondary indices on top of Caffeine manually, but you own the consistency between them.
-
-| | Caffeine | Andersoni |
-|---|---|---|
-| Model | key → value | dataset → N indices |
-| Load data | Per entry, per cache | Once, all indices built |
-| Eviction | TTL, size, weight | Full snapshot swap |
-| Consistency | Manual across caches | Guaranteed (single snapshot) |
-| Maturity | Battle-tested, widely adopted | New |
-
-**Caffeine wins at**: per-entry TTL, size-bounded caches, single key lookups, production track record.
-
-**Andersoni wins at**: multi-index search, cross-index consistency, zero-lock concurrent reads.
 
 ### vs Redis / Hazelcast / Infinispan
 
