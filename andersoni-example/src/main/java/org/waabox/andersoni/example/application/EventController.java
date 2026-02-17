@@ -9,25 +9,38 @@ import org.springframework.web.bind.annotation.RestController;
 import org.waabox.andersoni.Andersoni;
 import org.waabox.andersoni.CatalogInfo;
 import org.waabox.andersoni.IndexInfo;
+import org.waabox.andersoni.QueryStep;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 /** REST controller that exposes the Andersoni events catalog through
- * HTTP endpoints for searching, refreshing, and inspecting cache state.
+ * HTTP endpoints for searching, querying, refreshing, and inspecting
+ * cache state.
  *
- * <p>This controller provides three endpoints:
+ * <p>This controller provides endpoints for:
  * <ul>
- *   <li>{@code GET /events/search} - searches the events catalog by
- *       index name and key</li>
- *   <li>{@code POST /events/refresh} - triggers a refresh and sync
- *       of the events catalog</li>
- *   <li>{@code GET /events/info} - returns metadata about the current
- *       snapshot including version, hash, and item count</li>
+ *   <li>{@code GET /events/search} - equality search by index and key</li>
+ *   <li>{@code GET /events/query/between} - date range queries on the
+ *       by-start-time sorted index</li>
+ *   <li>{@code GET /events/query/after} - events after a given date</li>
+ *   <li>{@code GET /events/query/from} - events from a given date
+ *       (inclusive)</li>
+ *   <li>{@code GET /events/query/before} - events before a given date</li>
+ *   <li>{@code GET /events/query/until} - events until a given date
+ *       (inclusive)</li>
+ *   <li>{@code GET /events/query/starts-with} - text prefix search on
+ *       the by-name sorted index</li>
+ *   <li>{@code GET /events/query/ends-with} - text suffix search on
+ *       the by-name sorted index</li>
+ *   <li>{@code GET /events/query/contains} - text substring search on
+ *       the by-name sorted index</li>
+ *   <li>{@code POST /events/refresh} - triggers a refresh and sync</li>
+ *   <li>{@code GET /events/info} - snapshot metadata</li>
  * </ul>
  *
  * @author waabox(waabox[at]gmail[dot]com)
@@ -70,6 +83,113 @@ public class EventController {
       @RequestParam("index") final String index,
       @RequestParam("key") final String key) {
     return andersoni.search(CATALOG_NAME, index, key);
+  }
+
+  // -- Date range queries on the by-start-time sorted index -----------
+
+  /** Returns events whose start time falls between two dates (inclusive).
+   *
+   * @param from the start of the date range in ISO format, never null
+   * @param to the end of the date range in ISO format, never null
+   *
+   * @return the list of matching events, never null
+   */
+  @GetMapping("/query/between")
+  public List<?> between(
+      @RequestParam("from") final LocalDateTime from,
+      @RequestParam("to") final LocalDateTime to) {
+    return andersoni.query(CATALOG_NAME, "by-start-time")
+        .between(from, to);
+  }
+
+  /** Returns events whose start time is strictly after the given date.
+   *
+   * @param date the reference date in ISO format, never null
+   *
+   * @return the list of matching events, never null
+   */
+  @GetMapping("/query/after")
+  public List<?> after(@RequestParam("date") final LocalDateTime date) {
+    return andersoni.query(CATALOG_NAME, "by-start-time")
+        .greaterThan(date);
+  }
+
+  /** Returns events whose start time is on or after the given date.
+   *
+   * @param date the reference date in ISO format, never null
+   *
+   * @return the list of matching events, never null
+   */
+  @GetMapping("/query/from")
+  public List<?> from(@RequestParam("date") final LocalDateTime date) {
+    return andersoni.query(CATALOG_NAME, "by-start-time")
+        .greaterOrEqual(date);
+  }
+
+  /** Returns events whose start time is strictly before the given date.
+   *
+   * @param date the reference date in ISO format, never null
+   *
+   * @return the list of matching events, never null
+   */
+  @GetMapping("/query/before")
+  public List<?> before(@RequestParam("date") final LocalDateTime date) {
+    return andersoni.query(CATALOG_NAME, "by-start-time")
+        .lessThan(date);
+  }
+
+  /** Returns events whose start time is on or before the given date.
+   *
+   * @param date the reference date in ISO format, never null
+   *
+   * @return the list of matching events, never null
+   */
+  @GetMapping("/query/until")
+  public List<?> until(@RequestParam("date") final LocalDateTime date) {
+    return andersoni.query(CATALOG_NAME, "by-start-time")
+        .lessOrEqual(date);
+  }
+
+  // -- Text search queries on the by-name sorted index ----------------
+
+  /** Returns events whose name starts with the given prefix.
+   *
+   * @param prefix the prefix to match against event names, never null
+   *
+   * @return the list of matching events, never null
+   */
+  @GetMapping("/query/starts-with")
+  public List<?> startsWith(
+      @RequestParam("prefix") final String prefix) {
+    return andersoni.query(CATALOG_NAME, "by-name")
+        .startsWith(prefix);
+  }
+
+  /** Returns events whose name ends with the given suffix.
+   *
+   * @param suffix the suffix to match against event names, never null
+   *
+   * @return the list of matching events, never null
+   */
+  @GetMapping("/query/ends-with")
+  public List<?> endsWith(
+      @RequestParam("suffix") final String suffix) {
+    return andersoni.query(CATALOG_NAME, "by-name")
+        .endsWith(suffix);
+  }
+
+  /** Returns events whose name contains the given substring.
+   *
+   * @param substring the substring to match against event names,
+   *        never null
+   *
+   * @return the list of matching events, never null
+   */
+  @GetMapping("/query/contains")
+  public List<?> contains(
+      @RequestParam("substring") final String substring) {
+    return andersoni.query(CATALOG_NAME, "by-name")
+        .contains(substring);
   }
 
   /** Triggers a refresh and sync of the events catalog.

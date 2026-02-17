@@ -151,8 +151,10 @@ public class AndersoniConfig {
    *
    * <p>The events catalog is configured with:
    * <ul>
-   *   <li>Three indices: by-sport, by-venue, and by-status for fast
-   *       lookups on the most common query dimensions</li>
+   *   <li>Three hash indices: by-sport, by-venue, and by-status for fast
+   *       equality lookups on the most common query dimensions</li>
+   *   <li>Two sorted indices: by-start-time for date range queries and
+   *       by-name for text search (startsWith, endsWith, contains)</li>
    *   <li>A Jackson-based snapshot serializer for S3 persistence</li>
    *   <li>A 5-minute refresh interval for periodic data reloading</li>
    * </ul>
@@ -174,6 +176,10 @@ public class AndersoniConfig {
           .index("by-sport").by(Event::getSport, Function.identity())
           .index("by-venue").by(Event::getVenue, Function.identity())
           .index("by-status").by(Event::getStatus, Function.identity())
+          .indexSorted("by-start-time")
+              .by(Event::getStartTime, Function.identity())
+          .indexSorted("by-name")
+              .by(Event::getName, Function.identity())
           .serializer(new EventSnapshotSerializer())
           .refreshEvery(Duration.ofMinutes(5))
           .build();
