@@ -17,18 +17,125 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 
+# ===========================================================================
+# Andersoni - In-memory indexed cache configuration
+# ===========================================================================
 andersoni:
+
+  # Unique identifier for this node in the cluster.
+  # In Kubernetes, use the pod hostname (HOSTNAME env var) so each replica
+  # is uniquely identified. This value is also used as the identity for
+  # leader election (K8s Lease holder identity).
+  # If not set, a random UUID is generated at startup.
   node-id: ${HOSTNAME:local-dev}
 
-kafka:
-  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-
+# ===========================================================================
+# Kubernetes Leader Election (andersoni-leader-k8s)
+# ---------------------------------------------------------------------------
+# Only the leader node performs scheduled catalog refreshes, avoiding
+# redundant database queries across replicas. Non-leader nodes receive
+# refresh events via the sync strategy (Kafka, HTTP, or DB polling).
+#
+# Requires:
+#   - A ServiceAccount with RBAC permissions to get/create/update Lease
+#     objects in the target namespace.
+#   - The K8s Java client auto-detects in-cluster credentials, or falls
+#     back to KUBECONFIG env var / ~/.kube/config for local development.
+# ===========================================================================
 k8s:
   lease:
+
+    # Name of the Kubernetes Lease resource created in the target namespace.
+    # Each application should use a unique lease name to avoid conflicts
+    # with other services using Lease-based leader election.
+    name: andersoni-example-leader
+
+    # Kubernetes namespace where the Lease resource is managed.
+    # In K8s, set this to the namespace where your pods are deployed.
+    # The ServiceAccount must have permissions in this namespace.
     namespace: ${K8S_NAMESPACE:andersoni-example}
 
-minio:
-  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-  access-key: ${MINIO_ACCESS_KEY:minioadmin}
-  secret-key: ${MINIO_SECRET_KEY:minioadmin}
-  bucket: ${MINIO_BUCKET:andersoni-snapshots}
+    # How often (in seconds) the current leader renews the lease.
+    # A shorter interval means faster failover detection but more
+    # API server requests. Must be less than lease-duration.
+    # Default: 15
+    renewal-interval-seconds: ${K8S_LEASE_RENEWAL_INTERVAL:15}
+
+    # How long (in seconds) the lease is valid before it expires.
+    # If the leader fails to renew within this window, another node
+    # can acquire leadership. Must be greater than renewal-interval.
+    # Recommended: at least 2x the renewal interval.
+    # Default: 30
+    lease-duration-seconds: ${K8S_LEASE_DURATION:30}
+
+# ===========================================================================
+# Kafka Sync Strategy (andersoni-sync-kafka)
+# ---------------------------------------------------------------------------
+# Broadcasts catalog refresh events across all nodes via Kafka.
+# When the leader refreshes a catalog, it publishes an event to the
+# configured topic. All other nodes consume the event and reload
+# their local cache.
+#
+# Uses a broadcast pattern: each node gets its own consumer group
+# (consumerGroupPrefix + UUID), so every instance receives every message.
+# ===========================================================================
+kafka:
+
+  # Kafka broker connection string. Comma-separated list of host:port pairs.
+  # Example: "broker1:9092,broker2:9092,broker3:9092"
+  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+  # Kafka topic where refresh events are published and consumed.
+  # All Andersoni nodes for this application must share the same topic.
+  # Use a unique topic per application to isolate sync traffic.
+  # Default: "andersoni-sync"
+  topic: ${KAFKA_SYNC_TOPIC:andersoni-events}
+
+  # Prefix for generating unique consumer group IDs per node.
+  # Each node creates a consumer group as: <prefix> + <random-UUID>
+  # This ensures broadcast semantics (every node receives every message).
+  # Default: "andersoni-"
+  consumer-group-prefix: ${KAFKA_CONSUMER_GROUP_PREFIX:andersoni-example-}
+
+# ===========================================================================
+# S3 Snapshot Store (andersoni-snapshot-s3)
+# ---------------------------------------------------------------------------
+# Persists catalog snapshots to S3-compatible storage (AWS S3, MinIO, etc.).
+# On startup, nodes can restore their cache from the latest snapshot
+# instead of hitting the database, enabling faster cold starts.
+#
+# For production AWS: remove endpoint-override and use IAM roles
+# (e.g. IRSA in EKS) instead of static credentials.
+# ===========================================================================
+s3:
+
+  # S3-compatible endpoint URL.
+  # For AWS S3: omit or leave empty (the SDK uses the default endpoint).
+  # For MinIO or other S3-compatible services: set the full URL.
+  # Example: "http://minio.storage.svc.cluster.local:9000"
+  endpoint: ${S3_ENDPOINT:http://localhost:9000}
+
+  # AWS access key for S3 authentication.
+  # In production K8s, prefer using IAM Roles for Service Accounts (IRSA)
+  # or Pod Identity instead of static credentials.
+  access-key: ${S3_ACCESS_KEY:minioadmin}
+
+  # AWS secret key for S3 authentication.
+  # In production K8s, prefer using IAM Roles for Service Accounts (IRSA)
+  # or Pod Identity instead of static credentials.
+  secret-key: ${S3_SECRET_KEY:minioadmin}
+
+  # S3 bucket where catalog snapshots are stored.
+  # The bucket must exist before the application starts.
+  # Each catalog stores its snapshot under: <prefix><catalog-name>/snapshot
+  bucket: ${S3_BUCKET:andersoni-snapshots}
+
+  # AWS region for the S3 client.
+  # Must match the region where the bucket is located.
+  # Default: "us-east-1"
+  region: ${S3_REGION:us-east-1}
+
+  # Key prefix within the S3 bucket for snapshot files.
+  # Useful for organizing snapshots per environment or application.
+  # Default: "andersoni/"
+  prefix: ${S3_PREFIX:andersoni/}

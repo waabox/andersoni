@@ -136,33 +136,215 @@ done
 | POST | `/events/refresh` | Trigger cache refresh + Kafka sync |
 | GET | `/events/info` | Node ID, snapshot version, hash, item count |
 
-## Configuration
+## Configuration Reference
 
-All configuration is provided via environment variables with sensible defaults. The application uses Spring Boot's external configuration mechanism.
+All configuration lives in `application.yaml` and can be overridden via environment variables. The infrastructure beans are wired in `AndersoniConfig.java` using Spring's `@Value` injection.
 
-### Key Configuration Properties
+### Andersoni Core
 
-The actual configuration from `application.yaml`:
+| Property | Env Variable | Default | Description |
+|----------|-------------|---------|-------------|
+| `andersoni.node-id` | `HOSTNAME` | `local-dev` | Unique identifier for this node in the cluster. In Kubernetes, use the pod hostname so each replica is uniquely identified. This value is also used as the identity for leader election (K8s Lease holder identity). If not set, a random UUID is generated at startup. |
+
+### Kubernetes Leader Election (`andersoni-leader-k8s`)
+
+Only the leader node performs scheduled catalog refreshes, avoiding redundant database queries across replicas. Non-leader nodes receive refresh events via the sync strategy (Kafka, HTTP, or DB polling).
+
+**Requirements:**
+- A `ServiceAccount` with RBAC permissions to `get`, `create`, `update`, `patch`, `watch`, and `list` Lease objects in the `coordination.k8s.io` API group.
+- The K8s Java client auto-detects in-cluster credentials, or falls back to `KUBECONFIG` env var / `~/.kube/config` for local development.
+
+| Property | Env Variable | Default | Description |
+|----------|-------------|---------|-------------|
+| `k8s.lease.name` | - | `andersoni-example-leader` | Name of the Kubernetes Lease resource created in the target namespace. Each application should use a unique lease name to avoid conflicts with other services using Lease-based leader election. |
+| `k8s.lease.namespace` | `K8S_NAMESPACE` | `andersoni-example` | Kubernetes namespace where the Lease resource is managed. Must match the namespace where the pods are deployed. The ServiceAccount must have RBAC permissions in this namespace. |
+| `k8s.lease.renewal-interval-seconds` | `K8S_LEASE_RENEWAL_INTERVAL` | `15` | How often (in seconds) the current leader renews the lease. A shorter interval means faster failover detection but increases API server load. Must be strictly less than `lease-duration-seconds`. |
+| `k8s.lease.lease-duration-seconds` | `K8S_LEASE_DURATION` | `30` | How long (in seconds) the lease is valid before it expires. If the leader fails to renew within this window, another node can acquire leadership. Recommended: at least 2x the renewal interval. |
+
+**How leader election works:**
+
+1. On startup, every node tries to acquire the Lease resource.
+2. The first node to create (or claim) the Lease becomes the leader.
+3. The leader renews the lease every `renewal-interval-seconds`.
+4. If the leader pod crashes or is evicted, it stops renewing.
+5. After `lease-duration-seconds` without renewal, another node acquires the lease.
+6. Failover time = `lease-duration-seconds` (worst case).
+
+**RBAC example** (already included in `k8s/rbac.yaml`):
 
 ```yaml
-andersoni:
-  node-id: ${HOSTNAME:local-dev}
-
-kafka:
-  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-
-k8s:
-  lease:
-    namespace: ${K8S_NAMESPACE:andersoni-example}
-
-minio:
-  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-  access-key: ${MINIO_ACCESS_KEY:minioadmin}
-  secret-key: ${MINIO_SECRET_KEY:minioadmin}
-  bucket: ${MINIO_BUCKET:andersoni-snapshots}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: andersoni-example
+  namespace: andersoni-example
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: andersoni-leader-election
+  namespace: andersoni-example
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "watch", "list", "create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: andersoni-leader-election
+  namespace: andersoni-example
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: andersoni-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: andersoni-example
+    namespace: andersoni-example
 ```
 
-Infrastructure beans (Kafka sync, K8s leader election, S3 snapshots) are wired in `AndersoniConfig.java` using these properties. Override any value via environment variables.
+**Tuning tips:**
+
+| Scenario | `renewal-interval-seconds` | `lease-duration-seconds` | Tradeoff |
+|----------|---------------------------|-------------------------|----------|
+| Fast failover | 5 | 10 | More API server requests, ~10s failover |
+| Balanced (default) | 15 | 30 | Moderate API load, ~30s failover |
+| Low API load | 30 | 60 | Minimal API requests, ~60s failover |
+
+### Kafka Sync Strategy (`andersoni-sync-kafka`)
+
+Broadcasts catalog refresh events across all nodes via Kafka. When the leader refreshes a catalog, it publishes an event to the configured topic. All other nodes consume the event and reload their local cache.
+
+Uses a **broadcast pattern**: each node gets its own consumer group (`consumer-group-prefix` + random UUID), so every instance receives every message.
+
+| Property | Env Variable | Default | Description |
+|----------|-------------|---------|-------------|
+| `kafka.bootstrap-servers` | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker connection string. Comma-separated list of host:port pairs. Example: `broker1:9092,broker2:9092,broker3:9092`. |
+| `kafka.topic` | `KAFKA_SYNC_TOPIC` | `andersoni-events` | Kafka topic where refresh events are published and consumed. All Andersoni nodes for this application must share the same topic. Use a unique topic per application to isolate sync traffic. |
+| `kafka.consumer-group-prefix` | `KAFKA_CONSUMER_GROUP_PREFIX` | `andersoni-example-` | Prefix for generating unique consumer group IDs per node. Each node creates a consumer group as `<prefix><random-UUID>`. This ensures broadcast semantics (every node receives every message). |
+
+### S3 Snapshot Store (`andersoni-snapshot-s3`)
+
+Persists catalog snapshots to S3-compatible storage (AWS S3, MinIO, etc.). On startup, nodes restore their cache from the latest snapshot instead of hitting the database, enabling faster cold starts.
+
+| Property | Env Variable | Default | Description |
+|----------|-------------|---------|-------------|
+| `s3.endpoint` | `S3_ENDPOINT` | `http://localhost:9000` | S3-compatible endpoint URL. For AWS S3, omit or leave empty (the SDK uses the default endpoint). For MinIO or other S3-compatible services, set the full URL. Example: `http://minio.storage.svc.cluster.local:9000`. |
+| `s3.access-key` | `S3_ACCESS_KEY` | `minioadmin` | AWS access key for S3 authentication. In production K8s, prefer using IAM Roles for Service Accounts (IRSA) or Pod Identity instead of static credentials. |
+| `s3.secret-key` | `S3_SECRET_KEY` | `minioadmin` | AWS secret key for S3 authentication. In production K8s, prefer using IAM Roles for Service Accounts (IRSA) or Pod Identity instead of static credentials. |
+| `s3.bucket` | `S3_BUCKET` | `andersoni-snapshots` | S3 bucket where catalog snapshots are stored. The bucket must exist before the application starts. Each catalog stores its snapshot under: `<prefix><catalog-name>/snapshot`. |
+| `s3.region` | `S3_REGION` | `us-east-1` | AWS region for the S3 client. Must match the region where the bucket is located. |
+| `s3.prefix` | `S3_PREFIX` | `andersoni/` | Key prefix within the S3 bucket for snapshot files. Useful for organizing snapshots per environment or application. |
+
+### Spring / JPA
+
+| Property | Env Variable | Default | Description |
+|----------|-------------|---------|-------------|
+| `spring.datasource.url` | `POSTGRES_HOST` | `localhost:5432/events` | JDBC connection URL to PostgreSQL. |
+| `spring.datasource.username` | `POSTGRES_USER` | `andersoni` | Database username. |
+| `spring.datasource.password` | `POSTGRES_PASSWORD` | `andersoni` | Database password. |
+
+### Full `application.yaml`
+
+```yaml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: andersoni-example
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:5432/events
+    username: ${POSTGRES_USER:andersoni}
+    password: ${POSTGRES_PASSWORD:andersoni}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+# Andersoni core
+andersoni:
+  node-id: ${HOSTNAME:local-dev}                              # Unique node identity (pod hostname in K8s)
+
+# Kubernetes Leader Election
+k8s:
+  lease:
+    name: andersoni-example-leader                            # Lease resource name (unique per app)
+    namespace: ${K8S_NAMESPACE:andersoni-example}             # K8s namespace for the Lease
+    renewal-interval-seconds: ${K8S_LEASE_RENEWAL_INTERVAL:15} # Leader renewal frequency
+    lease-duration-seconds: ${K8S_LEASE_DURATION:30}          # Lease TTL before expiry
+
+# Kafka Sync Strategy
+kafka:
+  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092} # Kafka broker(s)
+  topic: ${KAFKA_SYNC_TOPIC:andersoni-events}                 # Sync events topic
+  consumer-group-prefix: ${KAFKA_CONSUMER_GROUP_PREFIX:andersoni-example-} # Broadcast consumer group prefix
+
+# S3 Snapshot Store
+s3:
+  endpoint: ${S3_ENDPOINT:http://localhost:9000}              # S3-compatible endpoint (MinIO for dev)
+  access-key: ${S3_ACCESS_KEY:minioadmin}                     # S3 access key (use IRSA in prod)
+  secret-key: ${S3_SECRET_KEY:minioadmin}                     # S3 secret key (use IRSA in prod)
+  bucket: ${S3_BUCKET:andersoni-snapshots}                    # Snapshot bucket name
+  region: ${S3_REGION:us-east-1}                              # AWS region
+  prefix: ${S3_PREFIX:andersoni/}                             # Key prefix within bucket
+```
+
+### Environment Variables Summary
+
+| Variable | Required | Default | Component |
+|----------|----------|---------|-----------|
+| `HOSTNAME` | No | `local-dev` | Core (auto-set by K8s) |
+| `K8S_NAMESPACE` | Yes (in K8s) | `andersoni-example` | Leader Election |
+| `K8S_LEASE_RENEWAL_INTERVAL` | No | `15` | Leader Election |
+| `K8S_LEASE_DURATION` | No | `30` | Leader Election |
+| `KAFKA_BOOTSTRAP_SERVERS` | Yes | `localhost:9092` | Kafka Sync |
+| `KAFKA_SYNC_TOPIC` | No | `andersoni-events` | Kafka Sync |
+| `KAFKA_CONSUMER_GROUP_PREFIX` | No | `andersoni-example-` | Kafka Sync |
+| `S3_ENDPOINT` | Yes | `http://localhost:9000` | S3 Snapshots |
+| `S3_ACCESS_KEY` | Yes | `minioadmin` | S3 Snapshots |
+| `S3_SECRET_KEY` | Yes | `minioadmin` | S3 Snapshots |
+| `S3_BUCKET` | No | `andersoni-snapshots` | S3 Snapshots |
+| `S3_REGION` | No | `us-east-1` | S3 Snapshots |
+| `S3_PREFIX` | No | `andersoni/` | S3 Snapshots |
+| `POSTGRES_HOST` | Yes | `localhost` | Database |
+| `POSTGRES_USER` | No | `andersoni` | Database |
+| `POSTGRES_PASSWORD` | No | `andersoni` | Database |
+
+### Alternative Sync Strategies
+
+This example uses Kafka, but Andersoni supports two additional sync strategies. Replace `KafkaSyncStrategy` in `AndersoniConfig.java` with one of the following:
+
+**HTTP Sync (`andersoni-sync-http`)** - Peer-to-peer push via HTTP:
+
+| Config Field | Default | Description |
+|-------------|---------|-------------|
+| `port` | *(required)* | Port to listen on for incoming refresh events |
+| `peerUrls` | *(required)* | URLs of all peer nodes to push events to |
+| `path` | `/andersoni/refresh` | HTTP endpoint path for refresh events |
+
+**DB Polling Sync (`andersoni-sync-db`)** - JDBC table polling:
+
+| Config Field | Default | Description |
+|-------------|---------|-------------|
+| `dataSource` | *(required)* | JDBC DataSource to poll |
+| `tableName` | `andersoni_sync_log` | Table used as the sync log |
+| `pollInterval` | `5 seconds` | How often the table is polled for new events |
+
+### Alternative Snapshot Store
+
+This example uses S3, but Andersoni also provides:
+
+**Filesystem Snapshot (`andersoni-snapshot-fs`)** - For local development and testing:
+
+| Constructor Arg | Description |
+|----------------|-------------|
+| `baseDir` | Root directory where per-catalog subdirectories are created |
 
 ## Project Structure
 
@@ -206,7 +388,12 @@ kubectl -n andersoni-example logs -f <pod-name>
 Verify RBAC permissions:
 ```bash
 kubectl -n andersoni-example get rolebinding
-kubectl -n andersoni-example describe rolebinding andersoni-leader-binding
+kubectl -n andersoni-example describe rolebinding andersoni-leader-election
+```
+
+Check the Lease resource directly:
+```bash
+kubectl -n andersoni-example get lease andersoni-example-leader -o yaml
 ```
 
 ### Kafka sync not working
@@ -216,6 +403,11 @@ Check Kafka connectivity:
 kubectl -n andersoni-example exec <pod-name> -- curl -v kafka:9092
 ```
 
+Verify the topic exists:
+```bash
+kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic andersoni-events
+```
+
 ### S3 snapshot failures
 
 Verify MinIO is accessible:
@@ -223,13 +415,10 @@ Verify MinIO is accessible:
 kubectl -n andersoni-example exec <pod-name> -- curl -v http://minio:9000
 ```
 
-## Next Steps
-
-- Explore the source code to understand how Andersoni is configured
-- Modify `EventRepository` to load data from your own source
-- Add custom indexes in `AndersoniConfig.eventsCatalogRegistrar()`
-- Configure different snapshot storage (filesystem, custom S3)
-- Integrate with your existing Spring Boot application
+Check the bucket exists:
+```bash
+aws --endpoint-url http://localhost:9000 s3 ls s3://andersoni-snapshots/
+```
 
 ## License
 

@@ -55,15 +55,21 @@ public class AndersoniConfig {
    *
    * @param bootstrapServers the Kafka bootstrap servers connection
    *        string (e.g. "broker1:9092,broker2:9092"), never null
+   * @param topic the Kafka topic for sync events, never null
+   * @param consumerGroupPrefix the prefix for unique consumer groups,
+   *        never null
    *
    * @return the configured Kafka sync strategy, never null
    */
   @Bean
   public KafkaSyncStrategy kafkaSyncStrategy(
-      @Value("${kafka.bootstrap-servers}") final String bootstrapServers) {
+      @Value("${kafka.bootstrap-servers}") final String bootstrapServers,
+      @Value("${kafka.topic:andersoni-sync}") final String topic,
+      @Value("${kafka.consumer-group-prefix:andersoni-}")
+          final String consumerGroupPrefix) {
 
     final KafkaSyncConfig config = KafkaSyncConfig.create(
-        bootstrapServers, "andersoni-events", "andersoni-example-");
+        bootstrapServers, topic, consumerGroupPrefix);
 
     return new KafkaSyncStrategy(config);
   }
@@ -71,28 +77,40 @@ public class AndersoniConfig {
   /** Creates a Kubernetes Lease-based leader election strategy.
    *
    * <p>Only the leader node performs scheduled catalog refreshes, avoiding
-   * redundant database queries across replicas. The lease is renewed every
-   * 15 seconds and expires after 30 seconds of inactivity.
+   * redundant database queries across replicas. The lease is renewed at
+   * the configured interval and expires after the configured duration
+   * of inactivity.
    *
    * @param nodeId the unique identifier for this node, typically the
    *        pod hostname, never null
+   * @param leaseName the name of the K8s Lease resource, never null
    * @param namespace the Kubernetes namespace where the Lease resource
    *        is managed, never null
+   * @param renewalIntervalSeconds how often (in seconds) the leader
+   *        renews the lease
+   * @param leaseDurationSeconds how long (in seconds) the lease is valid
+   *        before it expires
    *
    * @return the configured Kubernetes leader election strategy, never null
    */
   @Bean
   public K8sLeaseLeaderElection k8sLeaseLeaderElection(
       @Value("${andersoni.node-id}") final String nodeId,
+      @Value("${k8s.lease.name:andersoni-example-leader}")
+          final String leaseName,
       @Value("${k8s.lease.namespace:andersoni-example}")
-          final String namespace) {
+          final String namespace,
+      @Value("${k8s.lease.renewal-interval-seconds:15}")
+          final int renewalIntervalSeconds,
+      @Value("${k8s.lease.lease-duration-seconds:30}")
+          final int leaseDurationSeconds) {
 
     final K8sLeaseConfig config = K8sLeaseConfig.create(
-        "andersoni-example-leader",
+        leaseName,
         namespace,
         nodeId,
-        Duration.ofSeconds(15),
-        Duration.ofSeconds(30));
+        Duration.ofSeconds(renewalIntervalSeconds),
+        Duration.ofSeconds(leaseDurationSeconds));
 
     return new K8sLeaseLeaderElection(config);
   }
@@ -107,17 +125,19 @@ public class AndersoniConfig {
    *        "http://localhost:9000"), never null
    * @param accessKey the access key for authentication, never null
    * @param secretKey the secret key for authentication, never null
+   * @param region the AWS region for the S3 client, never null
    *
    * @return the configured S3 client, never null
    */
   @Bean(destroyMethod = "close")
   S3Client s3Client(
-      @Value("${minio.endpoint}") final String endpoint,
-      @Value("${minio.access-key}") final String accessKey,
-      @Value("${minio.secret-key}") final String secretKey) {
+      @Value("${s3.endpoint}") final String endpoint,
+      @Value("${s3.access-key}") final String accessKey,
+      @Value("${s3.secret-key}") final String secretKey,
+      @Value("${s3.region:us-east-1}") final String region) {
 
     return S3Client.builder()
-        .region(Region.US_EAST_1)
+        .region(Region.of(region))
         .endpointOverride(URI.create(endpoint))
         .credentialsProvider(StaticCredentialsProvider.create(
             AwsBasicCredentials.create(accessKey, secretKey)))
@@ -127,23 +147,28 @@ public class AndersoniConfig {
 
   /** Creates an S3-backed snapshot store for persisting catalog data.
    *
-   * <p>Snapshots are stored in the configured bucket under the default
-   * {@code andersoni/} prefix. The S3Client is injected as a
-   * Spring-managed bean so it is closed properly on shutdown.
+   * <p>Snapshots are stored in the configured bucket under the configured
+   * prefix. The S3Client is injected as a Spring-managed bean so it is
+   * closed properly on shutdown.
    *
    * @param s3Client the Spring-managed S3 client, never null
    * @param bucket the S3 bucket where snapshots are stored, never null
+   * @param region the AWS region for the S3 client, never null
+   * @param prefix the key prefix within the bucket, never null
    *
    * @return the configured S3 snapshot store, never null
    */
   @Bean
   S3SnapshotStore s3SnapshotStore(
       final S3Client s3Client,
-      @Value("${minio.bucket}") final String bucket) {
+      @Value("${s3.bucket}") final String bucket,
+      @Value("${s3.region:us-east-1}") final String region,
+      @Value("${s3.prefix:andersoni/}") final String prefix) {
 
     final S3SnapshotConfig config = S3SnapshotConfig.builder()
         .bucket(bucket)
-        .region(Region.US_EAST_1)
+        .region(Region.of(region))
+        .prefix(prefix)
         .s3Client(s3Client)
         .build();
 
