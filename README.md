@@ -142,6 +142,16 @@ Or if you're not using Spring, use the plain Kafka module instead:
 </dependency>
 ```
 
+If you're deploying on Kubernetes, add the leader election module for automatic failover:
+
+```xml
+<dependency>
+    <groupId>io.github.waabox</groupId>
+    <artifactId>andersoni-leader-k8s</artifactId>
+    <version>1.1.0</version>
+</dependency>
+```
+
 Register your catalogs:
 
 ```java
