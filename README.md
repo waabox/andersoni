@@ -30,7 +30,7 @@
 </p>
 
 <p align="center">
-  <img src="./assets/logo.png" width="300"/>
+  <img src="./assets/logo-tr.png" width="300"/>
 </p>
 
 In-memory indexed cache library for Java 21. Define search indices over your domain objects with a fluent DSL, get lock-free reads via immutable snapshots, and sync across nodes with pluggable strategies.
