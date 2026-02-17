@@ -12,13 +12,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.RefreshEventCodec;
 import org.waabox.andersoni.sync.RefreshListener;
 import org.waabox.andersoni.sync.SyncStrategy;
 
@@ -44,11 +45,11 @@ import org.waabox.andersoni.sync.SyncStrategy;
  *
  * @author waabox(waabox[at]gmail[dot]com)
  */
-public class HttpSyncStrategy implements SyncStrategy {
+public final class HttpSyncStrategy implements SyncStrategy {
 
   /** Logger for this class. */
   private static final Logger LOG =
-      Logger.getLogger(HttpSyncStrategy.class.getName());
+      LoggerFactory.getLogger(HttpSyncStrategy.class);
 
   /** HTTP 200 OK status code. */
   private static final int HTTP_OK = 200;
@@ -101,13 +102,12 @@ public class HttpSyncStrategy implements SyncStrategy {
       client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
           .thenAccept(response -> {
             if (response.statusCode() != HTTP_OK) {
-              LOG.warning("Peer " + url + " responded with status "
-                  + response.statusCode());
+              LOG.warn("Peer {} responded with status {}",
+                  url, response.statusCode());
             }
           })
           .exceptionally(ex -> {
-            LOG.log(Level.WARNING,
-                "Failed to publish refresh event to " + url, ex);
+            LOG.warn("Failed to publish refresh event to {}", url, ex);
             return null;
           });
     }
@@ -132,8 +132,8 @@ public class HttpSyncStrategy implements SyncStrategy {
 
       client = HttpClient.newHttpClient();
 
-      LOG.info("HttpSyncStrategy started on port " + config.port()
-          + " at path " + config.path());
+      LOG.info("HttpSyncStrategy started on port {} at path {}",
+          config.port(), config.path());
     } catch (final IOException e) {
       throw new IllegalStateException(
           "Failed to start HTTP server on port " + config.port(), e
@@ -181,14 +181,13 @@ public class HttpSyncStrategy implements SyncStrategy {
         try {
           listener.onRefresh(event);
         } catch (final Exception e) {
-          LOG.log(Level.WARNING,
-              "Listener threw exception for event: " + event, e);
+          LOG.warn("Listener threw exception for event: {}", event, e);
         }
       }
 
       sendResponse(exchange, HTTP_OK, "OK");
     } catch (final Exception e) {
-      LOG.log(Level.SEVERE, "Failed to handle refresh event", e);
+      LOG.error("Failed to handle refresh event", e);
       sendResponse(exchange, HTTP_INTERNAL_ERROR, "Internal Server Error");
     }
   }

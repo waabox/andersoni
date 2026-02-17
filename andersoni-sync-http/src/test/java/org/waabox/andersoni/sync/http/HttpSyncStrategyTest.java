@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.RefreshEventCodec;
 
 /**
  * Integration tests for {@link HttpSyncStrategy}.

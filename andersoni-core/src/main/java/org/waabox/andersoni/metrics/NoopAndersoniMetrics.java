@@ -13,19 +13,7 @@ public class NoopAndersoniMetrics implements AndersoniMetrics {
 
   /** {@inheritDoc} */
   @Override
-  public void catalogRefreshed(final String catalogName,
-      final long durationMs, final long itemCount) {
-  }
-
-  /** {@inheritDoc} */
-  @Override
   public void snapshotLoaded(final String catalogName, final String source) {
-  }
-
-  /** {@inheritDoc} */
-  @Override
-  public void searchExecuted(final String catalogName,
-      final String indexName, final long durationNs) {
   }
 
   /** {@inheritDoc} */

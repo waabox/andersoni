@@ -8,6 +8,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.waabox.andersoni.AndersoniException;
 import org.waabox.andersoni.leader.LeaderChangeListener;
 import org.waabox.andersoni.leader.LeaderElectionStrategy;
 
@@ -42,7 +43,7 @@ import io.kubernetes.client.util.Config;
  *
  * @author waabox(waabox[at]gmail[dot]com)
  */
-public class K8sLeaseLeaderElection implements LeaderElectionStrategy {
+public final class K8sLeaseLeaderElection implements LeaderElectionStrategy {
 
   /** The logger for this class. */
   private static final Logger log =
@@ -79,8 +80,8 @@ public class K8sLeaseLeaderElection implements LeaderElectionStrategy {
    * a {@link LeaderElector} in a daemon thread. The elector will
    * continuously attempt to acquire or renew the lease.
    *
-   * @throws RuntimeException if the Kubernetes API client cannot be
-   *                          initialized
+   * @throws AndersoniException if the Kubernetes API client cannot be
+   *                             initialized
    */
   @Override
   public void start() {
@@ -126,7 +127,7 @@ public class K8sLeaseLeaderElection implements LeaderElectionStrategy {
       log.info("K8s leader election thread started");
 
     } catch (final Exception e) {
-      throw new RuntimeException(
+      throw new AndersoniException(
           "Failed to start K8s leader election", e);
     }
   }

@@ -13,17 +13,6 @@ package org.waabox.andersoni.metrics;
 public interface AndersoniMetrics {
 
   /**
-   * Records a successful catalog refresh.
-   *
-   * @param catalogName the name of the catalog that was refreshed,
-   *                    never null
-   * @param durationMs  the duration of the refresh operation in
-   *                    milliseconds
-   * @param itemCount   the number of items loaded during the refresh
-   */
-  void catalogRefreshed(String catalogName, long durationMs, long itemCount);
-
-  /**
    * Records a snapshot load event.
    *
    * @param catalogName the name of the catalog whose snapshot was loaded,
@@ -32,17 +21,6 @@ public interface AndersoniMetrics {
    *                    "filesystem"), never null
    */
   void snapshotLoaded(String catalogName, String source);
-
-  /**
-   * Records a search execution.
-   *
-   * @param catalogName the name of the catalog that was searched,
-   *                    never null
-   * @param indexName   the name of the index used for the search,
-   *                    never null
-   * @param durationNs  the duration of the search in nanoseconds
-   */
-  void searchExecuted(String catalogName, String indexName, long durationNs);
 
   /**
    * Records a failed catalog refresh attempt.

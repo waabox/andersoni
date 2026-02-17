@@ -7,9 +7,11 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -322,6 +324,14 @@ public final class Catalog<T> {
    * serialized bytes. Otherwise, the hash is computed over the
    * {@code toString()} representation of each item concatenated together.
    *
+   * <p><strong>Warning:</strong> Without a serializer, hash computation
+   * falls back to {@code toString()}, which is unreliable for change
+   * detection if domain objects do not override it. In that case, the
+   * default {@code Object.toString()} includes the identity hash code,
+   * causing every snapshot to produce a different hash even when the data
+   * is identical. Always provide a {@link SnapshotSerializer} for
+   * production use to ensure deterministic hash computation.
+   *
    * @param data the data to hash, never null
    *
    * @return the hex-encoded SHA-256 hash string, never null
@@ -472,7 +482,7 @@ public final class Catalog<T> {
     private final List<IndexDefinition<T>> indexDefinitions;
 
     /** The set of registered index names for duplicate detection. */
-    private final java.util.Set<String> indexNames;
+    private final Set<String> indexNames;
 
     /**
      * Creates a new BuildStep.
@@ -488,7 +498,7 @@ public final class Catalog<T> {
       this.dataLoader = dataLoader;
       this.initialData = initialData;
       this.indexDefinitions = new ArrayList<>();
-      this.indexNames = new java.util.HashSet<>();
+      this.indexNames = new HashSet<>();
     }
 
     /**

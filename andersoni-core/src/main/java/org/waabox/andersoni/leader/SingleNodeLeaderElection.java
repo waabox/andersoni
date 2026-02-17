@@ -17,7 +17,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *
  * @author waabox(waabox[at]gmail[dot]com)
  */
-public class SingleNodeLeaderElection implements LeaderElectionStrategy {
+public final class SingleNodeLeaderElection implements LeaderElectionStrategy {
 
   /** The list of registered leader change listeners. */
   private final List<LeaderChangeListener> listeners =

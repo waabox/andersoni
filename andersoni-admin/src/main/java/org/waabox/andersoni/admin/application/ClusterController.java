@@ -20,7 +20,6 @@ import io.kubernetes.client.openapi.models.V1PodList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -38,7 +37,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/api/cluster")
-public class ClusterController {
+public final class ClusterController {
 
   /** The class logger. */
   private static final Logger log =
@@ -74,7 +73,6 @@ public class ClusterController {
    * @param defaultLeaseName the default lease name, never null.
    * @param defaultInfoPath the default info path, never null.
    */
-  @Autowired
   public ClusterController(
       final ApiClient apiClient,
       final ObjectMapper objectMapper,
@@ -139,13 +137,13 @@ public class ClusterController {
     final String path = infoPath != null ? infoPath : defaultInfoPath;
 
     try {
-      String leaderIdentity = readLeaderIdentity(ns, lease);
+      final String leaderIdentity = readLeaderIdentity(ns, lease);
 
-      V1PodList podList = coreApi.listNamespacedPod(ns)
+      final V1PodList podList = coreApi.listNamespacedPod(ns)
           .labelSelector(selector)
           .execute();
 
-      List<CompletableFuture<Map<String, Object>>> futures =
+      final List<CompletableFuture<Map<String, Object>>> futures =
           new ArrayList<>();
 
       for (final V1Pod pod : podList.getItems()) {
@@ -153,29 +151,29 @@ public class ClusterController {
             () -> buildNodeInfo(pod, leaderIdentity, ns, path)));
       }
 
-      List<Map<String, Object>> nodes = futures.stream()
+      final List<Map<String, Object>> nodes = futures.stream()
           .map(CompletableFuture::join)
           .toList();
 
-      Map<String, Object> response = new LinkedHashMap<>();
+      final Map<String, Object> response = new LinkedHashMap<>();
       response.put("namespace", ns);
       response.put("leaderIdentity", leaderIdentity);
       response.put("nodes", nodes);
 
       return ResponseEntity.ok(response);
 
-    } catch (ApiException e) {
+    } catch (final ApiException e) {
       log.error("Kubernetes API error: {} - {}", e.getCode(),
           e.getResponseBody(), e);
-      Map<String, Object> error = new LinkedHashMap<>();
+      final Map<String, Object> error = new LinkedHashMap<>();
       error.put("error", "Kubernetes API error");
       error.put("message", e.getMessage());
       error.put("code", e.getCode());
       return ResponseEntity.status(502).body(error);
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       log.error("Unexpected error fetching cluster status", e);
-      Map<String, Object> error = new LinkedHashMap<>();
+      final Map<String, Object> error = new LinkedHashMap<>();
       error.put("error", "Internal error");
       error.put("message", e.getMessage());
       return ResponseEntity.status(500).body(error);
@@ -192,7 +190,7 @@ public class ClusterController {
    */
   String readLeaderIdentity(final String namespace, final String leaseName) {
     try {
-      V1Lease lease = coordinationApi
+      final V1Lease lease = coordinationApi
           .readNamespacedLease(leaseName, namespace)
           .execute();
 
@@ -201,7 +199,7 @@ public class ClusterController {
         return lease.getSpec().getHolderIdentity();
       }
       return null;
-    } catch (ApiException e) {
+    } catch (final ApiException e) {
       log.warn("Could not read lease {}/{}: {} - {}",
           namespace, leaseName, e.getCode(), e.getMessage());
       return null;
@@ -233,10 +231,10 @@ public class ClusterController {
     final String phase = pod.getStatus() != null
         ? pod.getStatus().getPhase() : "Unknown";
 
-    boolean ready = isReady(pod);
-    boolean leader = podName.equals(leaderIdentity);
+    final boolean ready = isReady(pod);
+    final boolean leader = podName.equals(leaderIdentity);
 
-    Map<String, Object> node = new LinkedHashMap<>();
+    final Map<String, Object> node = new LinkedHashMap<>();
     node.put("podName", podName);
     node.put("podIp", podIp);
     node.put("phase", phase);
@@ -251,27 +249,27 @@ public class ClusterController {
 
     try {
       // Strip leading slash for the proxy path parameter.
-      String proxyPath = infoPath.startsWith("/")
+      final String proxyPath = infoPath.startsWith("/")
           ? infoPath.substring(1) : infoPath;
 
       // Proxy through K8s API server: GET /api/v1/namespaces/{ns}/
       //   pods/{podName}:8080/proxy/{path}
-      String responseBody = coreApi.connectGetNamespacedPodProxyWithPath(
+      final String responseBody = coreApi.connectGetNamespacedPodProxyWithPath(
           podName + ":8080", namespace, proxyPath)
           .execute();
 
-      Object info = objectMapper.readValue(responseBody, Object.class);
+      final Object info = objectMapper.readValue(responseBody, Object.class);
       node.put("info", info);
       node.put("status", "OK");
 
-    } catch (ApiException e) {
+    } catch (final ApiException e) {
       log.warn("K8s proxy to pod {} failed: {} - {}",
           podName, e.getCode(), e.getMessage());
       node.put("info", null);
       node.put("status", "UNREACHABLE");
       node.put("error", "K8s proxy error: HTTP " + e.getCode());
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       log.warn("Failed to reach pod {}: {}", podName, e.getMessage());
       node.put("info", null);
       node.put("status", "UNREACHABLE");
@@ -292,7 +290,7 @@ public class ClusterController {
         || pod.getStatus().getContainerStatuses() == null) {
       return false;
     }
-    for (V1ContainerStatus cs : pod.getStatus().getContainerStatuses()) {
+    for (final V1ContainerStatus cs : pod.getStatus().getContainerStatuses()) {
       if (Boolean.TRUE.equals(cs.getReady())) {
         return true;
       }

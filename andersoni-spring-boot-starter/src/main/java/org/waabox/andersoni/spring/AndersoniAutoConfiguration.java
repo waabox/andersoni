@@ -1,7 +1,6 @@
 package org.waabox.andersoni.spring;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,7 +36,7 @@ import org.waabox.andersoni.sync.SyncStrategy;
  */
 @AutoConfiguration
 @EnableConfigurationProperties(AndersoniProperties.class)
-public class AndersoniAutoConfiguration {
+public final class AndersoniAutoConfiguration {
 
   /** The class logger. */
   private static final Logger log = LoggerFactory.getLogger(
@@ -196,7 +195,7 @@ public class AndersoniAutoConfiguration {
 
     final List<String> beanNames = provider.orderedStream()
         .map(bean -> bean.getClass().getSimpleName())
-        .collect(Collectors.toList());
+        .toList();
 
     if (beanNames.size() > 1) {
       throw new IllegalStateException(

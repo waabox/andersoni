@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.waabox.andersoni.AndersoniException;
 import org.waabox.andersoni.sync.RefreshEvent;
 import org.waabox.andersoni.sync.RefreshListener;
 import org.waabox.andersoni.sync.SyncStrategy;
@@ -29,8 +30,8 @@ import org.waabox.andersoni.sync.SyncStrategy;
  * registered listeners are notified.
  *
  * <p>The table is created automatically on {@link #start()} if it does not
- * already exist. The UPSERT operation uses SQL {@code MERGE INTO} for broad
- * database compatibility (H2, PostgreSQL with appropriate syntax, etc.).
+ * already exist. The UPSERT operation uses a portable UPDATE-then-INSERT
+ * approach for broad database compatibility.
  *
  * <p>Thread safety: this class is thread-safe. The listener list uses
  * {@link CopyOnWriteArrayList} and the hash tracking uses
@@ -73,27 +74,43 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
   public void publish(final RefreshEvent event) {
     Objects.requireNonNull(event, "event cannot be null");
 
-    final String sql = "MERGE INTO " + config.tableName()
+    final String updateSql = "UPDATE " + config.tableName()
+        + " SET source_node_id = ?, version = ?, hash = ?, updated_at = ?"
+        + " WHERE catalog_name = ?";
+
+    final String insertSql = "INSERT INTO " + config.tableName()
         + " (catalog_name, source_node_id, version, hash, updated_at)"
-        + " KEY (catalog_name)"
         + " VALUES (?, ?, ?, ?, ?)";
 
-    try (final Connection conn = config.dataSource().getConnection();
-         final PreparedStatement ps = conn.prepareStatement(sql)) {
+    try (final Connection conn = config.dataSource().getConnection()) {
 
-      ps.setString(1, event.catalogName());
-      ps.setString(2, event.sourceNodeId());
-      ps.setLong(3, event.version());
-      ps.setString(4, event.hash());
-      ps.setTimestamp(5, Timestamp.from(event.timestamp()));
+      final int affectedRows;
+      try (final PreparedStatement ps = conn.prepareStatement(updateSql)) {
+        ps.setString(1, event.sourceNodeId());
+        ps.setLong(2, event.version());
+        ps.setString(3, event.hash());
+        ps.setTimestamp(4, Timestamp.from(event.timestamp()));
+        ps.setString(5, event.catalogName());
+        affectedRows = ps.executeUpdate();
+      }
 
-      ps.executeUpdate();
+      if (affectedRows == 0) {
+        try (final PreparedStatement ps =
+            conn.prepareStatement(insertSql)) {
+          ps.setString(1, event.catalogName());
+          ps.setString(2, event.sourceNodeId());
+          ps.setLong(3, event.version());
+          ps.setString(4, event.hash());
+          ps.setTimestamp(5, Timestamp.from(event.timestamp()));
+          ps.executeUpdate();
+        }
+      }
 
       log.debug("Published refresh event for catalog '{}', version {}",
           event.catalogName(), event.version());
 
     } catch (final SQLException e) {
-      throw new RuntimeException(
+      throw new AndersoniException(
           "Failed to publish refresh event for catalog '"
               + event.catalogName() + "'", e);
     }
@@ -166,7 +183,7 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
       log.debug("Ensured sync log table '{}' exists", config.tableName());
 
     } catch (final SQLException e) {
-      throw new RuntimeException(
+      throw new AndersoniException(
           "Failed to create sync log table '" + config.tableName() + "'",
           e);
     }

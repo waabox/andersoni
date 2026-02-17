@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.RefreshEventCodec;
 
 /** Unit tests for {@link SpringKafkaSyncStrategy}.
  *
@@ -39,7 +40,7 @@ class SpringKafkaSyncStrategyTest {
     final RefreshEvent event = new RefreshEvent(
         "events", "node-uuid-1", 1L, "abc123", timestamp);
 
-    final String json = SpringKafkaSyncStrategy.serialize(event);
+    final String json = RefreshEventCodec.serialize(event);
 
     assertNotNull(json);
     assertTrue(json.contains("\"catalogName\":\"events\""));
@@ -57,7 +58,7 @@ class SpringKafkaSyncStrategyTest {
         + "\"hash\":\"abc123\","
         + "\"timestamp\":\"2024-01-01T00:00:00Z\"}";
 
-    final RefreshEvent event = SpringKafkaSyncStrategy.deserialize(json);
+    final RefreshEvent event = RefreshEventCodec.deserialize(json);
 
     assertNotNull(event);
     assertEquals("events", event.catalogName());
@@ -70,7 +71,7 @@ class SpringKafkaSyncStrategyTest {
   @Test
   void whenDeserializing_givenInvalidJson_shouldThrowException() {
     assertThrows(IllegalArgumentException.class, () ->
-        SpringKafkaSyncStrategy.deserialize("not valid json"));
+        RefreshEventCodec.deserialize("not valid json"));
   }
 
   @Test
@@ -80,8 +81,8 @@ class SpringKafkaSyncStrategyTest {
     final RefreshEvent original = new RefreshEvent(
         "products", "node-abc-def", 42L, "sha256hash", timestamp);
 
-    final String json = SpringKafkaSyncStrategy.serialize(original);
-    final RefreshEvent restored = SpringKafkaSyncStrategy.deserialize(json);
+    final String json = RefreshEventCodec.serialize(original);
+    final RefreshEvent restored = RefreshEventCodec.deserialize(json);
 
     assertEquals(original, restored);
   }
@@ -99,7 +100,7 @@ class SpringKafkaSyncStrategyTest {
     final RefreshEvent event = new RefreshEvent(
         "events", "node-1", 1L, "hash", timestamp);
 
-    final String expectedJson = SpringKafkaSyncStrategy.serialize(event);
+    final String expectedJson = RefreshEventCodec.serialize(event);
 
     final RecordMetadata metadata = new RecordMetadata(
         new TopicPartition("test-topic", 0), 0L, 0, 0L, 0, 0);
@@ -144,7 +145,7 @@ class SpringKafkaSyncStrategyTest {
     final Instant timestamp = Instant.parse("2024-01-01T00:00:00Z");
     final RefreshEvent event = new RefreshEvent(
         "events", "node-uuid-1", 1L, "abc123", timestamp);
-    final String json = SpringKafkaSyncStrategy.serialize(event);
+    final String json = RefreshEventCodec.serialize(event);
 
     final ConsumerRecord<String, String> record =
         new ConsumerRecord<>("test-topic", 0, 0L, "events", json);

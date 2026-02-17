@@ -9,11 +9,6 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -27,6 +22,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.RefreshEventCodec;
 import org.waabox.andersoni.sync.RefreshListener;
 import org.waabox.andersoni.sync.SyncStrategy;
 
@@ -35,7 +31,7 @@ import org.waabox.andersoni.sync.SyncStrategy;
  *
  * <p>This strategy uses a unique consumer group per instance (broadcast
  * pattern) so that every node receives every refresh event. Messages are
- * serialized as JSON strings using Jackson.
+ * serialized as JSON strings using {@link RefreshEventCodec}.
  *
  * <p>Typical usage:
  * <pre>
@@ -51,16 +47,11 @@ import org.waabox.andersoni.sync.SyncStrategy;
  *
  * @author waabox(waabox[at]gmail[dot]com)
  */
-public class KafkaSyncStrategy implements SyncStrategy {
+public final class KafkaSyncStrategy implements SyncStrategy {
 
   /** The class logger. */
   private static final Logger log = LoggerFactory.getLogger(
       KafkaSyncStrategy.class);
-
-  /** Shared ObjectMapper configured for RefreshEvent serialization. */
-  private static final ObjectMapper MAPPER = new ObjectMapper()
-      .registerModule(new JavaTimeModule())
-      .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
   /** Poll timeout for the Kafka consumer loop. */
   private static final Duration POLL_TIMEOUT = Duration.ofMillis(500);
@@ -96,7 +87,7 @@ public class KafkaSyncStrategy implements SyncStrategy {
   public void publish(final RefreshEvent event) {
     Objects.requireNonNull(event, "event must not be null");
 
-    final String json = serialize(event);
+    final String json = RefreshEventCodec.serialize(event);
     final ProducerRecord<String, String> record = new ProducerRecord<>(
         config.topic(), event.catalogName(), json);
 
@@ -173,42 +164,6 @@ public class KafkaSyncStrategy implements SyncStrategy {
     log.info("KafkaSyncStrategy stopped");
   }
 
-  /** Serializes a {@link RefreshEvent} to a JSON string using Jackson.
-   *
-   * @param event the event to serialize, never null
-   *
-   * @return the JSON string representation, never null
-   *
-   * @throws IllegalArgumentException if the event cannot be serialized
-   */
-  static String serialize(final RefreshEvent event) {
-    Objects.requireNonNull(event, "event must not be null");
-    try {
-      return MAPPER.writeValueAsString(event);
-    } catch (final JsonProcessingException e) {
-      throw new IllegalArgumentException(
-          "Failed to serialize RefreshEvent: " + e.getMessage(), e);
-    }
-  }
-
-  /** Deserializes a JSON string into a {@link RefreshEvent} using Jackson.
-   *
-   * @param json the JSON string to parse, never null
-   *
-   * @return the deserialized RefreshEvent, never null
-   *
-   * @throws IllegalArgumentException if the JSON cannot be parsed
-   */
-  static RefreshEvent deserialize(final String json) {
-    Objects.requireNonNull(json, "json must not be null");
-    try {
-      return MAPPER.readValue(json, RefreshEvent.class);
-    } catch (final JsonProcessingException e) {
-      throw new IllegalArgumentException(
-          "Failed to deserialize RefreshEvent: " + e.getMessage(), e);
-    }
-  }
-
   /** Notifies all registered listeners of a refresh event.
    *
    * <p>Package-private for testability.
@@ -236,7 +191,8 @@ public class KafkaSyncStrategy implements SyncStrategy {
             consumer.poll(POLL_TIMEOUT);
         for (final ConsumerRecord<String, String> record : records) {
           try {
-            final RefreshEvent event = deserialize(record.value());
+            final RefreshEvent event = RefreshEventCodec.deserialize(
+                record.value());
             notifyListeners(event);
           } catch (final Exception e) {
             log.error("Failed to deserialize refresh event from partition {} "

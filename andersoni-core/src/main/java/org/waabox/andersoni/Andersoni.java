@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -88,10 +89,10 @@ public final class Andersoni {
   private final Set<String> failedCatalogs;
 
   /** Whether this instance has been started. */
-  private volatile boolean started;
+  private final AtomicBoolean started = new AtomicBoolean(false);
 
   /** Whether this instance has been stopped. */
-  private volatile boolean stopped;
+  private final AtomicBoolean stopped = new AtomicBoolean(false);
 
   /** The scheduled executor for periodic refresh tasks. */
   private ScheduledExecutorService scheduler;
@@ -162,7 +163,7 @@ public final class Andersoni {
   public void register(final Catalog<?> catalog) {
     Objects.requireNonNull(catalog, "catalog must not be null");
 
-    if (started) {
+    if (started.get()) {
       throw new IllegalStateException(
           "Cannot register catalogs after start() has been called");
     }
@@ -205,11 +206,10 @@ public final class Andersoni {
    * </ul>
    */
   public void start() {
-    if (started) {
+    if (!started.compareAndSet(false, true)) {
       throw new IllegalStateException(
           "Andersoni has already been started");
     }
-    started = true;
     leaderElection.start();
     bootstrapAllCatalogs();
     wireSyncListener();
@@ -253,6 +253,11 @@ public final class Andersoni {
    * has a serializer, the refreshed data is serialized and saved to the
    * snapshot store before publishing the event.
    *
+   * <p><strong>Note:</strong> This method does NOT require leader status.
+   * Any node can call it at any time, which means concurrent refreshes
+   * across the cluster are possible. Callers are responsible for
+   * coordinating access if exclusive refresh semantics are required.
+   *
    * @param catalogName the name of the catalog to refresh, never null
    *
    * @throws IllegalArgumentException if no catalog with the given name
@@ -260,7 +265,7 @@ public final class Andersoni {
    */
   public void refreshAndSync(final String catalogName) {
     Objects.requireNonNull(catalogName, "catalogName must not be null");
-    if (stopped) {
+    if (stopped.get()) {
       throw new IllegalStateException(
           "Cannot refresh after stop() has been called");
     }
@@ -297,7 +302,7 @@ public final class Andersoni {
    */
   public void refresh(final String catalogName) {
     Objects.requireNonNull(catalogName, "catalogName must not be null");
-    if (stopped) {
+    if (stopped.get()) {
       throw new IllegalStateException(
           "Cannot refresh after stop() has been called");
     }
@@ -313,10 +318,9 @@ public final class Andersoni {
    * strategy and leader election, and clears internal state.
    */
   public void stop() {
-    if (stopped) {
+    if (!stopped.compareAndSet(false, true)) {
       return;
     }
-    stopped = true;
 
     cancelScheduledRefreshes();
 
@@ -454,6 +458,13 @@ public final class Andersoni {
    * re-checks leadership status so a follower that gets promoted to leader
    * mid-bootstrap switches to the DataLoader path. Logs a warning every
    * 10 failed attempts.
+   *
+   * <p>The maximum number of attempts is the configured
+   * {@link RetryPolicy#maxRetries()} multiplied by 10. This 10x multiplier
+   * exists because followers depend on the leader uploading a snapshot
+   * first, which introduces additional latency. The extra attempts give
+   * the leader enough time to complete its own bootstrap and upload the
+   * snapshot before the follower gives up.
    *
    * @param name    the catalog name, never null
    * @param catalog the catalog to bootstrap, never null

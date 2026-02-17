@@ -1,9 +1,7 @@
-package org.waabox.andersoni.sync.http;
+package org.waabox.andersoni.sync;
 
 import java.time.Instant;
 import java.util.Objects;
-
-import org.waabox.andersoni.sync.RefreshEvent;
 
 /**
  * Static utility class for serializing and deserializing
