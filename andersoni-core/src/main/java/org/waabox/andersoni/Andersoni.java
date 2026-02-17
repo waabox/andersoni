@@ -245,6 +245,40 @@ public final class Andersoni {
   }
 
   /**
+   * Returns a {@link QueryStep} for fluent querying of a catalog's index.
+   *
+   * <p>Usage:
+   * <pre>{@code
+   * andersoni.query("events", "by-date").between(from, to);
+   * andersoni.query("events", "by-venue").equalTo("Maracana");
+   * }</pre>
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param indexName   the name of the index, never null
+   *
+   * @return a QueryStep for the specified catalog and index, never null
+   *
+   * @throws IllegalArgumentException     if no catalog with the given name
+   *                                      is registered
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public QueryStep<?> query(final String catalogName,
+      final String indexName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(indexName, "indexName must not be null");
+
+    final Catalog<?> catalog = requireCatalog(catalogName);
+
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+
+    return catalog.query(indexName);
+  }
+
+  /**
    * Refreshes a catalog locally and synchronizes the refresh event across
    * nodes.
    *

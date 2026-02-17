@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -1378,5 +1379,103 @@ class AndersoniTest {
     andersoni.stop();
 
     verify(leaderElection, metrics);
+  }
+
+  // --- query() tests ---
+
+  /** A date value object for sorted index testing. */
+  record EventDate(LocalDate value) {}
+
+  /** A dated event domain object for sorted index testing. */
+  record DatedEvent(String id, EventDate eventDate, Venue venue) {}
+
+  @Test
+  void whenQuery_givenRegisteredCatalog_shouldReturnQueryStep() {
+    final Venue maracana = new Venue("Maracana");
+    final Venue wembley = new Venue("Wembley");
+
+    final DatedEvent e1 = new DatedEvent("1",
+        new EventDate(LocalDate.of(2025, 1, 10)), maracana);
+    final DatedEvent e2 = new DatedEvent("2",
+        new EventDate(LocalDate.of(2025, 3, 20)), wembley);
+    final DatedEvent e3 = new DatedEvent("3",
+        new EventDate(LocalDate.of(2025, 6, 15)), maracana);
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of(e1, e2, e3))
+        .indexSorted("by-date").by(DatedEvent::eventDate, EventDate::value)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final QueryStep<?> queryStep = andersoni.query(
+        "dated-events", "by-date");
+    assertNotNull(queryStep);
+
+    final List<?> results = queryStep.between(
+        LocalDate.of(2025, 1, 1), LocalDate.of(2025, 4, 1));
+    assertEquals(2, results.size());
+    assertTrue(results.contains(e1));
+    assertTrue(results.contains(e2));
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenQuery_givenFailedCatalog_shouldThrowCatalogNotAvailable() {
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
+
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader()).andReturn(true).anyTimes();
+
+    metrics.refreshFailed(eq("dated-events"), anyObject(Throwable.class));
+    expectLastCall().once();
+
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(leaderElection, metrics);
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .loadWith(() -> {
+          throw new RuntimeException("DataLoader always fails");
+        })
+        .indexSorted("by-date").by(DatedEvent::eventDate, EventDate::value)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .leaderElection(leaderElection)
+        .retryPolicy(RetryPolicy.of(2, Duration.ofMillis(1)))
+        .metrics(metrics)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    assertThrows(CatalogNotAvailableException.class,
+        () -> andersoni.query("dated-events", "by-date"));
+
+    andersoni.stop();
+
+    verify(leaderElection, metrics);
+  }
+
+  @Test
+  void whenQuery_givenUnknownCatalog_shouldThrowIllegalArgument() {
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.start();
+
+    assertThrows(IllegalArgumentException.class,
+        () -> andersoni.query("unknown-catalog", "some-index"));
+
+    andersoni.stop();
   }
 }
