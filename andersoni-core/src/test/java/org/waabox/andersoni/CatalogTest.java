@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -618,5 +619,239 @@ class CatalogTest {
 
     assertThrows(NullPointerException.class,
         () -> catalog.search("by-venue", null));
+  }
+
+  // -----------------------------------------------------------------------
+  // Sorted index and query() tests
+  // -----------------------------------------------------------------------
+
+  /** An event date value object used for sorted index testing. */
+  record EventDate(LocalDate value) implements Comparable<EventDate> {
+    @Override
+    public int compareTo(final EventDate other) {
+      return this.value.compareTo(other.value);
+    }
+  }
+
+  /** A dated event domain object used for sorted index testing. */
+  record DatedEvent(String id, EventDate eventDate, Venue venue) {}
+
+  @Test
+  void whenBuilding_givenIndexSorted_shouldBuildCorrectly() {
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of())
+        .indexSorted("by-date").by(DatedEvent::eventDate, EventDate::value)
+        .build();
+
+    assertEquals("dated-events", catalog.name());
+  }
+
+  @Test
+  void whenQuery_givenIndexSorted_shouldSupportBetween() {
+    final EventDate jan1 = new EventDate(LocalDate.of(2025, 1, 1));
+    final EventDate feb1 = new EventDate(LocalDate.of(2025, 2, 1));
+    final EventDate mar1 = new EventDate(LocalDate.of(2025, 3, 1));
+    final EventDate apr1 = new EventDate(LocalDate.of(2025, 4, 1));
+
+    final Venue maracana = new Venue("Maracana");
+
+    final DatedEvent e1 = new DatedEvent("1", jan1, maracana);
+    final DatedEvent e2 = new DatedEvent("2", feb1, maracana);
+    final DatedEvent e3 = new DatedEvent("3", mar1, maracana);
+    final DatedEvent e4 = new DatedEvent("4", apr1, maracana);
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of(e1, e2, e3, e4))
+        .indexSorted("by-date").by(DatedEvent::eventDate, EventDate::value)
+        .build();
+
+    catalog.bootstrap();
+
+    final List<DatedEvent> result = catalog.query("by-date")
+        .between(LocalDate.of(2025, 2, 1), LocalDate.of(2025, 3, 1));
+
+    assertEquals(2, result.size());
+    assertTrue(result.contains(e2));
+    assertTrue(result.contains(e3));
+  }
+
+  @Test
+  void whenQuery_givenIndexSorted_shouldSupportEqualTo() {
+    final EventDate jan1 = new EventDate(LocalDate.of(2025, 1, 1));
+    final EventDate feb1 = new EventDate(LocalDate.of(2025, 2, 1));
+
+    final Venue maracana = new Venue("Maracana");
+
+    final DatedEvent e1 = new DatedEvent("1", jan1, maracana);
+    final DatedEvent e2 = new DatedEvent("2", feb1, maracana);
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of(e1, e2))
+        .indexSorted("by-date").by(DatedEvent::eventDate, EventDate::value)
+        .build();
+
+    catalog.bootstrap();
+
+    final List<DatedEvent> result = catalog.query("by-date")
+        .equalTo(LocalDate.of(2025, 1, 1));
+
+    assertEquals(1, result.size());
+    assertTrue(result.contains(e1));
+  }
+
+  @Test
+  void whenQuery_givenRegularIndex_shouldSupportEqualTo() {
+    final Venue maracana = new Venue("Maracana");
+    final Venue wembley = new Venue("Wembley");
+    final Sport football = new Sport("Football");
+
+    final Event e1 = new Event("1", football, maracana);
+    final Event e2 = new Event("2", football, wembley);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1, e2))
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+
+    catalog.bootstrap();
+
+    final List<Event> result = catalog.query("by-venue")
+        .equalTo("Maracana");
+
+    assertEquals(1, result.size());
+    assertTrue(result.contains(e1));
+  }
+
+  @Test
+  void whenSearchShortcut_givenIndexSorted_shouldStillWork() {
+    final EventDate jan1 = new EventDate(LocalDate.of(2025, 1, 1));
+    final EventDate feb1 = new EventDate(LocalDate.of(2025, 2, 1));
+
+    final Venue maracana = new Venue("Maracana");
+
+    final DatedEvent e1 = new DatedEvent("1", jan1, maracana);
+    final DatedEvent e2 = new DatedEvent("2", feb1, maracana);
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of(e1, e2))
+        .indexSorted("by-date").by(DatedEvent::eventDate, EventDate::value)
+        .build();
+
+    catalog.bootstrap();
+
+    final List<DatedEvent> result = catalog.search("by-date",
+        LocalDate.of(2025, 1, 1));
+
+    assertEquals(1, result.size());
+    assertTrue(result.contains(e1));
+  }
+
+  @Test
+  void whenBuilding_givenMixOfIndexAndIndexSorted_shouldWorkCorrectly() {
+    final EventDate jan1 = new EventDate(LocalDate.of(2025, 1, 1));
+    final EventDate feb1 = new EventDate(LocalDate.of(2025, 2, 1));
+
+    final Venue maracana = new Venue("Maracana");
+    final Venue wembley = new Venue("Wembley");
+
+    final DatedEvent e1 = new DatedEvent("1", jan1, maracana);
+    final DatedEvent e2 = new DatedEvent("2", feb1, wembley);
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of(e1, e2))
+        .index("by-venue").by(DatedEvent::venue, Venue::name)
+        .indexSorted("by-date").by(DatedEvent::eventDate, EventDate::value)
+        .build();
+
+    catalog.bootstrap();
+
+    final List<DatedEvent> venueResult = catalog.search("by-venue",
+        "Maracana");
+    assertEquals(1, venueResult.size());
+    assertTrue(venueResult.contains(e1));
+
+    final List<DatedEvent> dateResult = catalog.query("by-date")
+        .between(LocalDate.of(2025, 1, 1), LocalDate.of(2025, 2, 1));
+    assertEquals(2, dateResult.size());
+  }
+
+  @Test
+  void whenBuilding_givenOnlyIndexSorted_shouldBuild() {
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of())
+        .indexSorted("by-date").by(DatedEvent::eventDate, EventDate::value)
+        .build();
+
+    assertNotNull(catalog);
+    assertEquals("dated-events", catalog.name());
+  }
+
+  @Test
+  void whenBuilding_givenDuplicateNameBetweenIndexAndIndexSorted_shouldThrow() {
+    assertThrows(IllegalArgumentException.class, () ->
+        Catalog.of(DatedEvent.class)
+            .named("dated-events")
+            .data(List.of())
+            .index("by-venue").by(DatedEvent::venue, Venue::name)
+            .indexSorted("by-venue")
+                .by(DatedEvent::eventDate, EventDate::value)
+            .build()
+    );
+  }
+
+  @Test
+  void whenQuery_givenSortedStringIndex_shouldSupportStartsWith() {
+    final EventDate jan1 = new EventDate(LocalDate.of(2025, 1, 1));
+    final Venue maracana = new Venue("Maracana");
+    final Venue manchester = new Venue("Manchester Arena");
+    final Venue wembley = new Venue("Wembley");
+
+    final DatedEvent e1 = new DatedEvent("1", jan1, maracana);
+    final DatedEvent e2 = new DatedEvent("2", jan1, manchester);
+    final DatedEvent e3 = new DatedEvent("3", jan1, wembley);
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of(e1, e2, e3))
+        .indexSorted("by-venue-name").by(DatedEvent::venue, Venue::name)
+        .build();
+
+    catalog.bootstrap();
+
+    final List<DatedEvent> result = catalog.query("by-venue-name")
+        .startsWith("Mar");
+
+    // Should NOT include "Manchester Arena" because "Mar" < "Mas"
+    // "Maracana" starts with "Mar" -> yes
+    // "Manchester Arena" starts with "Man" -> no
+    assertEquals(1, result.size());
+    assertTrue(result.contains(e1));
+  }
+
+  @Test
+  void whenQuery_givenNonExistentIndex_shouldThrowIndexNotFound() {
+    final EventDate jan1 = new EventDate(LocalDate.of(2025, 1, 1));
+    final Venue maracana = new Venue("Maracana");
+
+    final DatedEvent e1 = new DatedEvent("1", jan1, maracana);
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of(e1))
+        .indexSorted("by-date").by(DatedEvent::eventDate, EventDate::value)
+        .build();
+
+    catalog.bootstrap();
+
+    assertThrows(IndexNotFoundException.class, () ->
+        catalog.query("non-existent").equalTo("anything")
+    );
   }
 }

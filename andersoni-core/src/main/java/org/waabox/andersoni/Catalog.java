@@ -10,9 +10,10 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Objects;
-import java.util.Set;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -78,6 +79,9 @@ public final class Catalog<T> {
   /** The index definitions for this catalog. */
   private final List<IndexDefinition<T>> indexDefinitions;
 
+  /** The sorted index definitions for this catalog. */
+  private final List<SortedIndexDefinition<T>> sortedIndexDefinitions;
+
   /** The data loader, null if using static data. */
   private final DataLoader<T> dataLoader;
 
@@ -96,18 +100,21 @@ public final class Catalog<T> {
   /**
    * Creates a new Catalog instance.
    *
-   * @param name             the catalog name, never null
-   * @param dataLoader       the data loader, may be null if using static data
-   * @param initialData      the initial static data, may be null if using
-   *                         a DataLoader
-   * @param indexDefinitions the index definitions, never null
-   * @param serializer       the optional serializer, may be null
-   * @param refreshInterval  the optional refresh interval, may be null
+   * @param name                    the catalog name, never null
+   * @param dataLoader              the data loader, may be null if using
+   *                                static data
+   * @param initialData             the initial static data, may be null if
+   *                                using a DataLoader
+   * @param indexDefinitions        the index definitions, never null
+   * @param sortedIndexDefinitions  the sorted index definitions, never null
+   * @param serializer              the optional serializer, may be null
+   * @param refreshInterval         the optional refresh interval, may be null
    */
   private Catalog(final String name,
       final DataLoader<T> dataLoader,
       final List<T> initialData,
       final List<IndexDefinition<T>> indexDefinitions,
+      final List<SortedIndexDefinition<T>> sortedIndexDefinitions,
       final SnapshotSerializer<T> serializer,
       final Duration refreshInterval) {
     this.name = name;
@@ -115,6 +122,8 @@ public final class Catalog<T> {
     this.initialData = initialData;
     this.indexDefinitions = Collections.unmodifiableList(
         new ArrayList<>(indexDefinitions));
+    this.sortedIndexDefinitions = Collections.unmodifiableList(
+        new ArrayList<>(sortedIndexDefinitions));
     this.serializer = serializer;
     this.refreshInterval = refreshInterval;
     this.current = new AtomicReference<>(Snapshot.empty());
@@ -232,6 +241,28 @@ public final class Catalog<T> {
   }
 
   /**
+   * Creates a fluent query on the specified index within the current
+   * snapshot.
+   *
+   * <p>The returned {@link QueryStep} supports equality lookups on any
+   * index type, plus range and text pattern operations on sorted indices.
+   * The query is bound to the snapshot that is current at invocation time;
+   * subsequent refreshes will not affect an already-returned QueryStep.
+   *
+   * @param indexName the name of the index to query, never null
+   *
+   * @return a QueryStep bound to the current snapshot, never null
+   *
+   * @throws NullPointerException if indexName is null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public QueryStep<T> query(final String indexName) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    return new QueryStep<>(current.get(), indexName, name);
+  }
+
+  /**
    * Returns the name of this catalog.
    *
    * @return the catalog name, never null
@@ -305,15 +336,36 @@ public final class Catalog<T> {
    * @param data the data to build the snapshot from, never null
    */
   private void buildAndSwapSnapshot(final List<T> data) {
+    // Build regular indices.
     final Map<String, Map<Object, List<T>>> indices = new HashMap<>();
     for (final IndexDefinition<T> indexDef : indexDefinitions) {
       indices.put(indexDef.name(), indexDef.buildIndex(data));
     }
 
+    // Build sorted indices.
+    final Map<String, NavigableMap<Comparable<?>, List<T>>> sortedIndices =
+        new HashMap<>();
+    final Map<String, NavigableMap<String, List<T>>> reversedKeyIndices =
+        new HashMap<>();
+
+    for (final SortedIndexDefinition<T> sortedDef : sortedIndexDefinitions) {
+      final SortedIndexDefinition.SortedIndexResult<T> result =
+          sortedDef.buildIndex(data);
+      // Add hash index to regular indices (for equalTo via search()).
+      indices.put(sortedDef.name(), result.hashIndex());
+      // Add sorted index.
+      sortedIndices.put(sortedDef.name(), result.sortedIndex());
+      // Add reversed key index if String keys.
+      if (result.hasStringKeys() && result.reversedKeyIndex() != null) {
+        reversedKeyIndices.put(sortedDef.name(), result.reversedKeyIndex());
+      }
+    }
+
     final long version = versionCounter.incrementAndGet();
     final String hash = computeHash(data);
 
-    final Snapshot<T> snapshot = Snapshot.of(data, indices, version, hash);
+    final Snapshot<T> snapshot = Snapshot.of(data, indices,
+        sortedIndices, reversedKeyIndices, version, hash);
     current.set(snapshot);
   }
 
@@ -481,7 +533,11 @@ public final class Catalog<T> {
     /** The accumulated index definitions. */
     private final List<IndexDefinition<T>> indexDefinitions;
 
-    /** The set of registered index names for duplicate detection. */
+    /** The accumulated sorted index definitions. */
+    private final List<SortedIndexDefinition<T>> sortedIndexDefinitions;
+
+    /** The set of registered index names for duplicate detection (shared
+     *  between regular and sorted indexes). */
     private final Set<String> indexNames;
 
     /**
@@ -498,6 +554,7 @@ public final class Catalog<T> {
       this.dataLoader = dataLoader;
       this.initialData = initialData;
       this.indexDefinitions = new ArrayList<>();
+      this.sortedIndexDefinitions = new ArrayList<>();
       this.indexNames = new HashSet<>();
     }
 
@@ -557,19 +614,50 @@ public final class Catalog<T> {
     }
 
     /**
+     * Starts defining a new sorted index with the given name.
+     *
+     * <p>Returns a {@link SortedIndexStep} that requires a call to
+     * {@link SortedIndexStep#by(Function, Function)} to complete the sorted
+     * index definition and return to this builder for further chaining.
+     *
+     * <p>Sorted indexes support both equality lookups (via the regular
+     * hash index) and range/text pattern queries (via the NavigableMap).
+     *
+     * @param indexName the name of the sorted index, never null or empty
+     *
+     * @return a SortedIndexStep for defining the key extraction, never null
+     *
+     * @throws NullPointerException     if indexName is null
+     * @throws IllegalArgumentException if indexName is empty
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public SortedIndexStep<T> indexSorted(final String indexName) {
+      Objects.requireNonNull(indexName, "indexName must not be null");
+      if (indexName.isEmpty()) {
+        throw new IllegalArgumentException("indexName must not be empty");
+      }
+      return new SortedIndexStep<>(this, indexName);
+    }
+
+    /**
      * Builds the Catalog with all the accumulated configuration.
      *
      * @return a new Catalog instance, never null
      *
-     * @throws IllegalStateException if no index definitions have been added
+     * @throws IllegalStateException if no index definitions (regular or
+     *                               sorted) have been added
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
      */
     public Catalog<T> build() {
-      if (indexDefinitions.isEmpty()) {
+      if (indexDefinitions.isEmpty() && sortedIndexDefinitions.isEmpty()) {
         throw new IllegalStateException(
             "At least one index definition is required");
       }
       return new Catalog<>(name, dataLoader, initialData,
-          indexDefinitions, serializer, refreshInterval);
+          indexDefinitions, sortedIndexDefinitions, serializer,
+          refreshInterval);
     }
 
     /**
@@ -587,6 +675,26 @@ public final class Catalog<T> {
             "Duplicate index name: '" + indexDefinition.name() + "'");
       }
       indexDefinitions.add(indexDefinition);
+    }
+
+    /**
+     * Adds a sorted index definition to the builder. Package-private,
+     * called by {@link SortedIndexStep}.
+     *
+     * @param sortedIndexDefinition the sorted index definition to add,
+     *                              never null
+     *
+     * @throws IllegalArgumentException if an index (regular or sorted)
+     *                                  with the same name has already
+     *                                  been added
+     */
+    void addSortedIndex(
+        final SortedIndexDefinition<T> sortedIndexDefinition) {
+      if (!indexNames.add(sortedIndexDefinition.name())) {
+        throw new IllegalArgumentException(
+            "Duplicate index name: '" + sortedIndexDefinition.name() + "'");
+      }
+      sortedIndexDefinitions.add(sortedIndexDefinition);
     }
   }
 
@@ -641,6 +749,70 @@ public final class Catalog<T> {
       final IndexDefinition<T> indexDef =
           IndexDefinition.<T>named(indexName).by(first, second);
       buildStep.addIndex(indexDef);
+      return buildStep;
+    }
+  }
+
+  /**
+   * Intermediate builder step for defining the key extraction functions
+   * of a sorted index.
+   *
+   * <p>After calling {@link #by(Function, Function)}, control returns to
+   * the {@link BuildStep} for further chaining. The second function must
+   * return a type that implements {@link Comparable}, enforced at compile
+   * time.
+   *
+   * @param <T> the type of data items
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public static final class SortedIndexStep<T> {
+
+    /** The parent builder step. */
+    private final BuildStep<T> buildStep;
+
+    /** The sorted index name. */
+    private final String indexName;
+
+    /**
+     * Creates a new SortedIndexStep.
+     *
+     * @param buildStep the parent builder step, never null
+     * @param indexName the sorted index name, never null
+     */
+    SortedIndexStep(final BuildStep<T> buildStep, final String indexName) {
+      this.buildStep = buildStep;
+      this.indexName = indexName;
+    }
+
+    /**
+     * Defines the two-step key extraction by composing two functions,
+     * where the final key must implement {@link Comparable}.
+     *
+     * <p>The first function extracts an intermediate value from the data
+     * item, and the second function extracts the final comparable index
+     * key from that intermediate value. For example:
+     * {@code by(Event::eventDate, EventDate::value)} extracts the
+     * LocalDate value.
+     *
+     * @param first  the function to extract the intermediate value,
+     *               never null
+     * @param second the function to extract the comparable key from the
+     *               intermediate value, never null
+     * @param <I>    the type of the intermediate value
+     * @param <K>    the type of the index key, must extend Comparable
+     *
+     * @return the parent BuildStep for further chaining, never null
+     *
+     * @throws NullPointerException if first or second is null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public <I, K extends Comparable<K>> BuildStep<T> by(
+        final Function<T, I> first, final Function<I, K> second) {
+      final SortedIndexDefinition<T> def =
+          SortedIndexDefinition.<T>named(indexName).by(first, second);
+      buildStep.addSortedIndex(def);
       return buildStep;
     }
   }
