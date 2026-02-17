@@ -1,13 +1,17 @@
 package org.waabox.andersoni;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
 
 import org.junit.jupiter.api.Test;
 
@@ -288,5 +292,220 @@ class SnapshotTest {
 
     assertTrue(stringInfo.estimatedSizeBytes() > intInfo.estimatedSizeBytes(),
         "String keys should produce a larger estimated size than Integer keys");
+  }
+
+  // -----------------------------------------------------------------------
+  // Sorted index tests
+  // -----------------------------------------------------------------------
+
+  /**
+   * Creates a snapshot with a numeric sorted index for range query tests.
+   *
+   * <p>Items: "ten"=10, "twenty"=20, "thirty"=30, "forty"=40, "fifty"=50
+   */
+  private Snapshot<String> numericSortedSnapshot() {
+    final List<String> data = List.of("ten", "twenty", "thirty", "forty",
+        "fifty");
+
+    final NavigableMap<Comparable<?>, List<String>> sorted = new TreeMap<>();
+    sorted.put(10, List.of("ten"));
+    sorted.put(20, List.of("twenty"));
+    sorted.put(30, List.of("thirty"));
+    sorted.put(40, List.of("forty"));
+    sorted.put(50, List.of("fifty"));
+
+    final Map<String, NavigableMap<Comparable<?>, List<String>>> sortedIndices
+        = new HashMap<>();
+    sortedIndices.put("byValue", sorted);
+
+    return Snapshot.of(data, Collections.emptyMap(), sortedIndices,
+        Collections.emptyMap(), 1L, "hash");
+  }
+
+  /**
+   * Creates a snapshot with a String sorted index for text query tests.
+   *
+   * <p>Items: "apple", "apricot", "banana", "blueberry", "cherry"
+   */
+  private Snapshot<String> stringSortedSnapshot() {
+    final List<String> data = List.of("apple", "apricot", "banana",
+        "blueberry", "cherry");
+
+    final NavigableMap<Comparable<?>, List<String>> sorted = new TreeMap<>();
+    sorted.put("apple", List.of("apple"));
+    sorted.put("apricot", List.of("apricot"));
+    sorted.put("banana", List.of("banana"));
+    sorted.put("blueberry", List.of("blueberry"));
+    sorted.put("cherry", List.of("cherry"));
+
+    final NavigableMap<String, List<String>> reversed = new TreeMap<>();
+    reversed.put(new StringBuilder("apple").reverse().toString(),
+        List.of("apple"));
+    reversed.put(new StringBuilder("apricot").reverse().toString(),
+        List.of("apricot"));
+    reversed.put(new StringBuilder("banana").reverse().toString(),
+        List.of("banana"));
+    reversed.put(new StringBuilder("blueberry").reverse().toString(),
+        List.of("blueberry"));
+    reversed.put(new StringBuilder("cherry").reverse().toString(),
+        List.of("cherry"));
+
+    final Map<String, NavigableMap<Comparable<?>, List<String>>> sortedIndices
+        = new HashMap<>();
+    sortedIndices.put("byName", sorted);
+
+    final Map<String, NavigableMap<String, List<String>>> reversedIndices
+        = new HashMap<>();
+    reversedIndices.put("byName", reversed);
+
+    return Snapshot.of(data, Collections.emptyMap(), sortedIndices,
+        reversedIndices, 1L, "hash");
+  }
+
+  @Test
+  void whenSearchBetween_givenSortedIndex_shouldReturnRange() {
+    final Snapshot<String> snapshot = numericSortedSnapshot();
+
+    final List<String> result = snapshot.searchBetween("byValue", 20, 40);
+
+    assertEquals(3, result.size());
+    assertTrue(result.contains("twenty"));
+    assertTrue(result.contains("thirty"));
+    assertTrue(result.contains("forty"));
+  }
+
+  @Test
+  void whenSearchGreaterThan_givenSortedIndex_shouldReturnMatches() {
+    final Snapshot<String> snapshot = numericSortedSnapshot();
+
+    final List<String> result = snapshot.searchGreaterThan("byValue", 30);
+
+    assertEquals(2, result.size());
+    assertTrue(result.contains("forty"));
+    assertTrue(result.contains("fifty"));
+  }
+
+  @Test
+  void whenSearchGreaterOrEqual_givenSortedIndex_shouldReturnMatches() {
+    final Snapshot<String> snapshot = numericSortedSnapshot();
+
+    final List<String> result = snapshot.searchGreaterOrEqual("byValue", 30);
+
+    assertEquals(3, result.size());
+    assertTrue(result.contains("thirty"));
+    assertTrue(result.contains("forty"));
+    assertTrue(result.contains("fifty"));
+  }
+
+  @Test
+  void whenSearchLessThan_givenSortedIndex_shouldReturnMatches() {
+    final Snapshot<String> snapshot = numericSortedSnapshot();
+
+    final List<String> result = snapshot.searchLessThan("byValue", 30);
+
+    assertEquals(2, result.size());
+    assertTrue(result.contains("ten"));
+    assertTrue(result.contains("twenty"));
+  }
+
+  @Test
+  void whenSearchLessOrEqual_givenSortedIndex_shouldReturnMatches() {
+    final Snapshot<String> snapshot = numericSortedSnapshot();
+
+    final List<String> result = snapshot.searchLessOrEqual("byValue", 30);
+
+    assertEquals(3, result.size());
+    assertTrue(result.contains("ten"));
+    assertTrue(result.contains("twenty"));
+    assertTrue(result.contains("thirty"));
+  }
+
+  @Test
+  void whenSearchStartsWith_givenStringKeySortedIndex_shouldReturnMatches() {
+    final Snapshot<String> snapshot = stringSortedSnapshot();
+
+    final List<String> result = snapshot.searchStartsWith("byName", "ap");
+
+    assertEquals(2, result.size());
+    assertTrue(result.contains("apple"));
+    assertTrue(result.contains("apricot"));
+  }
+
+  @Test
+  void whenSearchEndsWith_givenStringKeySortedIndex_shouldReturnMatches() {
+    final Snapshot<String> snapshot = stringSortedSnapshot();
+
+    final List<String> result = snapshot.searchEndsWith("byName", "rry");
+
+    assertEquals(2, result.size());
+    assertTrue(result.contains("blueberry"));
+    assertTrue(result.contains("cherry"));
+  }
+
+  @Test
+  void whenSearchContains_givenStringKeySortedIndex_shouldReturnMatches() {
+    final Snapshot<String> snapshot = stringSortedSnapshot();
+
+    final List<String> result = snapshot.searchContains("byName", "an");
+
+    assertEquals(1, result.size());
+    assertTrue(result.contains("banana"));
+  }
+
+  @Test
+  void whenSearchBetween_givenNonSortedIndex_shouldThrowException() {
+    final Map<Object, List<String>> byLength = new HashMap<>();
+    byLength.put(5, List.of("alpha"));
+
+    final Map<String, Map<Object, List<String>>> indices = new HashMap<>();
+    indices.put("byLength", byLength);
+
+    final Snapshot<String> snapshot = Snapshot.of(
+        List.of("alpha"), indices, 1L, "hash");
+
+    assertThrows(UnsupportedIndexOperationException.class,
+        () -> snapshot.searchBetween("byLength", 1, 10));
+  }
+
+  @Test
+  void whenSearchBetween_givenNonExistentSortedIndex_shouldThrowException() {
+    final Snapshot<String> snapshot = numericSortedSnapshot();
+
+    assertThrows(UnsupportedIndexOperationException.class,
+        () -> snapshot.searchBetween("nonExistent", 1, 10));
+  }
+
+  @Test
+  void whenSearchEndsWith_givenNonStringKeySortedIndex_shouldThrowException() {
+    final Snapshot<String> snapshot = numericSortedSnapshot();
+
+    assertThrows(UnsupportedIndexOperationException.class,
+        () -> snapshot.searchEndsWith("byValue", "test"));
+  }
+
+  @Test
+  void whenHasIndex_givenExistingIndex_shouldReturnTrue() {
+    final Map<Object, List<String>> byLength = new HashMap<>();
+    byLength.put(5, List.of("alpha"));
+
+    final Map<String, Map<Object, List<String>>> indices = new HashMap<>();
+    indices.put("byLength", byLength);
+
+    final Snapshot<String> snapshot = Snapshot.of(
+        List.of("alpha"), indices, 1L, "hash");
+
+    assertTrue(snapshot.hasIndex("byLength"));
+    assertFalse(snapshot.hasIndex("nonExistent"));
+  }
+
+  @Test
+  void whenHasSortedIndex_givenExistingSortedIndex_shouldReturnTrue() {
+    final Snapshot<String> snapshot = numericSortedSnapshot();
+
+    assertTrue(snapshot.hasSortedIndex("byValue"));
+    assertFalse(snapshot.hasSortedIndex("nonExistent"));
+
+    // hasSortedIndex should also work via hasIndex
+    assertTrue(snapshot.hasIndex("byValue"));
   }
 }
