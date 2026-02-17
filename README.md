@@ -56,6 +56,8 @@ Search latency is a `HashMap.get()` on an immutable snapshot — no locks, no sy
 
 Build time is the cost of a full refresh: iterate all items, extract keys, populate index maps (HashMap + TreeMap for sorted indexes), wrap in unmodifiable collections, and atomic swap. This happens in a background thread; readers are never blocked during a rebuild.
 
+**Index build strategy:** each index definition iterates the dataset independently — N indices means N passes over the data. This is a deliberate design choice: each `IndexDefinition` and `SortedIndexDefinition` encapsulates its own build logic, keeping the index abstraction self-contained. The dominant cost is not the iteration itself but the HashMap/TreeMap insertions (especially TreeMap at O(log n) per entry), which are identical regardless of pass count. After the first pass, the dataset is warm in L2/L3 CPU cache, so subsequent passes read from cache rather than main memory.
+
 ### Query DSL
 
 Sorted indexes (`indexSorted()`) enable range queries and text pattern matching via a fluent Query DSL. Average latency per query (100K iterations):
