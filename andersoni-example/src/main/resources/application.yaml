@@ -69,33 +69,34 @@ k8s:
     lease-duration-seconds: ${K8S_LEASE_DURATION:30}
 
 # ===========================================================================
-# Kafka Sync Strategy (andersoni-sync-kafka)
+# Kafka Sync Strategy (andersoni-spring-sync-kafka)
 # ---------------------------------------------------------------------------
-# Broadcasts catalog refresh events across all nodes via Kafka.
-# When the leader refreshes a catalog, it publishes an event to the
-# configured topic. All other nodes consume the event and reload
-# their local cache.
+# Broadcasts catalog refresh events across all nodes via Spring Kafka.
+# Auto-configured by andersoni-spring-sync-kafka when bootstrap-servers
+# is set. Uses KafkaTemplate for publishing and @KafkaListener for
+# consuming. Spring manages the full Kafka listener lifecycle.
 #
 # Uses a broadcast pattern: each node gets its own consumer group
 # (consumerGroupPrefix + UUID), so every instance receives every message.
 # ===========================================================================
-kafka:
+  sync:
+    kafka:
 
-  # Kafka broker connection string. Comma-separated list of host:port pairs.
-  # Example: "broker1:9092,broker2:9092,broker3:9092"
-  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+      # Kafka broker connection string. Comma-separated list of host:port pairs.
+      # Example: "broker1:9092,broker2:9092,broker3:9092"
+      bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
-  # Kafka topic where refresh events are published and consumed.
-  # All Andersoni nodes for this application must share the same topic.
-  # Use a unique topic per application to isolate sync traffic.
-  # Default: "andersoni-sync"
-  topic: ${KAFKA_SYNC_TOPIC:andersoni-events}
+      # Kafka topic where refresh events are published and consumed.
+      # All Andersoni nodes for this application must share the same topic.
+      # Use a unique topic per application to isolate sync traffic.
+      # Default: "andersoni-sync"
+      topic: ${KAFKA_SYNC_TOPIC:andersoni-events}
 
-  # Prefix for generating unique consumer group IDs per node.
-  # Each node creates a consumer group as: <prefix> + <random-UUID>
-  # This ensures broadcast semantics (every node receives every message).
-  # Default: "andersoni-"
-  consumer-group-prefix: ${KAFKA_CONSUMER_GROUP_PREFIX:andersoni-example-}
+      # Prefix for generating unique consumer group IDs per node.
+      # Each node creates a consumer group as: <prefix> + <random-UUID>
+      # This ensures broadcast semantics (every node receives every message).
+      # Default: "andersoni-"
+      consumer-group-prefix: ${KAFKA_CONSUMER_GROUP_PREFIX:andersoni-example-}
 
 # ===========================================================================
 # S3 Snapshot Store (andersoni-snapshot-s3)

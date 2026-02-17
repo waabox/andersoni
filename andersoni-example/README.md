@@ -5,7 +5,7 @@ This is a complete Spring Boot application demonstrating all Andersoni features 
 ## What This Demonstrates
 
 - **Multi-index search**: Search events by sport, venue, or status using `by-sport`, `by-venue`, and `by-status` indexes
-- **Kafka sync across nodes**: Real-time cache synchronization using `andersoni-sync-kafka`
+- **Kafka sync across nodes**: Real-time cache synchronization using `andersoni-spring-sync-kafka` (auto-configured)
 - **K8s Lease-based leader election**: Automatic leader election using `andersoni-leader-k8s`
 - **S3 snapshot persistence**: Cache snapshots stored in MinIO via `andersoni-snapshot-s3`
 - **Spring Boot auto-configuration**: Zero-boilerplate setup using `andersoni-spring-boot-starter`
@@ -212,17 +212,17 @@ subjects:
 | Balanced (default) | 15 | 30 | Moderate API load, ~30s failover |
 | Low API load | 30 | 60 | Minimal API requests, ~60s failover |
 
-### Kafka Sync Strategy (`andersoni-sync-kafka`)
+### Kafka Sync Strategy (`andersoni-spring-sync-kafka`)
 
-Broadcasts catalog refresh events across all nodes via Kafka. When the leader refreshes a catalog, it publishes an event to the configured topic. All other nodes consume the event and reload their local cache.
+Auto-configured Spring Kafka-based synchronization. Uses `KafkaTemplate` for publishing and `@KafkaListener` for consuming. Spring manages the full Kafka listener lifecycle (no manual `start()`/`stop()` required). When the leader refreshes a catalog, it publishes an event to the configured topic. All other nodes consume the event and reload their local cache.
 
 Uses a **broadcast pattern**: each node gets its own consumer group (`consumer-group-prefix` + random UUID), so every instance receives every message.
 
 | Property | Env Variable | Default | Description |
 |----------|-------------|---------|-------------|
-| `kafka.bootstrap-servers` | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker connection string. Comma-separated list of host:port pairs. Example: `broker1:9092,broker2:9092,broker3:9092`. |
-| `kafka.topic` | `KAFKA_SYNC_TOPIC` | `andersoni-events` | Kafka topic where refresh events are published and consumed. All Andersoni nodes for this application must share the same topic. Use a unique topic per application to isolate sync traffic. |
-| `kafka.consumer-group-prefix` | `KAFKA_CONSUMER_GROUP_PREFIX` | `andersoni-example-` | Prefix for generating unique consumer group IDs per node. Each node creates a consumer group as `<prefix><random-UUID>`. This ensures broadcast semantics (every node receives every message). |
+| `andersoni.sync.kafka.bootstrap-servers` | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker connection string. Comma-separated list of host:port pairs. Example: `broker1:9092,broker2:9092,broker3:9092`. |
+| `andersoni.sync.kafka.topic` | `KAFKA_SYNC_TOPIC` | `andersoni-events` | Kafka topic where refresh events are published and consumed. All Andersoni nodes for this application must share the same topic. Use a unique topic per application to isolate sync traffic. |
+| `andersoni.sync.kafka.consumer-group-prefix` | `KAFKA_CONSUMER_GROUP_PREFIX` | `andersoni-example-` | Prefix for generating unique consumer group IDs per node. Each node creates a consumer group as `<prefix><random-UUID>`. This ensures broadcast semantics (every node receives every message). |
 
 ### S3 Snapshot Store (`andersoni-snapshot-s3`)
 
@@ -279,11 +279,12 @@ k8s:
     renewal-interval-seconds: ${K8S_LEASE_RENEWAL_INTERVAL:15} # Leader renewal frequency
     lease-duration-seconds: ${K8S_LEASE_DURATION:30}          # Lease TTL before expiry
 
-# Kafka Sync Strategy
-kafka:
-  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092} # Kafka broker(s)
-  topic: ${KAFKA_SYNC_TOPIC:andersoni-events}                 # Sync events topic
-  consumer-group-prefix: ${KAFKA_CONSUMER_GROUP_PREFIX:andersoni-example-} # Broadcast consumer group prefix
+# Kafka Sync Strategy (auto-configured by andersoni-spring-sync-kafka)
+  sync:
+    kafka:
+      bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092} # Kafka broker(s)
+      topic: ${KAFKA_SYNC_TOPIC:andersoni-events}                 # Sync events topic
+      consumer-group-prefix: ${KAFKA_CONSUMER_GROUP_PREFIX:andersoni-example-} # Broadcast consumer group prefix
 
 # S3 Snapshot Store
 s3:

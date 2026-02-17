@@ -13,9 +13,6 @@ import org.waabox.andersoni.leader.k8s.K8sLeaseConfig;
 import org.waabox.andersoni.leader.k8s.K8sLeaseLeaderElection;
 import org.waabox.andersoni.snapshot.s3.S3SnapshotConfig;
 import org.waabox.andersoni.snapshot.s3.S3SnapshotStore;
-import org.waabox.andersoni.sync.kafka.KafkaSyncConfig;
-import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
-
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
@@ -32,8 +29,6 @@ import java.util.function.Function;
  * by the andersoni-spring-boot-starter auto-configuration via
  * {@link org.springframework.beans.factory.ObjectProvider}:
  * <ul>
- *   <li>{@link KafkaSyncStrategy} for cross-node cache synchronization
- *       via Kafka</li>
  *   <li>{@link K8sLeaseLeaderElection} for Kubernetes-based leader
  *       election</li>
  *   <li>{@link S3SnapshotStore} for persisting catalog snapshots to
@@ -42,37 +37,13 @@ import java.util.function.Function;
  *       with its indices and refresh policy</li>
  * </ul>
  *
+ * <p>Kafka sync is auto-configured by {@code andersoni-spring-sync-kafka}
+ * via {@code andersoni.sync.kafka.*} properties in {@code application.yaml}.
+ *
  * @author waabox(waabox[at]gmail[dot]com)
  */
 @Configuration
 public class AndersoniConfig {
-
-  /** Creates a Kafka-based synchronization strategy for broadcasting
-   * catalog refresh events across all nodes in the cluster.
-   *
-   * <p>Uses a dedicated topic and consumer group prefix to isolate
-   * this application's sync traffic from other Andersoni instances.
-   *
-   * @param bootstrapServers the Kafka bootstrap servers connection
-   *        string (e.g. "broker1:9092,broker2:9092"), never null
-   * @param topic the Kafka topic for sync events, never null
-   * @param consumerGroupPrefix the prefix for unique consumer groups,
-   *        never null
-   *
-   * @return the configured Kafka sync strategy, never null
-   */
-  @Bean
-  public KafkaSyncStrategy kafkaSyncStrategy(
-      @Value("${kafka.bootstrap-servers}") final String bootstrapServers,
-      @Value("${kafka.topic:andersoni-sync}") final String topic,
-      @Value("${kafka.consumer-group-prefix:andersoni-}")
-          final String consumerGroupPrefix) {
-
-    final KafkaSyncConfig config = KafkaSyncConfig.create(
-        bootstrapServers, topic, consumerGroupPrefix);
-
-    return new KafkaSyncStrategy(config);
-  }
 
   /** Creates a Kubernetes Lease-based leader election strategy.
    *

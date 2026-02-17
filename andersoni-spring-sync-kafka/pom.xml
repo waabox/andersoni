@@ -11,11 +11,11 @@
     <version>1.0.2</version>
   </parent>
 
-  <artifactId>andersoni-sync-kafka</artifactId>
+  <artifactId>andersoni-spring-sync-kafka</artifactId>
 
-  <name>Andersoni Sync Kafka</name>
+  <name>Andersoni Spring Sync Kafka</name>
   <description>
-    Cache synchronization via Kafka.
+    Spring Kafka-based cache synchronization for Andersoni.
   </description>
 
   <dependencies>
@@ -26,9 +26,9 @@
     </dependency>
 
     <dependency>
-      <groupId>org.apache.kafka</groupId>
-      <artifactId>kafka-clients</artifactId>
-      <version>3.9.0</version>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+      <version>3.3.2</version>
     </dependency>
 
     <dependency>
@@ -41,6 +41,13 @@
       <artifactId>jackson-datatype-jsr310</artifactId>
     </dependency>
 
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-autoconfigure</artifactId>
+      <version>3.4.2</version>
+      <optional>true</optional>
+    </dependency>
+
     <!-- Test dependencies -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
@@ -51,6 +58,13 @@
     <dependency>
       <groupId>org.easymock</groupId>
       <artifactId>easymock</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <version>3.4.2</version>
       <scope>test</scope>
     </dependency>
 
