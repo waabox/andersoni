@@ -58,13 +58,77 @@ Search latency is effectively a `HashMap.get()` on an immutable snapshot — no 
 
 ## Maven Central
 
+All modules are published under `io.github.waabox`:
+
 ```xml
+<!-- Core (zero dependencies) -->
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-core</artifactId>
   <version>1.1.2</version>
 </dependency>
+
+<!-- Spring Boot starter -->
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-spring-boot-starter</artifactId>
+  <version>1.1.2</version>
+</dependency>
+
+<!-- Sync strategies -->
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-sync-kafka</artifactId>
+  <version>1.1.2</version>
+</dependency>
+
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-spring-sync-kafka</artifactId>
+  <version>1.1.2</version>
+</dependency>
+
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-sync-http</artifactId>
+  <version>1.1.2</version>
+</dependency>
+
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-sync-db</artifactId>
+  <version>1.1.2</version>
+</dependency>
+
+<!-- Leader election -->
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-leader-k8s</artifactId>
+  <version>1.1.2</version>
+</dependency>
+
+<!-- Snapshot persistence -->
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-snapshot-s3</artifactId>
+  <version>1.1.2</version>
+</dependency>
+
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-snapshot-fs</artifactId>
+  <version>1.1.2</version>
+</dependency>
+
+<!-- Admin console -->
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-admin</artifactId>
+  <version>1.1.2</version>
+</dependency>
 ```
+
+Browse all artifacts on [Maven Central](https://central.sonatype.com/search?q=io.github.waabox.andersoni).
 
 ## Wiki Contents
 
