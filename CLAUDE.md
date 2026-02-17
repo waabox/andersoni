@@ -20,7 +20,8 @@ Multi-module Maven project. Version managed in parent pom, inherited by all chil
 | Module | Purpose |
 |--------|---------|
 | `andersoni-core` | Engine, DSL, Snapshot, core interfaces (zero dependencies) |
-| `andersoni-sync-kafka` | Kafka broadcast sync |
+| `andersoni-sync-kafka` | Raw Kafka broadcast sync (no Spring dependency) |
+| `andersoni-spring-sync-kafka` | Spring Kafka-based sync with auto-configuration |
 | `andersoni-sync-http` | HTTP peer-to-peer sync |
 | `andersoni-sync-db` | JDBC polling sync |
 | `andersoni-leader-k8s` | K8s Lease leader election |
@@ -32,16 +33,25 @@ Multi-module Maven project. Version managed in parent pom, inherited by all chil
 
 ## Package Convention
 
-Root package: `org.waabox.andersoni`
+Maven groupId: `io.github.waabox`
+Root Java package: `org.waabox.andersoni`
 
 ```
-org.waabox.andersoni              # Core: Andersoni, Catalog, Snapshot, IndexDefinition
-org.waabox.andersoni.sync         # SyncStrategy, RefreshEvent
-org.waabox.andersoni.snapshot     # SnapshotStore, SnapshotSerializer
-org.waabox.andersoni.leader       # LeaderElectionStrategy
-org.waabox.andersoni.metrics      # AndersoniMetrics
-org.waabox.andersoni.admin        # Admin console
-org.waabox.andersoni.example      # Example app
+org.waabox.andersoni                    # Core: Andersoni, Catalog, Snapshot, IndexDefinition
+org.waabox.andersoni.sync               # SyncStrategy, RefreshEvent
+org.waabox.andersoni.sync.kafka         # Raw Kafka sync (no Spring)
+org.waabox.andersoni.sync.kafka.spring  # Spring Kafka sync with auto-configuration
+org.waabox.andersoni.sync.http          # HTTP peer-to-peer sync
+org.waabox.andersoni.sync.db            # JDBC polling sync
+org.waabox.andersoni.snapshot           # SnapshotStore, SnapshotSerializer
+org.waabox.andersoni.snapshot.s3        # S3 snapshot store
+org.waabox.andersoni.snapshot.fs        # Filesystem snapshot store
+org.waabox.andersoni.leader             # LeaderElectionStrategy
+org.waabox.andersoni.leader.k8s         # K8s Lease leader election
+org.waabox.andersoni.metrics            # AndersoniMetrics
+org.waabox.andersoni.spring             # Spring Boot auto-configuration
+org.waabox.andersoni.admin              # Admin console
+org.waabox.andersoni.example            # Example app
 ```
 
 ## Code Style
@@ -78,6 +88,5 @@ org.waabox.andersoni.example      # Example app
 ## Git Conventions
 
 - Clear, professional commit messages (what + why)
-- Never add Co-Authored-By
 - Tag format: `v{major}.{minor}.{patch}` (e.g., `v1.0.2`)
 - GitHub release triggers Maven Central publication automatically
