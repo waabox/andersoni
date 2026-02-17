@@ -123,12 +123,12 @@ Add the starter and your preferred sync strategy:
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-spring-boot-starter</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
 </dependency>
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-spring-sync-kafka</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
 </dependency>
 ```
 
@@ -138,7 +138,7 @@ Or if you're not using Spring, use the plain Kafka module instead:
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-sync-kafka</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
 </dependency>
 ```
 
@@ -148,7 +148,7 @@ If you're deploying on Kubernetes, add the leader election module for automatic 
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-leader-k8s</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
 </dependency>
 ```
 
