@@ -123,12 +123,12 @@ Add the starter and your preferred sync strategy:
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-spring-boot-starter</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.1</version>
 </dependency>
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-spring-sync-kafka</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.1</version>
 </dependency>
 ```
 
@@ -138,7 +138,7 @@ Or if you're not using Spring, use the plain Kafka module instead:
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-sync-kafka</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.1</version>
 </dependency>
 ```
 
@@ -148,7 +148,7 @@ If you're deploying on Kubernetes, add the leader election module for automatic 
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-leader-k8s</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.1</version>
 </dependency>
 ```
 
@@ -346,9 +346,7 @@ Implement `AndersoniMetrics` and register it as a Spring bean:
 
 ```java
 public interface AndersoniMetrics {
-    void catalogRefreshed(String catalogName, long durationMs, long itemCount);
     void snapshotLoaded(String catalogName, String source);
-    void searchExecuted(String catalogName, String indexName, long durationNs);
     void refreshFailed(String catalogName, Throwable cause);
 }
 ```
