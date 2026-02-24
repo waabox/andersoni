@@ -1478,4 +1478,56 @@ class AndersoniTest {
 
     andersoni.stop();
   }
+
+  @Test
+  void whenSearching_givenExpectedType_shouldReturnTypedList() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final List<Event> results = andersoni.search(
+        "events", "by-sport", "Football", Event.class);
+
+    assertEquals(1, results.size());
+    assertEquals(e1, results.get(0));
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenQuerying_givenExpectedType_shouldReturnTypedQueryStep() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final QueryStep<Event> queryStep = andersoni.query(
+        "events", "by-sport", Event.class);
+
+    final List<Event> results = queryStep.equalTo("Football");
+
+    assertEquals(1, results.size());
+    assertEquals(e1, results.get(0));
+
+    andersoni.stop();
+  }
 }

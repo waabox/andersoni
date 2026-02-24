@@ -54,7 +54,7 @@ import org.waabox.andersoni.sync.SyncStrategy;
  * andersoni.register(sportsCatalog);
  * andersoni.start();
  *
- * List<?> results = andersoni.search("events", "by-sport", "Football");
+ * List<Event> results = andersoni.search("events", "by-sport", "Football", Event.class);
  * }</pre>
  *
  * @author waabox(waabox[at]gmail[dot]com)
@@ -245,6 +245,36 @@ public final class Andersoni {
   }
 
   /**
+   * Searches a catalog by name and delegates to the specified index,
+   * returning a typed list for caller convenience.
+   *
+   * <p>This is a convenience overload that performs an unchecked cast
+   * on the result of {@link #search(String, String, Object)}. The caller
+   * is responsible for providing the correct type — the type that was
+   * used when creating the catalog via {@link Catalog#of(Class)}.
+   *
+   * @param catalogName  the name of the catalog to search, never null
+   * @param indexName    the name of the index within the catalog, never null
+   * @param key          the key to look up, never null
+   * @param type         the expected element type, never null
+   * @param <T>          the expected element type
+   *
+   * @return an unmodifiable list of matching items, never null
+   *
+   * @throws IllegalArgumentException      if no catalog with the given name
+   *                                       is registered
+   * @throws CatalogNotAvailableException  if the catalog failed to bootstrap
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> List<T> search(final String catalogName, final String indexName,
+      final Object key, final Class<T> type) {
+    Objects.requireNonNull(type, "type must not be null");
+    return (List<T>) search(catalogName, indexName, key);
+  }
+
+  /**
    * Returns a {@link QueryStep} for fluent querying of a catalog's index.
    *
    * <p>Usage:
@@ -276,6 +306,41 @@ public final class Andersoni {
     }
 
     return catalog.query(indexName);
+  }
+
+  /**
+   * Returns a typed {@link QueryStep} for fluent querying of a catalog's
+   * index.
+   *
+   * <p>This is a convenience overload that performs an unchecked cast
+   * on the result of {@link #query(String, String)}. The caller is
+   * responsible for providing the correct type — the type that was used
+   * when creating the catalog via {@link Catalog#of(Class)}.
+   *
+   * <p>Usage:
+   * <pre>{@code
+   * andersoni.query("events", "by-date", Event.class).between(from, to);
+   * andersoni.query("events", "by-venue", Event.class).equalTo("Maracana");
+   * }</pre>
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param indexName   the name of the index, never null
+   * @param type        the expected element type, never null
+   * @param <T>         the expected element type
+   *
+   * @return a QueryStep for the specified catalog and index, never null
+   *
+   * @throws IllegalArgumentException     if no catalog with the given name
+   *                                      is registered
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> QueryStep<T> query(final String catalogName,
+      final String indexName, final Class<T> type) {
+    Objects.requireNonNull(type, "type must not be null");
+    return (QueryStep<T>) query(catalogName, indexName);
   }
 
   /**
