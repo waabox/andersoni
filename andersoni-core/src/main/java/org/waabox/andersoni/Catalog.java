@@ -82,6 +82,9 @@ public final class Catalog<T> {
   /** The sorted index definitions for this catalog. */
   private final List<SortedIndexDefinition<T>> sortedIndexDefinitions;
 
+  /** The multi-key index definitions for this catalog. */
+  private final List<MultiKeyIndexDefinition<T>> multiKeyIndexDefinitions;
+
   /** The data loader, null if using static data. */
   private final DataLoader<T> dataLoader;
 
@@ -100,21 +103,25 @@ public final class Catalog<T> {
   /**
    * Creates a new Catalog instance.
    *
-   * @param name                    the catalog name, never null
-   * @param dataLoader              the data loader, may be null if using
-   *                                static data
-   * @param initialData             the initial static data, may be null if
-   *                                using a DataLoader
-   * @param indexDefinitions        the index definitions, never null
-   * @param sortedIndexDefinitions  the sorted index definitions, never null
-   * @param serializer              the optional serializer, may be null
-   * @param refreshInterval         the optional refresh interval, may be null
+   * @param name                      the catalog name, never null
+   * @param dataLoader                the data loader, may be null if using
+   *                                  static data
+   * @param initialData               the initial static data, may be null if
+   *                                  using a DataLoader
+   * @param indexDefinitions          the index definitions, never null
+   * @param sortedIndexDefinitions    the sorted index definitions, never null
+   * @param multiKeyIndexDefinitions  the multi-key index definitions,
+   *                                  never null
+   * @param serializer                the optional serializer, may be null
+   * @param refreshInterval           the optional refresh interval, may be
+   *                                  null
    */
   private Catalog(final String name,
       final DataLoader<T> dataLoader,
       final List<T> initialData,
       final List<IndexDefinition<T>> indexDefinitions,
       final List<SortedIndexDefinition<T>> sortedIndexDefinitions,
+      final List<MultiKeyIndexDefinition<T>> multiKeyIndexDefinitions,
       final SnapshotSerializer<T> serializer,
       final Duration refreshInterval) {
     this.name = name;
@@ -124,6 +131,8 @@ public final class Catalog<T> {
         new ArrayList<>(indexDefinitions));
     this.sortedIndexDefinitions = Collections.unmodifiableList(
         new ArrayList<>(sortedIndexDefinitions));
+    this.multiKeyIndexDefinitions = Collections.unmodifiableList(
+        new ArrayList<>(multiKeyIndexDefinitions));
     this.serializer = serializer;
     this.refreshInterval = refreshInterval;
     this.current = new AtomicReference<>(Snapshot.empty());
@@ -263,6 +272,22 @@ public final class Catalog<T> {
   }
 
   /**
+   * Creates a compound query bound to the current snapshot.
+   *
+   * <p>The returned {@link CompoundQuery} supports multi-index intersection
+   * queries with short-circuit evaluation. The query is bound to the snapshot
+   * that is current at invocation time; subsequent refreshes will not affect
+   * an already-returned CompoundQuery.
+   *
+   * @return a CompoundQuery bound to the current snapshot, never null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public CompoundQuery<T> compound() {
+    return new CompoundQuery<>(current.get(), name);
+  }
+
+  /**
    * Returns the name of this catalog.
    *
    * @return the catalog name, never null
@@ -340,6 +365,11 @@ public final class Catalog<T> {
     final Map<String, Map<Object, List<T>>> indices = new HashMap<>();
     for (final IndexDefinition<T> indexDef : indexDefinitions) {
       indices.put(indexDef.name(), indexDef.buildIndex(data));
+    }
+
+    // Build multi-key indices.
+    for (final MultiKeyIndexDefinition<T> multiDef : multiKeyIndexDefinitions) {
+      indices.put(multiDef.name(), multiDef.buildIndex(data));
     }
 
     // Build sorted indices.
@@ -536,8 +566,11 @@ public final class Catalog<T> {
     /** The accumulated sorted index definitions. */
     private final List<SortedIndexDefinition<T>> sortedIndexDefinitions;
 
+    /** The accumulated multi-key index definitions. */
+    private final List<MultiKeyIndexDefinition<T>> multiKeyIndexDefinitions;
+
     /** The set of registered index names for duplicate detection (shared
-     *  between regular and sorted indexes). */
+     *  between regular, sorted, and multi-key indexes). */
     private final Set<String> indexNames;
 
     /**
@@ -555,6 +588,7 @@ public final class Catalog<T> {
       this.initialData = initialData;
       this.indexDefinitions = new ArrayList<>();
       this.sortedIndexDefinitions = new ArrayList<>();
+      this.multiKeyIndexDefinitions = new ArrayList<>();
       this.indexNames = new HashSet<>();
     }
 
@@ -641,6 +675,34 @@ public final class Catalog<T> {
     }
 
     /**
+     * Starts defining a new multi-key index with the given name.
+     *
+     * <p>Returns a {@link MultiKeyIndexStep} that requires a call to
+     * {@link MultiKeyIndexStep#by(Function)} to complete the index
+     * definition and return to this builder for further chaining.
+     *
+     * <p>Multi-key indexes map each item to multiple keys, useful for
+     * hierarchical data (e.g., ancestor category IDs).
+     *
+     * @param indexName the name of the multi-key index, never null or empty
+     *
+     * @return a MultiKeyIndexStep for defining the key extraction,
+     *         never null
+     *
+     * @throws NullPointerException     if indexName is null
+     * @throws IllegalArgumentException if indexName is empty
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public MultiKeyIndexStep<T> indexMulti(final String indexName) {
+      Objects.requireNonNull(indexName, "indexName must not be null");
+      if (indexName.isEmpty()) {
+        throw new IllegalArgumentException("indexName must not be empty");
+      }
+      return new MultiKeyIndexStep<>(this, indexName);
+    }
+
+    /**
      * Builds the Catalog with all the accumulated configuration.
      *
      * @return a new Catalog instance, never null
@@ -651,13 +713,14 @@ public final class Catalog<T> {
      * @author waabox(waabox[at]gmail[dot]com)
      */
     public Catalog<T> build() {
-      if (indexDefinitions.isEmpty() && sortedIndexDefinitions.isEmpty()) {
+      if (indexDefinitions.isEmpty() && sortedIndexDefinitions.isEmpty()
+          && multiKeyIndexDefinitions.isEmpty()) {
         throw new IllegalStateException(
             "At least one index definition is required");
       }
       return new Catalog<>(name, dataLoader, initialData,
-          indexDefinitions, sortedIndexDefinitions, serializer,
-          refreshInterval);
+          indexDefinitions, sortedIndexDefinitions,
+          multiKeyIndexDefinitions, serializer, refreshInterval);
     }
 
     /**
@@ -695,6 +758,26 @@ public final class Catalog<T> {
             "Duplicate index name: '" + sortedIndexDefinition.name() + "'");
       }
       sortedIndexDefinitions.add(sortedIndexDefinition);
+    }
+
+    /**
+     * Adds a multi-key index definition to the builder. Package-private,
+     * called by {@link MultiKeyIndexStep}.
+     *
+     * @param multiKeyIndexDefinition the multi-key index definition to add,
+     *                                never null
+     *
+     * @throws IllegalArgumentException if an index (regular, sorted, or
+     *                                  multi-key) with the same name has
+     *                                  already been added
+     */
+    void addMultiKeyIndex(
+        final MultiKeyIndexDefinition<T> multiKeyIndexDefinition) {
+      if (!indexNames.add(multiKeyIndexDefinition.name())) {
+        throw new IllegalArgumentException(
+            "Duplicate index name: '" + multiKeyIndexDefinition.name() + "'");
+      }
+      multiKeyIndexDefinitions.add(multiKeyIndexDefinition);
     }
   }
 
@@ -813,6 +896,56 @@ public final class Catalog<T> {
       final SortedIndexDefinition<T> def =
           SortedIndexDefinition.<T>named(indexName).by(first, second);
       buildStep.addSortedIndex(def);
+      return buildStep;
+    }
+  }
+
+  /**
+   * Intermediate builder step for defining the key extraction function
+   * of a multi-key index.
+   *
+   * <p>After calling {@link #by(Function)}, control returns to the
+   * {@link BuildStep} for further chaining.
+   *
+   * @param <T> the type of data items
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public static final class MultiKeyIndexStep<T> {
+
+    /** The parent builder step. */
+    private final BuildStep<T> buildStep;
+
+    /** The multi-key index name. */
+    private final String indexName;
+
+    /**
+     * Creates a new MultiKeyIndexStep.
+     *
+     * @param buildStep the parent builder step, never null
+     * @param indexName the multi-key index name, never null
+     */
+    private MultiKeyIndexStep(final BuildStep<T> buildStep,
+        final String indexName) {
+      this.buildStep = buildStep;
+      this.indexName = indexName;
+    }
+
+    /**
+     * Defines the key extraction function that returns multiple keys
+     * for each domain object.
+     *
+     * @param keysExtractor the function that extracts a list of keys
+     *                      from a domain object, never null
+     *
+     * @return the parent BuildStep for further chaining, never null
+     *
+     * @throws NullPointerException if keysExtractor is null
+     */
+    public BuildStep<T> by(final Function<T, List<?>> keysExtractor) {
+      final MultiKeyIndexDefinition<T> def =
+          MultiKeyIndexDefinition.<T>named(indexName).by(keysExtractor);
+      buildStep.addMultiKeyIndex(def);
       return buildStep;
     }
   }

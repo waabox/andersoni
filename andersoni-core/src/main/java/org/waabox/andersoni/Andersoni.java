@@ -344,6 +344,44 @@ public final class Andersoni {
   }
 
   /**
+   * Creates a compound query for the specified catalog.
+   *
+   * @param catalogName the catalog name, never null
+   * @return a CompoundQuery for the catalog, never null
+   * @throws IllegalArgumentException if no catalog with the given name is
+   *                                  registered
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public CompoundQuery<?> compound(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    return catalog.compound();
+  }
+
+  /**
+   * Creates a typed compound query for the specified catalog.
+   *
+   * @param catalogName the catalog name, never null
+   * @param type the expected element type, never null
+   * @param <T> the expected element type
+   * @return a typed CompoundQuery for the catalog, never null
+   * @throws IllegalArgumentException if no catalog with the given name is
+   *                                  registered
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> CompoundQuery<T> compound(final String catalogName,
+      final Class<T> type) {
+    Objects.requireNonNull(type, "type must not be null");
+    return (CompoundQuery<T>) compound(catalogName);
+  }
+
+  /**
    * Refreshes a catalog locally and synchronizes the refresh event across
    * nodes.
    *
