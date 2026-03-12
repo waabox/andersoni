@@ -7,7 +7,7 @@
 
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni</artifactId>
-  <version>1.2.1</version>
+  <version>1.4.0</version>
   <packaging>pom</packaging>
 
   <name>Andersoni</name>
@@ -47,6 +47,7 @@
     <module>andersoni-leader-k8s</module>
     <module>andersoni-snapshot-s3</module>
     <module>andersoni-snapshot-fs</module>
+    <module>andersoni-json-serializer</module>
     <module>andersoni-spring-boot-starter</module>
     <module>andersoni-admin</module>
   </modules>
@@ -59,7 +60,7 @@
     <junit.version>5.11.4</junit.version>
     <easymock.version>5.5.0</easymock.version>
     <slf4j.version>2.0.16</slf4j.version>
-    <jackson.version>2.18.2</jackson.version>
+    <org.json.version>20251224</org.json.version>
   </properties>
 
   <dependencyManagement>
@@ -79,17 +80,11 @@
         <version>${slf4j.version}</version>
       </dependency>
 
-      <!-- Jackson -->
+      <!-- JSON (lightweight) -->
       <dependency>
-        <groupId>com.fasterxml.jackson.core</groupId>
-        <artifactId>jackson-databind</artifactId>
-        <version>${jackson.version}</version>
-      </dependency>
-
-      <dependency>
-        <groupId>com.fasterxml.jackson.datatype</groupId>
-        <artifactId>jackson-datatype-jsr310</artifactId>
-        <version>${jackson.version}</version>
+        <groupId>org.json</groupId>
+        <artifactId>json</artifactId>
+        <version>${org.json.version}</version>
       </dependency>
 
       <!-- Test dependencies -->

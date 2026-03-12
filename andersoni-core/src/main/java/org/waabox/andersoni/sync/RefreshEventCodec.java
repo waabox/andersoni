@@ -3,24 +3,20 @@ package org.waabox.andersoni.sync;
 import java.time.Instant;
 import java.util.Objects;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * Static utility class for serializing and deserializing
  * {@link RefreshEvent} instances to and from JSON strings.
  *
- * <p>Uses Jackson's tree model ({@link JsonNode}) for lightweight
+ * <p>Uses {@link JSONObject} from org.json for lightweight
  * JSON processing without requiring full object binding or additional
  * modules. {@link Instant} values are stored as ISO-8601 strings.
  *
  * @author waabox(waabox[at]gmail[dot]com)
  */
 public final class RefreshEventCodec {
-
-  /** Shared ObjectMapper for tree model operations. */
-  private static final ObjectMapper MAPPER = new ObjectMapper();
 
   /** Private constructor to prevent instantiation. */
   private RefreshEventCodec() {
@@ -40,7 +36,7 @@ public final class RefreshEventCodec {
   public static String serialize(final RefreshEvent event) {
     Objects.requireNonNull(event, "event cannot be null");
 
-    final ObjectNode node = MAPPER.createObjectNode();
+    final JSONObject node = new JSONObject();
     node.put("catalogName", event.catalogName());
     node.put("sourceNodeId", event.sourceNodeId());
     node.put("version", event.version());
@@ -66,43 +62,40 @@ public final class RefreshEventCodec {
     Objects.requireNonNull(json, "json cannot be null");
 
     try {
-      final JsonNode node = MAPPER.readTree(json);
+      final JSONObject node = new JSONObject(json);
 
-      final String catalogName = requireField(node, "catalogName").asText();
-      final String sourceNodeId = requireField(node, "sourceNodeId").asText();
-      final long version = requireField(node, "version").asLong();
-      final String hash = requireField(node, "hash").asText();
-      final Instant timestamp = Instant.parse(
-          requireField(node, "timestamp").asText()
-      );
+      final String catalogName = requireString(node, "catalogName");
+      final String sourceNodeId = requireString(node, "sourceNodeId");
+      final long version = node.getLong("version");
+      final String hash = requireString(node, "hash");
+      final Instant timestamp = Instant.parse(requireString(node, "timestamp"));
 
       return new RefreshEvent(
           catalogName, sourceNodeId, version, hash, timestamp
       );
     } catch (final IllegalArgumentException e) {
       throw e;
-    } catch (final Exception e) {
+    } catch (final JSONException e) {
       throw new IllegalArgumentException(
           "Failed to deserialize RefreshEvent from JSON: " + json, e
       );
     }
   }
 
-  /** Returns the field node for the given key or throws if missing.
+  /** Returns the string value for the given key or throws if missing.
    *
-   * @param node the parent JSON node.
+   * @param node the JSON object.
    * @param field the field name to look up.
-   * @return the field node, never null.
+   * @return the string value, never null.
    * @throws IllegalArgumentException if the field is missing.
    */
-  private static JsonNode requireField(final JsonNode node,
+  private static String requireString(final JSONObject node,
       final String field) {
-    final JsonNode value = node.get(field);
-    if (value == null || value.isNull()) {
+    if (!node.has(field) || node.isNull(field)) {
       throw new IllegalArgumentException(
           "Missing field: " + field + " in JSON: " + node
       );
     }
-    return value;
+    return node.getString(field);
   }
 }

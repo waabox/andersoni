@@ -8,7 +8,7 @@
   <parent>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni</artifactId>
-    <version>1.2.1</version>
+    <version>1.4.0</version>
   </parent>
 
   <artifactId>andersoni-core</artifactId>
@@ -26,8 +26,8 @@
     </dependency>
 
     <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-databind</artifactId>
+      <groupId>org.json</groupId>
+      <artifactId>json</artifactId>
     </dependency>
 
     <dependency>
