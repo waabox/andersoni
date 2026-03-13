@@ -14,6 +14,7 @@ import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -233,6 +234,166 @@ public final class Catalog<T> {
   }
 
   /**
+   * Adds a single item to the current snapshot without rebuilding all
+   * indices.
+   *
+   * <p>The item is added to the data list and inserted into all index
+   * maps at the appropriate keys. A new immutable snapshot is created
+   * and atomically swapped.
+   *
+   * @param item the item to add, never null
+   * @throws NullPointerException if item is null
+   */
+  public void add(final T item) {
+    Objects.requireNonNull(item, "item must not be null");
+    addAll(List.of(item));
+  }
+
+  /**
+   * Adds multiple items to the current snapshot without rebuilding all
+   * indices.
+   *
+   * @param items the items to add, never null
+   * @throws NullPointerException if items is null
+   */
+  public void addAll(final List<T> items) {
+    Objects.requireNonNull(items, "items must not be null");
+    if (items.isEmpty()) {
+      return;
+    }
+    refreshLock.lock();
+    try {
+      final Snapshot<T> snapshot = current.get();
+
+      final List<T> newData = new ArrayList<>(snapshot.data());
+      newData.addAll(items);
+
+      final Map<String, Map<Object, List<T>>> newIndices = new HashMap<>();
+      for (final IndexDefinition<T> indexDef : indexDefinitions) {
+        newIndices.put(indexDef.name(),
+            patchIndexAdd(snapshot.indices(), indexDef.name(), items,
+                indexDef::extractKey));
+      }
+
+      for (final MultiKeyIndexDefinition<T> multiDef
+          : multiKeyIndexDefinitions) {
+        newIndices.put(multiDef.name(),
+            patchMultiKeyIndexAdd(snapshot.indices(), multiDef.name(),
+                items, multiDef));
+      }
+
+      final Map<String, NavigableMap<Comparable<?>, List<T>>>
+          newSortedIndices = new HashMap<>(snapshot.sortedIndices());
+      final Map<String, NavigableMap<String, List<T>>>
+          newReversedKeyIndices = new HashMap<>(
+              snapshot.reversedKeyIndices());
+
+      for (final SortedIndexDefinition<T> sortedDef
+          : sortedIndexDefinitions) {
+        patchSortedIndexAdd(snapshot, sortedDef, items, newIndices,
+            newSortedIndices, newReversedKeyIndices);
+      }
+
+      final long version = versionCounter.incrementAndGet();
+      final String hash = computeHash(newData);
+
+      final Snapshot<T> patched = Snapshot.ofPreBuilt(
+          Collections.unmodifiableList(newData),
+          Collections.unmodifiableMap(newIndices),
+          Collections.unmodifiableMap(newSortedIndices),
+          Collections.unmodifiableMap(newReversedKeyIndices),
+          version, hash);
+      current.set(patched);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Removes a single item from the current snapshot without rebuilding
+   * all indices.
+   *
+   * <p>The item is matched via {@code equals()}. If the item is not found
+   * in the data list, this method is a no-op.
+   *
+   * @param item the item to remove, never null
+   * @throws NullPointerException if item is null
+   */
+  public void remove(final T item) {
+    Objects.requireNonNull(item, "item must not be null");
+    removeAll(List.of(item));
+  }
+
+  /**
+   * Removes multiple items from the current snapshot without rebuilding
+   * all indices.
+   *
+   * <p>Items are matched via {@code equals()}. Items not found are ignored.
+   * If no items are actually removed, this method is a no-op.
+   *
+   * @param items the items to remove, never null
+   * @throws NullPointerException if items is null
+   */
+  public void removeAll(final List<T> items) {
+    Objects.requireNonNull(items, "items must not be null");
+    if (items.isEmpty()) {
+      return;
+    }
+    refreshLock.lock();
+    try {
+      final Snapshot<T> snapshot = current.get();
+      final List<T> newData = new ArrayList<>(snapshot.data());
+      boolean anyRemoved = false;
+      for (final T item : items) {
+        anyRemoved |= newData.remove(item);
+      }
+
+      if (!anyRemoved) {
+        return;
+      }
+
+      final Map<String, Map<Object, List<T>>> newIndices = new HashMap<>();
+      for (final IndexDefinition<T> indexDef : indexDefinitions) {
+        newIndices.put(indexDef.name(),
+            patchIndexRemove(snapshot.indices(), indexDef.name(), items,
+                indexDef::extractKey));
+      }
+
+      for (final MultiKeyIndexDefinition<T> multiDef
+          : multiKeyIndexDefinitions) {
+        newIndices.put(multiDef.name(),
+            patchMultiKeyIndexRemove(snapshot.indices(), multiDef.name(),
+                items, multiDef));
+      }
+
+      final Map<String, NavigableMap<Comparable<?>, List<T>>>
+          newSortedIndices = new HashMap<>(snapshot.sortedIndices());
+      final Map<String, NavigableMap<String, List<T>>>
+          newReversedKeyIndices = new HashMap<>(
+              snapshot.reversedKeyIndices());
+
+      for (final SortedIndexDefinition<T> sortedDef
+          : sortedIndexDefinitions) {
+        patchSortedIndexRemove(snapshot, sortedDef, items, newIndices,
+            newSortedIndices, newReversedKeyIndices);
+      }
+
+      final long version = versionCounter.incrementAndGet();
+      final String hash = computeHash(newData);
+
+      final Snapshot<T> patched = Snapshot.ofPreBuilt(
+          Collections.unmodifiableList(newData),
+          Collections.unmodifiableMap(newIndices),
+          Collections.unmodifiableMap(newSortedIndices),
+          Collections.unmodifiableMap(newReversedKeyIndices),
+          version, hash);
+      current.set(patched);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
    * Searches the specified index for items matching the given key.
    *
    * <p>Delegates to the current {@link Snapshot#search(String, Object)}.
@@ -350,6 +511,301 @@ public final class Catalog<T> {
         .mapToLong(IndexInfo::estimatedSizeBytes).sum();
     return new CatalogInfo(name, snapshot.data().size(), indexInfos,
         totalSize);
+  }
+
+  // -----------------------------------------------------------------------
+  // Patch helpers
+  // -----------------------------------------------------------------------
+
+  /**
+   * Patches a regular index for added items.
+   *
+   * @param existingIndices the current indices map
+   * @param indexName       the index name
+   * @param items           the items being added
+   * @param keyExtractor    the key extractor function
+   * @return the patched index map, unmodifiable
+   */
+  private Map<Object, List<T>> patchIndexAdd(
+      final Map<String, Map<Object, List<T>>> existingIndices,
+      final String indexName, final List<T> items,
+      final Function<T, Object> keyExtractor) {
+
+    final Map<Object, List<T>> existing = existingIndices.getOrDefault(
+        indexName, Collections.emptyMap());
+    final Map<Object, List<T>> patched = new HashMap<>(existing);
+
+    for (final T item : items) {
+      final Object key = keyExtractor.apply(item);
+      final List<T> bucket = patched.get(key);
+      if (bucket == null) {
+        patched.put(key, Collections.unmodifiableList(List.of(item)));
+      } else {
+        final List<T> newBucket = new ArrayList<>(bucket);
+        newBucket.add(item);
+        patched.put(key, Collections.unmodifiableList(newBucket));
+      }
+    }
+
+    return Collections.unmodifiableMap(patched);
+  }
+
+  /**
+   * Patches a multi-key index for added items.
+   *
+   * @param existingIndices the current indices map
+   * @param indexName       the index name
+   * @param items           the items being added
+   * @param multiDef        the multi-key index definition
+   * @return the patched index map, unmodifiable
+   */
+  private Map<Object, List<T>> patchMultiKeyIndexAdd(
+      final Map<String, Map<Object, List<T>>> existingIndices,
+      final String indexName, final List<T> items,
+      final MultiKeyIndexDefinition<T> multiDef) {
+
+    final Map<Object, List<T>> existing = existingIndices.getOrDefault(
+        indexName, Collections.emptyMap());
+    final Map<Object, List<T>> patched = new HashMap<>(existing);
+
+    for (final T item : items) {
+      final List<?> keys = multiDef.extractKeys(item);
+      if (keys == null || keys.isEmpty()) {
+        continue;
+      }
+      for (final Object key : keys) {
+        final List<T> bucket = patched.get(key);
+        if (bucket == null) {
+          patched.put(key, Collections.unmodifiableList(List.of(item)));
+        } else {
+          final List<T> newBucket = new ArrayList<>(bucket);
+          newBucket.add(item);
+          patched.put(key, Collections.unmodifiableList(newBucket));
+        }
+      }
+    }
+
+    return Collections.unmodifiableMap(patched);
+  }
+
+  /**
+   * Patches sorted index maps for added items.
+   *
+   * @param snapshot            the current snapshot
+   * @param sortedDef           the sorted index definition
+   * @param items               the items being added
+   * @param newIndices          the accumulating hash indices map
+   * @param newSortedIndices    the accumulating sorted indices map
+   * @param newReversedKeyIndices the accumulating reversed-key indices map
+   */
+  @SuppressWarnings("unchecked")
+  private void patchSortedIndexAdd(final Snapshot<T> snapshot,
+      final SortedIndexDefinition<T> sortedDef, final List<T> items,
+      final Map<String, Map<Object, List<T>>> newIndices,
+      final Map<String, NavigableMap<Comparable<?>, List<T>>> newSortedIndices,
+      final Map<String, NavigableMap<String, List<T>>> newReversedKeyIndices) {
+
+    final String indexName = sortedDef.name();
+
+    // Patch hash index (same as regular index).
+    newIndices.put(indexName,
+        patchIndexAdd(snapshot.indices(), indexName, items,
+            sortedDef::extractKey));
+
+    // Patch sorted (TreeMap) index.
+    final NavigableMap<Comparable<?>, List<T>> existingSorted =
+        snapshot.sortedIndices().getOrDefault(indexName,
+            Collections.emptyNavigableMap());
+    final TreeMap<Comparable<?>, List<T>> patchedSorted =
+        new TreeMap<>(existingSorted);
+
+    final boolean hasReversed = snapshot.reversedKeyIndices()
+        .containsKey(indexName);
+    final NavigableMap<String, List<T>> existingReversed = hasReversed
+        ? snapshot.reversedKeyIndices().get(indexName)
+        : Collections.emptyNavigableMap();
+    final TreeMap<String, List<T>> patchedReversed = hasReversed
+        ? new TreeMap<>(existingReversed) : null;
+
+    for (final T item : items) {
+      final Object key = sortedDef.extractKey(item);
+      if (key == null) {
+        continue;
+      }
+
+      final Comparable<?> compKey = (Comparable<?>) key;
+
+      // Get the bucket from the patched hash index (source of truth).
+      final Map<Object, List<T>> hashIndex = newIndices.get(indexName);
+      final List<T> bucket = hashIndex.get(key);
+      patchedSorted.put(compKey, bucket);
+
+      if (patchedReversed != null && key instanceof String strKey) {
+        final String reversed = new StringBuilder(strKey)
+            .reverse().toString();
+        patchedReversed.put(reversed, bucket);
+      }
+    }
+
+    newSortedIndices.put(indexName,
+        Collections.unmodifiableNavigableMap(patchedSorted));
+    if (patchedReversed != null) {
+      newReversedKeyIndices.put(indexName,
+          Collections.unmodifiableNavigableMap(patchedReversed));
+    }
+  }
+
+  /**
+   * Patches a regular index for removed items.
+   *
+   * @param existingIndices the current indices map
+   * @param indexName       the index name
+   * @param items           the items being removed
+   * @param keyExtractor    the key extractor function
+   * @return the patched index map, unmodifiable
+   */
+  private Map<Object, List<T>> patchIndexRemove(
+      final Map<String, Map<Object, List<T>>> existingIndices,
+      final String indexName, final List<T> items,
+      final Function<T, Object> keyExtractor) {
+
+    final Map<Object, List<T>> existing = existingIndices.getOrDefault(
+        indexName, Collections.emptyMap());
+    final Map<Object, List<T>> patched = new HashMap<>(existing);
+
+    for (final T item : items) {
+      final Object key = keyExtractor.apply(item);
+      final List<T> bucket = patched.get(key);
+      if (bucket == null) {
+        continue;
+      }
+      final List<T> newBucket = new ArrayList<>(bucket);
+      newBucket.remove(item);
+      if (newBucket.isEmpty()) {
+        patched.remove(key);
+      } else {
+        patched.put(key, Collections.unmodifiableList(newBucket));
+      }
+    }
+
+    return Collections.unmodifiableMap(patched);
+  }
+
+  /**
+   * Patches a multi-key index for removed items.
+   *
+   * @param existingIndices the current indices map
+   * @param indexName       the index name
+   * @param items           the items being removed
+   * @param multiDef        the multi-key index definition
+   * @return the patched index map, unmodifiable
+   */
+  private Map<Object, List<T>> patchMultiKeyIndexRemove(
+      final Map<String, Map<Object, List<T>>> existingIndices,
+      final String indexName, final List<T> items,
+      final MultiKeyIndexDefinition<T> multiDef) {
+
+    final Map<Object, List<T>> existing = existingIndices.getOrDefault(
+        indexName, Collections.emptyMap());
+    final Map<Object, List<T>> patched = new HashMap<>(existing);
+
+    for (final T item : items) {
+      final List<?> keys = multiDef.extractKeys(item);
+      if (keys == null || keys.isEmpty()) {
+        continue;
+      }
+      for (final Object key : keys) {
+        final List<T> bucket = patched.get(key);
+        if (bucket == null) {
+          continue;
+        }
+        final List<T> newBucket = new ArrayList<>(bucket);
+        newBucket.remove(item);
+        if (newBucket.isEmpty()) {
+          patched.remove(key);
+        } else {
+          patched.put(key, Collections.unmodifiableList(newBucket));
+        }
+      }
+    }
+
+    return Collections.unmodifiableMap(patched);
+  }
+
+  /**
+   * Patches sorted index maps for removed items.
+   *
+   * @param snapshot             the current snapshot
+   * @param sortedDef            the sorted index definition
+   * @param items                the items being removed
+   * @param newIndices           the accumulating hash indices map
+   * @param newSortedIndices     the accumulating sorted indices map
+   * @param newReversedKeyIndices the accumulating reversed-key indices map
+   */
+  @SuppressWarnings("unchecked")
+  private void patchSortedIndexRemove(final Snapshot<T> snapshot,
+      final SortedIndexDefinition<T> sortedDef, final List<T> items,
+      final Map<String, Map<Object, List<T>>> newIndices,
+      final Map<String, NavigableMap<Comparable<?>, List<T>>> newSortedIndices,
+      final Map<String, NavigableMap<String, List<T>>> newReversedKeyIndices) {
+
+    final String indexName = sortedDef.name();
+
+    // Patch hash index.
+    newIndices.put(indexName,
+        patchIndexRemove(snapshot.indices(), indexName, items,
+            sortedDef::extractKey));
+
+    // Patch sorted (TreeMap) index.
+    final NavigableMap<Comparable<?>, List<T>> existingSorted =
+        snapshot.sortedIndices().getOrDefault(indexName,
+            Collections.emptyNavigableMap());
+    final TreeMap<Comparable<?>, List<T>> patchedSorted =
+        new TreeMap<>(existingSorted);
+
+    final boolean hasReversed = snapshot.reversedKeyIndices()
+        .containsKey(indexName);
+    final NavigableMap<String, List<T>> existingReversed = hasReversed
+        ? snapshot.reversedKeyIndices().get(indexName)
+        : Collections.emptyNavigableMap();
+    final TreeMap<String, List<T>> patchedReversed = hasReversed
+        ? new TreeMap<>(existingReversed) : null;
+
+    for (final T item : items) {
+      final Object key = sortedDef.extractKey(item);
+      if (key == null) {
+        continue;
+      }
+
+      final Comparable<?> compKey = (Comparable<?>) key;
+
+      // Check the patched hash index for the updated bucket.
+      final Map<Object, List<T>> hashIndex = newIndices.get(indexName);
+      final List<T> bucket = hashIndex.get(key);
+      if (bucket == null) {
+        // Key was fully removed.
+        patchedSorted.remove(compKey);
+        if (patchedReversed != null && key instanceof String strKey) {
+          final String reversed = new StringBuilder(strKey)
+              .reverse().toString();
+          patchedReversed.remove(reversed);
+        }
+      } else {
+        patchedSorted.put(compKey, bucket);
+        if (patchedReversed != null && key instanceof String strKey) {
+          final String reversed = new StringBuilder(strKey)
+              .reverse().toString();
+          patchedReversed.put(reversed, bucket);
+        }
+      }
+    }
+
+    newSortedIndices.put(indexName,
+        Collections.unmodifiableNavigableMap(patchedSorted));
+    if (patchedReversed != null) {
+      newReversedKeyIndices.put(indexName,
+          Collections.unmodifiableNavigableMap(patchedReversed));
+    }
   }
 
   /**

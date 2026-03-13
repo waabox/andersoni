@@ -854,4 +854,295 @@ class CatalogTest {
         catalog.query("non-existent").equalTo("anything")
     );
   }
+
+  // -----------------------------------------------------------------------
+  // Patch operations: add/addAll/remove/removeAll
+  // -----------------------------------------------------------------------
+
+  @Test
+  void whenAddingItem_shouldUpdateDataAndIndices() {
+    final Venue maracana = new Venue("Maracana");
+    final Sport football = new Sport("Football");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .serializer(new TestSerializer())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    catalog.bootstrap();
+
+    assertEquals(1, catalog.currentSnapshot().data().size());
+    assertEquals(1, catalog.search("by-venue", "Maracana").size());
+
+    final Venue wembley = new Venue("Wembley");
+    final Sport rugby = new Sport("Rugby");
+    final Event e2 = new Event("2", rugby, wembley);
+    catalog.add(e2);
+
+    assertEquals(2, catalog.currentSnapshot().data().size());
+    assertEquals(1, catalog.search("by-venue", "Maracana").size());
+    assertEquals(1, catalog.search("by-venue", "Wembley").size());
+    assertEquals(1, catalog.search("by-sport", "Rugby").size());
+    assertTrue(catalog.search("by-venue", "Wembley").contains(e2));
+  }
+
+  @Test
+  void whenAddingItem_shouldIncrementVersion() {
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(new Event("1", new Sport("Football"),
+            new Venue("M"))))
+        .serializer(new TestSerializer())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+    final long v1 = catalog.currentSnapshot().version();
+
+    catalog.add(new Event("2", new Sport("Rugby"), new Venue("W")));
+    final long v2 = catalog.currentSnapshot().version();
+
+    assertEquals(v1 + 1, v2);
+  }
+
+  @Test
+  void whenRemovingItem_shouldUpdateDataAndIndices() {
+    final Venue maracana = new Venue("Maracana");
+    final Sport football = new Sport("Football");
+    final Event e1 = new Event("1", football, maracana);
+    final Event e2 = new Event("2", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1, e2))
+        .serializer(new TestSerializer())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+
+    assertEquals(2, catalog.search("by-venue", "Maracana").size());
+
+    catalog.remove(e1);
+
+    assertEquals(1, catalog.currentSnapshot().data().size());
+    assertEquals(1, catalog.search("by-venue", "Maracana").size());
+    assertTrue(catalog.search("by-venue", "Maracana").contains(e2));
+    assertFalse(catalog.search("by-venue", "Maracana").contains(e1));
+  }
+
+  @Test
+  void whenRemovingItem_givenLastItemInBucket_shouldRemoveKey() {
+    final Venue maracana = new Venue("Maracana");
+    final Venue wembley = new Venue("Wembley");
+    final Sport football = new Sport("Football");
+    final Event e1 = new Event("1", football, maracana);
+    final Event e2 = new Event("2", football, wembley);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1, e2))
+        .serializer(new TestSerializer())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+
+    catalog.remove(e2);
+
+    assertEquals(1, catalog.currentSnapshot().data().size());
+    assertTrue(catalog.search("by-venue", "Wembley").isEmpty());
+    assertEquals(1, catalog.search("by-venue", "Maracana").size());
+  }
+
+  @Test
+  void whenRemovingItem_givenNotFound_shouldBeNoOp() {
+    final Event e1 = new Event("1", new Sport("Football"),
+        new Venue("M"));
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .serializer(new TestSerializer())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+    final long v1 = catalog.currentSnapshot().version();
+
+    final Event nonExistent = new Event("999", new Sport("X"),
+        new Venue("Y"));
+    catalog.remove(nonExistent);
+
+    assertEquals(v1, catalog.currentSnapshot().version());
+    assertEquals(1, catalog.currentSnapshot().data().size());
+  }
+
+  @Test
+  void whenAddingItem_givenSortedIndex_shouldPatchAllThreeMaps() {
+    final DatedEvent e1 = new DatedEvent("1",
+        new EventDate(LocalDate.of(2025, 1, 1)),
+        new Venue("Maracana"));
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of(e1))
+        .indexSorted("by-venue").by(DatedEvent::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+
+    final DatedEvent e2 = new DatedEvent("2",
+        new EventDate(LocalDate.of(2025, 2, 1)),
+        new Venue("Wembley"));
+    catalog.add(e2);
+
+    assertEquals(2, catalog.currentSnapshot().data().size());
+    assertEquals(1, catalog.search("by-venue", "Maracana").size());
+    assertEquals(1, catalog.search("by-venue", "Wembley").size());
+
+    // Verify sorted index range query works.
+    final List<DatedEvent> startsWith = catalog.query("by-venue")
+        .startsWith("W");
+    assertEquals(1, startsWith.size());
+    assertTrue(startsWith.contains(e2));
+
+    // Verify endsWith works (reversed key index).
+    final List<DatedEvent> endsWith = catalog.query("by-venue")
+        .endsWith("ley");
+    assertEquals(1, endsWith.size());
+    assertTrue(endsWith.contains(e2));
+  }
+
+  @Test
+  void whenRemovingItem_givenSortedIndex_shouldPatchAllThreeMaps() {
+    final DatedEvent e1 = new DatedEvent("1",
+        new EventDate(LocalDate.of(2025, 1, 1)),
+        new Venue("Maracana"));
+    final DatedEvent e2 = new DatedEvent("2",
+        new EventDate(LocalDate.of(2025, 2, 1)),
+        new Venue("Wembley"));
+
+    final Catalog<DatedEvent> catalog = Catalog.of(DatedEvent.class)
+        .named("dated-events")
+        .data(List.of(e1, e2))
+        .indexSorted("by-venue").by(DatedEvent::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+
+    catalog.remove(e2);
+
+    assertEquals(1, catalog.currentSnapshot().data().size());
+    assertEquals(1, catalog.search("by-venue", "Maracana").size());
+    assertTrue(catalog.search("by-venue", "Wembley").isEmpty());
+
+    // Verify sorted index range query reflects removal.
+    final List<DatedEvent> startsWith = catalog.query("by-venue")
+        .startsWith("W");
+    assertTrue(startsWith.isEmpty());
+  }
+
+  @Test
+  void whenAddingItem_givenMultiKeyIndex_shouldAddToAllKeys() {
+    record Category(String id, String name, List<String> ancestorIds) {}
+    record Publication(String id, Category category) {}
+
+    final Category sports = new Category("cat-1", "Sports",
+        List.of("cat-1"));
+    final Publication p1 = new Publication("pub-1", sports);
+
+    final Catalog<Publication> catalog = Catalog.of(Publication.class)
+        .named("pubs")
+        .data(List.of(p1))
+        .indexMulti("by-category")
+            .by(pub -> pub.category().ancestorIds())
+        .build();
+    catalog.bootstrap();
+
+    final Category football = new Category("cat-2", "Football",
+        List.of("cat-1", "cat-2"));
+    final Publication p2 = new Publication("pub-2", football);
+    catalog.add(p2);
+
+    assertEquals(2, catalog.search("by-category", "cat-1").size());
+    assertEquals(1, catalog.search("by-category", "cat-2").size());
+    assertTrue(catalog.search("by-category", "cat-2").contains(p2));
+  }
+
+  @Test
+  void whenRemovingItem_givenMultiKeyIndex_shouldRemoveFromAllKeys() {
+    record Category(String id, String name, List<String> ancestorIds) {}
+    record Publication(String id, Category category) {}
+
+    final Category sports = new Category("cat-1", "Sports",
+        List.of("cat-1"));
+    final Category football = new Category("cat-2", "Football",
+        List.of("cat-1", "cat-2"));
+    final Publication p1 = new Publication("pub-1", sports);
+    final Publication p2 = new Publication("pub-2", football);
+
+    final Catalog<Publication> catalog = Catalog.of(Publication.class)
+        .named("pubs")
+        .data(List.of(p1, p2))
+        .indexMulti("by-category")
+            .by(pub -> pub.category().ancestorIds())
+        .build();
+    catalog.bootstrap();
+
+    assertEquals(2, catalog.search("by-category", "cat-1").size());
+
+    catalog.remove(p2);
+
+    assertEquals(1, catalog.search("by-category", "cat-1").size());
+    assertTrue(catalog.search("by-category", "cat-2").isEmpty());
+  }
+
+  @Test
+  void whenAddingMultipleItems_shouldUpdateAllInSingleSnapshot() {
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(new Event("1", new Sport("Football"),
+            new Venue("M"))))
+        .serializer(new TestSerializer())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+    final long v1 = catalog.currentSnapshot().version();
+
+    final Event e2 = new Event("2", new Sport("Rugby"),
+        new Venue("W"));
+    final Event e3 = new Event("3", new Sport("Tennis"),
+        new Venue("R"));
+    catalog.addAll(List.of(e2, e3));
+
+    assertEquals(v1 + 1, catalog.currentSnapshot().version());
+    assertEquals(3, catalog.currentSnapshot().data().size());
+    assertEquals(1, catalog.search("by-venue", "W").size());
+    assertEquals(1, catalog.search("by-venue", "R").size());
+  }
+
+  @Test
+  void whenRemovingMultipleItems_shouldUpdateAllInSingleSnapshot() {
+    final Event e1 = new Event("1", new Sport("Football"),
+        new Venue("M"));
+    final Event e2 = new Event("2", new Sport("Rugby"),
+        new Venue("W"));
+    final Event e3 = new Event("3", new Sport("Tennis"),
+        new Venue("R"));
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1, e2, e3))
+        .serializer(new TestSerializer())
+        .index("by-venue").by(Event::venue, Venue::name)
+        .build();
+    catalog.bootstrap();
+    final long v1 = catalog.currentSnapshot().version();
+
+    catalog.removeAll(List.of(e1, e2));
+
+    assertEquals(v1 + 1, catalog.currentSnapshot().version());
+    assertEquals(1, catalog.currentSnapshot().data().size());
+    assertTrue(catalog.search("by-venue", "M").isEmpty());
+    assertTrue(catalog.search("by-venue", "W").isEmpty());
+    assertEquals(1, catalog.search("by-venue", "R").size());
+  }
 }
