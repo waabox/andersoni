@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,7 +27,10 @@ import org.waabox.andersoni.metrics.NoopAndersoniMetrics;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.snapshot.SnapshotStore;
+import org.waabox.andersoni.sync.PatchEvent;
+import org.waabox.andersoni.sync.PatchType;
 import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.SyncEventVisitor;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /**
@@ -449,6 +453,122 @@ public final class Andersoni {
   }
 
   /**
+   * Adds a single item to the specified catalog and synchronizes the
+   * patch event across nodes.
+   *
+   * @param catalogName the catalog name, never null
+   * @param item        the item to add, never null
+   * @param type        the item type, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException if no serializer is configured
+   */
+  @SuppressWarnings("unchecked")
+  public <T> void add(final String catalogName, final T item,
+      final Class<T> type) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+    Objects.requireNonNull(type, "type must not be null");
+    patchAndSync(catalogName, (List<Object>) (List<?>) List.of(item),
+        PatchType.ADD);
+  }
+
+  /**
+   * Adds multiple items to the specified catalog and synchronizes the
+   * patch event across nodes.
+   *
+   * @param catalogName the catalog name, never null
+   * @param items       the items to add, never null
+   * @param type        the item type, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException if no serializer is configured
+   */
+  @SuppressWarnings("unchecked")
+  public <T> void addAll(final String catalogName, final List<T> items,
+      final Class<T> type) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(items, "items must not be null");
+    Objects.requireNonNull(type, "type must not be null");
+    patchAndSync(catalogName, (List<Object>) (List<?>) items,
+        PatchType.ADD);
+  }
+
+  /**
+   * Removes a single item from the specified catalog and synchronizes the
+   * patch event across nodes.
+   *
+   * @param catalogName the catalog name, never null
+   * @param item        the item to remove, never null
+   * @param type        the item type, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException if no serializer is configured
+   */
+  @SuppressWarnings("unchecked")
+  public <T> void remove(final String catalogName, final T item,
+      final Class<T> type) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+    Objects.requireNonNull(type, "type must not be null");
+    patchAndSync(catalogName, (List<Object>) (List<?>) List.of(item),
+        PatchType.REMOVE);
+  }
+
+  /**
+   * Removes multiple items from the specified catalog and synchronizes
+   * the patch event across nodes.
+   *
+   * @param catalogName the catalog name, never null
+   * @param items       the items to remove, never null
+   * @param type        the item type, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException if no serializer is configured
+   */
+  @SuppressWarnings("unchecked")
+  public <T> void removeAll(final String catalogName, final List<T> items,
+      final Class<T> type) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(items, "items must not be null");
+    Objects.requireNonNull(type, "type must not be null");
+    patchAndSync(catalogName, (List<Object>) (List<?>) items,
+        PatchType.REMOVE);
+  }
+
+  /**
+   * Removes all items matching the predicate from the specified catalog
+   * and synchronizes the patch event across nodes.
+   *
+   * <p>The predicate is resolved locally. Matching items are collected
+   * and sent to followers as a concrete list.
+   *
+   * @param catalogName the catalog name, never null
+   * @param predicate   the filter predicate, never null
+   * @param type        the item type, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException if no serializer is configured
+   */
+  @SuppressWarnings("unchecked")
+  public <T> void removeAll(final String catalogName,
+      final Predicate<T> predicate, final Class<T> type) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(predicate, "predicate must not be null");
+    Objects.requireNonNull(type, "type must not be null");
+
+    final Catalog<T> catalog = (Catalog<T>) requireCatalog(catalogName);
+    final List<T> matching = catalog.currentSnapshot().data().stream()
+        .filter(predicate)
+        .toList();
+    if (matching.isEmpty()) {
+      return;
+    }
+    patchAndSync(catalogName, (List<Object>) (List<?>) matching,
+        PatchType.REMOVE);
+  }
+
+  /**
    * Stops the Andersoni lifecycle.
    *
    * <p>This method cancels all scheduled refresh tasks, stops the sync
@@ -723,29 +843,146 @@ public final class Andersoni {
 
     syncStrategy.subscribe(event -> {
       if (nodeId.equals(event.sourceNodeId())) {
-        log.debug("Ignoring refresh event from self for catalog '{}'",
+        log.debug("Ignoring sync event from self for catalog '{}'",
             event.catalogName());
         return;
       }
 
-      final Catalog<?> catalog = catalogsByName.get(event.catalogName());
-      if (catalog == null) {
-        log.warn("Received refresh event for unknown catalog '{}'",
-            event.catalogName());
-        return;
-      }
+      event.accept(new SyncEventVisitor() {
+        @Override
+        public void visit(final RefreshEvent refreshEvent) {
+          handleRefreshEvent(refreshEvent);
+        }
 
-      final String localHash = catalog.currentSnapshot().hash();
-      if (localHash.equals(event.hash())) {
-        log.debug("Catalog '{}' already at hash {}, ignoring event",
-            event.catalogName(), event.hash());
-        return;
-      }
-
-      refreshFromEvent(event.catalogName(), catalog);
+        @Override
+        public void visit(final PatchEvent patchEvent) {
+          handlePatchEvent(patchEvent);
+        }
+      });
     });
 
     syncStrategy.start();
+  }
+
+  /**
+   * Handles an incoming refresh event from another node.
+   *
+   * @param event the refresh event, never null
+   */
+  private void handleRefreshEvent(final RefreshEvent event) {
+    final Catalog<?> catalog = catalogsByName.get(event.catalogName());
+    if (catalog == null) {
+      log.warn("Received refresh event for unknown catalog '{}'",
+          event.catalogName());
+      return;
+    }
+
+    final String localHash = catalog.currentSnapshot().hash();
+    if (localHash.equals(event.hash())) {
+      log.debug("Catalog '{}' already at hash {}, ignoring event",
+          event.catalogName(), event.hash());
+      return;
+    }
+
+    refreshFromEvent(event.catalogName(), catalog);
+  }
+
+  /**
+   * Handles an incoming patch event from another node.
+   *
+   * <p>If the local version is not sequential with the event version,
+   * falls back to a full refresh.
+   *
+   * @param event the patch event, never null
+   */
+  @SuppressWarnings("unchecked")
+  private void handlePatchEvent(final PatchEvent event) {
+    final Catalog<?> catalog = catalogsByName.get(event.catalogName());
+    if (catalog == null) {
+      log.warn("Received patch event for unknown catalog '{}'",
+          event.catalogName());
+      return;
+    }
+
+    final long localVersion = catalog.currentSnapshot().version();
+    if (localVersion != event.version() - 1) {
+      log.warn("Catalog '{}': version mismatch (local={}, event={}), "
+          + "falling back to full refresh",
+          event.catalogName(), localVersion, event.version());
+      refreshFromEvent(event.catalogName(), catalog);
+      return;
+    }
+
+    final Optional<? extends SnapshotSerializer<?>> serializerOpt =
+        catalog.serializer();
+    if (serializerOpt.isEmpty()) {
+      log.error("Catalog '{}': cannot apply patch without serializer",
+          event.catalogName());
+      return;
+    }
+
+    try {
+      final SnapshotSerializer<Object> serializer =
+          (SnapshotSerializer<Object>) serializerOpt.get();
+      final List<Object> items = serializer.deserialize(event.items());
+      final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
+
+      if (event.patchType() == PatchType.ADD) {
+        typedCatalog.addAll(items);
+      } else {
+        typedCatalog.removeAll(items);
+      }
+
+      reportIndexSizes(catalog);
+    } catch (final Exception e) {
+      log.error("Failed to apply patch to catalog '{}': {}",
+          event.catalogName(), e.getMessage(), e);
+      metrics.refreshFailed(event.catalogName(), e);
+    }
+  }
+
+  /**
+   * Applies a patch locally and publishes a PatchEvent to other nodes.
+   *
+   * @param catalogName the catalog name, never null
+   * @param items       the items to patch, never null
+   * @param patchType   ADD or REMOVE, never null
+   */
+  @SuppressWarnings("unchecked")
+  private void patchAndSync(final String catalogName,
+      final List<Object> items, final PatchType patchType) {
+    if (stopped.get()) {
+      throw new IllegalStateException(
+          "Cannot patch after stop() has been called");
+    }
+    final Catalog<Object> catalog =
+        (Catalog<Object>) requireCatalog(catalogName);
+
+    final SnapshotSerializer<Object> serializer =
+        (SnapshotSerializer<Object>) catalog.serializer()
+            .orElseThrow(() -> new IllegalStateException(
+                "Catalog '" + catalogName + "' requires a "
+                    + "SnapshotSerializer for patch operations"));
+
+    if (patchType == PatchType.ADD) {
+      catalog.addAll(items);
+    } else {
+      catalog.removeAll(items);
+    }
+
+    reportIndexSizes(catalog);
+
+    final byte[] serializedItems = serializer.serialize(items);
+
+    if (syncStrategy != null) {
+      final Snapshot<?> snapshot = catalog.currentSnapshot();
+      final PatchEvent event = new PatchEvent(
+          catalogName, nodeId, snapshot.version(), snapshot.hash(),
+          Instant.now(), patchType, serializedItems);
+      syncStrategy.publish(event);
+    }
+
+    saveSnapshotIfPossible(catalog);
   }
 
   /**
