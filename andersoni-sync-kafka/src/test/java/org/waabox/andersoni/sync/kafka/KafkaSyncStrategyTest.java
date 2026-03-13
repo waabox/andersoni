@@ -8,7 +8,8 @@ import java.time.Instant;
 
 import org.junit.jupiter.api.Test;
 import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventCodec;
 
 /** Unit tests for {@link KafkaSyncStrategy} and {@link KafkaSyncConfig}.
  *
@@ -43,7 +44,7 @@ class KafkaSyncStrategyTest {
     final RefreshEvent event = new RefreshEvent(
         "events", "node-uuid-1", 1L, "abc123", timestamp);
 
-    final String json = RefreshEventCodec.serialize(event);
+    final String json = SyncEventCodec.serialize(event);
 
     assertNotNull(json);
     assertTrue(json.contains("\"catalogName\":\"events\""));
@@ -61,7 +62,7 @@ class KafkaSyncStrategyTest {
         + "\"hash\":\"abc123\","
         + "\"timestamp\":\"2024-01-01T00:00:00Z\"}";
 
-    final RefreshEvent event = RefreshEventCodec.deserialize(json);
+    final RefreshEvent event = (RefreshEvent) SyncEventCodec.deserialize(json);
 
     assertNotNull(event);
     assertEquals("events", event.catalogName());
@@ -79,7 +80,7 @@ class KafkaSyncStrategyTest {
         + "\"hash\":\"h\","
         + "\"timestamp\":\"2024-06-15T12:30:00Z\"}";
 
-    final RefreshEvent event = RefreshEventCodec.deserialize(json);
+    final RefreshEvent event = (RefreshEvent) SyncEventCodec.deserialize(json);
 
     assertEquals(9999999999L, event.version());
   }
@@ -90,7 +91,7 @@ class KafkaSyncStrategyTest {
         "localhost:9092");
     final KafkaSyncStrategy strategy = new KafkaSyncStrategy(config);
 
-    final java.util.List<RefreshEvent> received = new java.util.ArrayList<>();
+    final java.util.List<SyncEvent> received = new java.util.ArrayList<>();
     strategy.subscribe(received::add);
 
     final Instant timestamp = Instant.parse("2024-01-01T00:00:00Z");
@@ -110,8 +111,8 @@ class KafkaSyncStrategyTest {
         "localhost:9092");
     final KafkaSyncStrategy strategy = new KafkaSyncStrategy(config);
 
-    final java.util.List<RefreshEvent> received1 = new java.util.ArrayList<>();
-    final java.util.List<RefreshEvent> received2 = new java.util.ArrayList<>();
+    final java.util.List<SyncEvent> received1 = new java.util.ArrayList<>();
+    final java.util.List<SyncEvent> received2 = new java.util.ArrayList<>();
     strategy.subscribe(received1::add);
     strategy.subscribe(received2::add);
 
@@ -134,8 +135,8 @@ class KafkaSyncStrategyTest {
     final RefreshEvent original = new RefreshEvent(
         "products", "node-abc-def", 42L, "sha256hash", timestamp);
 
-    final String json = RefreshEventCodec.serialize(original);
-    final RefreshEvent restored = RefreshEventCodec.deserialize(json);
+    final String json = SyncEventCodec.serialize(original);
+    final RefreshEvent restored = (RefreshEvent) SyncEventCodec.deserialize(json);
 
     assertEquals(original, restored);
   }

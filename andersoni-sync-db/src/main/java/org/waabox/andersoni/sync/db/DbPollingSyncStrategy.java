@@ -17,8 +17,11 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.waabox.andersoni.AndersoniException;
+import org.waabox.andersoni.sync.PatchEvent;
 import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshListener;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventListener;
+import org.waabox.andersoni.sync.SyncEventVisitor;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /**
@@ -48,8 +51,8 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
   /** The configuration for this strategy, never null. */
   private final DbPollingSyncConfig config;
 
-  /** Registered refresh listeners. */
-  private final List<RefreshListener> listeners =
+  /** Registered sync event listeners. */
+  private final List<SyncEventListener> listeners =
       new CopyOnWriteArrayList<>();
 
   /** Last known hash per catalog name, used to detect changes. */
@@ -71,54 +74,28 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
 
   /** {@inheritDoc} */
   @Override
-  public void publish(final RefreshEvent event) {
+  public void publish(final SyncEvent event) {
     Objects.requireNonNull(event, "event cannot be null");
 
-    final String updateSql = "UPDATE " + config.tableName()
-        + " SET source_node_id = ?, version = ?, hash = ?, updated_at = ?"
-        + " WHERE catalog_name = ?";
-
-    final String insertSql = "INSERT INTO " + config.tableName()
-        + " (catalog_name, source_node_id, version, hash, updated_at)"
-        + " VALUES (?, ?, ?, ?, ?)";
-
-    try (final Connection conn = config.dataSource().getConnection()) {
-
-      final int affectedRows;
-      try (final PreparedStatement ps = conn.prepareStatement(updateSql)) {
-        ps.setString(1, event.sourceNodeId());
-        ps.setLong(2, event.version());
-        ps.setString(3, event.hash());
-        ps.setTimestamp(4, Timestamp.from(event.timestamp()));
-        ps.setString(5, event.catalogName());
-        affectedRows = ps.executeUpdate();
+    event.accept(new SyncEventVisitor() {
+      @Override
+      public void visit(final RefreshEvent refreshEvent) {
+        upsertRefreshRow(refreshEvent);
       }
 
-      if (affectedRows == 0) {
-        try (final PreparedStatement ps =
-            conn.prepareStatement(insertSql)) {
-          ps.setString(1, event.catalogName());
-          ps.setString(2, event.sourceNodeId());
-          ps.setLong(3, event.version());
-          ps.setString(4, event.hash());
-          ps.setTimestamp(5, Timestamp.from(event.timestamp()));
-          ps.executeUpdate();
-        }
+      @Override
+      public void visit(final PatchEvent patchEvent) {
+        log.warn("DbPollingSyncStrategy does not support native patch "
+            + "events; falling back to refresh-style row for catalog '{}'",
+            patchEvent.catalogName());
+        upsertRefreshRow(patchEvent);
       }
-
-      log.debug("Published refresh event for catalog '{}', version {}",
-          event.catalogName(), event.version());
-
-    } catch (final SQLException e) {
-      throw new AndersoniException(
-          "Failed to publish refresh event for catalog '"
-              + event.catalogName() + "'", e);
-    }
+    });
   }
 
   /** {@inheritDoc} */
   @Override
-  public void subscribe(final RefreshListener listener) {
+  public void subscribe(final SyncEventListener listener) {
     Objects.requireNonNull(listener, "listener cannot be null");
     listeners.add(listener);
   }
@@ -228,14 +205,65 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
   }
 
   /**
+   * Upserts a refresh-style row into the sync log table.
+   *
+   * <p>Uses a portable UPDATE-then-INSERT approach. This method is used
+   * for both {@link RefreshEvent} and {@link PatchEvent} (fallback).
+   *
+   * @param event the sync event, never null
+   */
+  private void upsertRefreshRow(final SyncEvent event) {
+    final String updateSql = "UPDATE " + config.tableName()
+        + " SET source_node_id = ?, version = ?, hash = ?, updated_at = ?"
+        + " WHERE catalog_name = ?";
+
+    final String insertSql = "INSERT INTO " + config.tableName()
+        + " (catalog_name, source_node_id, version, hash, updated_at)"
+        + " VALUES (?, ?, ?, ?, ?)";
+
+    try (final Connection conn = config.dataSource().getConnection()) {
+
+      final int affectedRows;
+      try (final PreparedStatement ps = conn.prepareStatement(updateSql)) {
+        ps.setString(1, event.sourceNodeId());
+        ps.setLong(2, event.version());
+        ps.setString(3, event.hash());
+        ps.setTimestamp(4, Timestamp.from(event.timestamp()));
+        ps.setString(5, event.catalogName());
+        affectedRows = ps.executeUpdate();
+      }
+
+      if (affectedRows == 0) {
+        try (final PreparedStatement ps =
+            conn.prepareStatement(insertSql)) {
+          ps.setString(1, event.catalogName());
+          ps.setString(2, event.sourceNodeId());
+          ps.setLong(3, event.version());
+          ps.setString(4, event.hash());
+          ps.setTimestamp(5, Timestamp.from(event.timestamp()));
+          ps.executeUpdate();
+        }
+      }
+
+      log.debug("Published sync event for catalog '{}', version {}",
+          event.catalogName(), event.version());
+
+    } catch (final SQLException e) {
+      throw new AndersoniException(
+          "Failed to publish sync event for catalog '"
+              + event.catalogName() + "'", e);
+    }
+  }
+
+  /**
    * Notifies all registered listeners of a refresh event.
    *
    * @param event the refresh event, never null
    */
   private void notifyListeners(final RefreshEvent event) {
-    for (final RefreshListener listener : listeners) {
+    for (final SyncEventListener listener : listeners) {
       try {
-        listener.onRefresh(event);
+        listener.onEvent(event);
       } catch (final Exception e) {
         log.error("Listener threw exception for catalog '{}'",
             event.catalogName(), e);

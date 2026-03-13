@@ -21,6 +21,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.SyncEvent;
 
 /** Unit tests for {@link DbPollingSyncStrategy}.
  *
@@ -167,7 +168,7 @@ class DbPollingSyncStrategyTest {
     strategy = new DbPollingSyncStrategy(config);
 
     final CountDownLatch latch = new CountDownLatch(1);
-    final List<RefreshEvent> received = new ArrayList<>();
+    final List<SyncEvent> received = new ArrayList<>();
 
     strategy.subscribe(event -> {
       received.add(event);
@@ -196,10 +197,12 @@ class DbPollingSyncStrategyTest {
 
     assertTrue(notified, "Listener should have been notified");
     assertEquals(1, received.size());
-    assertEquals("orders", received.get(0).catalogName());
-    assertEquals("remote-node", received.get(0).sourceNodeId());
-    assertEquals(5L, received.get(0).version());
-    assertEquals("remote-hash", received.get(0).hash());
+
+    final RefreshEvent receivedEvent = (RefreshEvent) received.get(0);
+    assertEquals("orders", receivedEvent.catalogName());
+    assertEquals("remote-node", receivedEvent.sourceNodeId());
+    assertEquals(5L, receivedEvent.version());
+    assertEquals("remote-hash", receivedEvent.hash());
   }
 
   @Test
@@ -210,7 +213,7 @@ class DbPollingSyncStrategyTest {
 
     strategy = new DbPollingSyncStrategy(config);
 
-    final List<RefreshEvent> received = new ArrayList<>();
+    final List<SyncEvent> received = new ArrayList<>();
     strategy.subscribe(received::add);
 
     strategy.start();
