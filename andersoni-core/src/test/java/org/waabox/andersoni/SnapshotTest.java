@@ -3,6 +3,7 @@ package org.waabox.andersoni;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -507,5 +508,22 @@ class SnapshotTest {
 
     // hasSortedIndex should also work via hasIndex
     assertTrue(snapshot.hasIndex("byValue"));
+  }
+
+  @Test
+  void whenCreatingViaOfPreBuilt_shouldNotDefensivelyCopy() {
+    final List<String> data = Collections.unmodifiableList(List.of("a", "b"));
+    final List<String> bucket = Collections.unmodifiableList(List.of("a"));
+    final Map<Object, List<String>> innerIndex = Collections.unmodifiableMap(
+        Map.of("key", bucket));
+    final Map<String, Map<Object, List<String>>> indices =
+        Collections.unmodifiableMap(Map.of("idx", innerIndex));
+
+    final Snapshot<String> snapshot = Snapshot.ofPreBuilt(
+        data, indices, Collections.emptyMap(), Collections.emptyMap(),
+        1L, "abc123");
+
+    assertSame(data, snapshot.data());
+    assertSame(bucket, snapshot.search("idx", "key"));
   }
 }

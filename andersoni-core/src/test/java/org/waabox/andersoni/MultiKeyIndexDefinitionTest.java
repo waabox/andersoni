@@ -94,4 +94,16 @@ class MultiKeyIndexDefinitionTest {
             .by(pub -> pub.category().ancestorIds());
     assertThrows(NullPointerException.class, () -> index.buildIndex(null));
   }
+
+  @Test
+  void whenExtractingKeys_givenItem_shouldReturnAllKeys() {
+    final Category football = new Category("cat-2", "Football",
+        List.of("cat-1", "cat-2"));
+    final Publication p1 = new Publication("pub-1", football);
+    final MultiKeyIndexDefinition<Publication> def =
+        MultiKeyIndexDefinition.<Publication>named("by-category")
+            .by(pub -> pub.category().ancestorIds());
+    final List<?> keys = def.extractKeys(p1);
+    assertEquals(List.of("cat-1", "cat-2"), keys);
+  }
 }

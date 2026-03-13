@@ -115,6 +115,18 @@ public final class IndexDefinition<T> {
   }
 
   /**
+   * Extracts the index key from a single item.
+   *
+   * <p>Package-private: used by {@link Catalog} for patch operations.
+   *
+   * @param item the item to extract the key from, never null
+   * @return the extracted key, may be null
+   */
+  Object extractKey(final T item) {
+    return keyExtractor.apply(item);
+  }
+
+  /**
    * Intermediate builder step that collects the key extraction functions
    * for an {@link IndexDefinition}.
    *

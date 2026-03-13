@@ -2,6 +2,7 @@ package org.waabox.andersoni;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -174,5 +175,24 @@ class IndexDefinitionTest {
     assertThrows(UnsupportedOperationException.class, () ->
         events.add(e1)
     );
+  }
+
+  @Test
+  void whenExtractingKey_givenItem_shouldReturnCorrectKey() {
+    final IndexDefinition<Event> def = IndexDefinition.<Event>named("by-venue")
+        .by(Event::venue, Venue::name);
+    final Event event = new Event("1", new Sport("Football"),
+        new Venue("Maracana"));
+    final Object key = def.extractKey(event);
+    assertEquals("Maracana", key);
+  }
+
+  @Test
+  void whenExtractingKey_givenNullIntermediate_shouldReturnNull() {
+    final IndexDefinition<Event> def = IndexDefinition.<Event>named("by-venue")
+        .by(Event::venue, Venue::name);
+    final Event event = new Event("1", new Sport("Football"), null);
+    final Object key = def.extractKey(event);
+    assertNull(key);
   }
 }

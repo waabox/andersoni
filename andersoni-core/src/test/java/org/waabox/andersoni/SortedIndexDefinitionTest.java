@@ -244,4 +244,15 @@ class SortedIndexDefinitionTest {
     assertThrows(NullPointerException.class, () ->
         index.buildIndex(null));
   }
+
+  @Test
+  void whenExtractingKey_givenItem_shouldReturnCorrectKey() {
+    final SortedIndexDefinition<Event> def =
+        SortedIndexDefinition.<Event>named("by-date")
+            .by(Event::eventDate, EventDate::value);
+    final Event event = new Event("1",
+        new EventDate(LocalDate.of(2025, 1, 15)), new Venue("A"));
+    final Object key = def.extractKey(event);
+    assertEquals(LocalDate.of(2025, 1, 15), key);
+  }
 }

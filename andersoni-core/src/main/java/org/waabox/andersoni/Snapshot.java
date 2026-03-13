@@ -157,6 +157,40 @@ public final class Snapshot<T> {
   }
 
   /**
+   * Creates a new snapshot from pre-built, already-immutable data structures.
+   *
+   * <p>Unlike {@link #of}, this factory does NOT perform defensive copying.
+   * The caller is responsible for ensuring all provided collections are
+   * properly constructed and immutable.
+   *
+   * <p>Package-private: used by {@link Catalog} for patch operations.
+   *
+   * @param data               the immutable data list, never null
+   * @param indices            the immutable indices, never null
+   * @param sortedIndices      the immutable sorted indices, never null
+   * @param reversedKeyIndices the immutable reversed-key indices, never null
+   * @param version            the version number
+   * @param hash               the content hash, never null
+   * @param <T>                the type of data items
+   *
+   * @return a new snapshot, never null
+   */
+  static <T> Snapshot<T> ofPreBuilt(final List<T> data,
+      final Map<String, Map<Object, List<T>>> indices,
+      final Map<String, NavigableMap<Comparable<?>, List<T>>> sortedIndices,
+      final Map<String, NavigableMap<String, List<T>>> reversedKeyIndices,
+      final long version, final String hash) {
+    Objects.requireNonNull(data, "data must not be null");
+    Objects.requireNonNull(indices, "indices must not be null");
+    Objects.requireNonNull(sortedIndices, "sortedIndices must not be null");
+    Objects.requireNonNull(reversedKeyIndices,
+        "reversedKeyIndices must not be null");
+    Objects.requireNonNull(hash, "hash must not be null");
+    return new Snapshot<>(data, indices, sortedIndices, reversedKeyIndices,
+        version, hash, Instant.now());
+  }
+
+  /**
    * Creates an empty snapshot with version 0, an empty hash, no data,
    * and no indices.
    *
@@ -232,6 +266,34 @@ public final class Snapshot<T> {
    */
   public Instant createdAt() {
     return createdAt;
+  }
+
+  /**
+   * Returns the regular indices map. Package-private for Catalog patch use.
+   *
+   * @return the indices map, never null
+   */
+  Map<String, Map<Object, List<T>>> indices() {
+    return indices;
+  }
+
+  /**
+   * Returns the sorted indices map. Package-private for Catalog patch use.
+   *
+   * @return the sorted indices map, never null
+   */
+  Map<String, NavigableMap<Comparable<?>, List<T>>> sortedIndices() {
+    return sortedIndices;
+  }
+
+  /**
+   * Returns the reversed-key indices map. Package-private for Catalog
+   * patch use.
+   *
+   * @return the reversed-key indices map, never null
+   */
+  Map<String, NavigableMap<String, List<T>>> reversedKeyIndices() {
+    return reversedKeyIndices;
   }
 
   // -----------------------------------------------------------------------

@@ -125,6 +125,18 @@ public final class MultiKeyIndexDefinition<T> {
   }
 
   /**
+   * Extracts the index keys from a single item.
+   *
+   * <p>Package-private: used by {@link Catalog} for patch operations.
+   *
+   * @param item the item to extract the keys from, never null
+   * @return the extracted keys, may be null or empty
+   */
+  List<?> extractKeys(final T item) {
+    return keysExtractor.apply(item);
+  }
+
+  /**
    * Intermediate builder step that collects the key extraction function
    * for a {@link MultiKeyIndexDefinition}.
    *
