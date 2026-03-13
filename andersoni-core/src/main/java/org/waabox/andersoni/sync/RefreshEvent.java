@@ -1,6 +1,7 @@
 package org.waabox.andersoni.sync;
 
 import java.time.Instant;
+import java.util.Objects;
 
 /**
  * Represents a catalog refresh event that is broadcast across nodes.
@@ -26,5 +27,12 @@ public record RefreshEvent(
     long version,
     String hash,
     Instant timestamp
-) {
+) implements SyncEvent {
+
+  /** {@inheritDoc} */
+  @Override
+  public void accept(final SyncEventVisitor visitor) {
+    Objects.requireNonNull(visitor, "visitor must not be null");
+    visitor.visit(this);
+  }
 }

@@ -14,9 +14,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.waabox.andersoni.Andersoni;
 import org.waabox.andersoni.Catalog;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventListener;
 import org.waabox.andersoni.sync.SyncStrategy;
-import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshListener;
 
 /**
  * Tests for {@link AndersoniAutoConfiguration}.
@@ -157,13 +157,13 @@ class AndersoniAutoConfigurationTest {
 
     /** {@inheritDoc} */
     @Override
-    public void publish(final RefreshEvent event) {
+    public void publish(final SyncEvent event) {
       // no-op for testing
     }
 
     /** {@inheritDoc} */
     @Override
-    public void subscribe(final RefreshListener listener) {
+    public void subscribe(final SyncEventListener listener) {
       // no-op for testing
     }
 

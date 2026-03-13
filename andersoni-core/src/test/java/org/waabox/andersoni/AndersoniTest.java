@@ -32,7 +32,8 @@ import org.waabox.andersoni.snapshot.SerializedSnapshot;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.snapshot.SnapshotStore;
 import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshListener;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventListener;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /**
@@ -181,7 +182,7 @@ class AndersoniTest {
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
 
     // Expect subscribe to be called on start.
-    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    syncStrategy.subscribe(anyObject(SyncEventListener.class));
     expectLastCall().once();
 
     // Expect start to be called.
@@ -189,7 +190,7 @@ class AndersoniTest {
     expectLastCall().once();
 
     // Expect publish with a RefreshEvent for "events" catalog.
-    final Capture<RefreshEvent> eventCapture = newCapture();
+    final Capture<SyncEvent> eventCapture = newCapture();
     syncStrategy.publish(capture(eventCapture));
     expectLastCall().once();
 
@@ -209,7 +210,7 @@ class AndersoniTest {
 
     andersoni.refreshAndSync("events");
 
-    final RefreshEvent published = eventCapture.getValue();
+    final RefreshEvent published = (RefreshEvent) eventCapture.getValue();
     assertEquals("events", published.catalogName());
     assertEquals("node-1", published.sourceNodeId());
     assertNotNull(published.hash());
@@ -236,8 +237,8 @@ class AndersoniTest {
         .index("by-sport").by(Event::sport, Sport::name)
         .build();
 
-    // Capture the RefreshListener registered via subscribe.
-    final Capture<RefreshListener> listenerCapture = newCapture();
+    // Capture the SyncEventListener registered via subscribe.
+    final Capture<SyncEventListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     syncStrategy.subscribe(capture(listenerCapture));
@@ -267,11 +268,11 @@ class AndersoniTest {
 
     // Simulate receiving a refresh event from another node with a
     // different hash.
-    final RefreshListener listener = listenerCapture.getValue();
+    final SyncEventListener listener = listenerCapture.getValue();
     final RefreshEvent event = new RefreshEvent(
         "events", "node-2", 2L, "different-hash",
         java.time.Instant.now());
-    listener.onRefresh(event);
+    listener.onEvent(event);
 
     // Verify the catalog was refreshed with new data.
     final List<?> rugbyResults = andersoni.search(
@@ -300,7 +301,7 @@ class AndersoniTest {
         .index("by-sport").by(Event::sport, Sport::name)
         .build();
 
-    final Capture<RefreshListener> listenerCapture = newCapture();
+    final Capture<SyncEventListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     syncStrategy.subscribe(capture(listenerCapture));
@@ -323,11 +324,11 @@ class AndersoniTest {
     final int loadCountAfterBootstrap = loadCount[0];
 
     // Simulate receiving an event from the same node.
-    final RefreshListener listener = listenerCapture.getValue();
+    final SyncEventListener listener = listenerCapture.getValue();
     final RefreshEvent event = new RefreshEvent(
         "events", "node-1", 2L, "some-hash",
         java.time.Instant.now());
-    listener.onRefresh(event);
+    listener.onEvent(event);
 
     // Load count should not have increased since our own event is ignored.
     assertEquals(loadCountAfterBootstrap, loadCount[0]);
@@ -349,7 +350,7 @@ class AndersoniTest {
     leaderElection.isLeader();
     expectLastCall().andReturn(true).anyTimes();
 
-    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    syncStrategy.subscribe(anyObject(SyncEventListener.class));
     expectLastCall().once();
     syncStrategy.start();
     expectLastCall().once();
@@ -719,7 +720,7 @@ class AndersoniTest {
 
   @Test
   void whenReceivingRefreshEvent_givenUnknownCatalog_shouldIgnore() {
-    final Capture<RefreshListener> listenerCapture = newCapture();
+    final Capture<SyncEventListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     syncStrategy.subscribe(capture(listenerCapture));
@@ -737,12 +738,12 @@ class AndersoniTest {
 
     andersoni.start();
 
-    final RefreshListener listener = listenerCapture.getValue();
+    final SyncEventListener listener = listenerCapture.getValue();
     final RefreshEvent event = new RefreshEvent(
         "unknown-catalog", "node-2", 1L, "some-hash", Instant.now());
 
     // Should not throw, just log a warning.
-    listener.onRefresh(event);
+    listener.onEvent(event);
 
     andersoni.stop();
 
@@ -766,7 +767,7 @@ class AndersoniTest {
         .index("by-sport").by(Event::sport, Sport::name)
         .build();
 
-    final Capture<RefreshListener> listenerCapture = newCapture();
+    final Capture<SyncEventListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     syncStrategy.subscribe(capture(listenerCapture));
@@ -791,10 +792,10 @@ class AndersoniTest {
     final String currentHash = catalog.currentSnapshot().hash();
 
     // Send an event with the SAME hash.
-    final RefreshListener listener = listenerCapture.getValue();
+    final SyncEventListener listener = listenerCapture.getValue();
     final RefreshEvent event = new RefreshEvent(
         "events", "node-2", 2L, currentHash, Instant.now());
-    listener.onRefresh(event);
+    listener.onEvent(event);
 
     assertEquals(loadCountAfterBootstrap, loadCount[0],
         "DataLoader should not be called when hashes match");
@@ -845,7 +846,7 @@ class AndersoniTest {
         .index("by-sport").by(Event::sport, Sport::name)
         .build();
 
-    final Capture<RefreshListener> listenerCapture = newCapture();
+    final Capture<SyncEventListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
@@ -882,12 +883,12 @@ class AndersoniTest {
 
     shouldThrow[0] = true;
 
-    final RefreshListener listener = listenerCapture.getValue();
+    final SyncEventListener listener = listenerCapture.getValue();
     final RefreshEvent event = new RefreshEvent(
         "events", "node-2", 2L, "different-hash", Instant.now());
 
     // Should not throw, the exception is caught internally.
-    listener.onRefresh(event);
+    listener.onEvent(event);
 
     // Original data should still be searchable.
     final List<?> results = andersoni.search(
@@ -1060,7 +1061,7 @@ class AndersoniTest {
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
 
-    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    syncStrategy.subscribe(anyObject(SyncEventListener.class));
     expectLastCall().andAnswer(() -> {
       callOrder.add("subscribe");
       return null;
