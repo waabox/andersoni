@@ -214,6 +214,9 @@ public final class Andersoni {
     bootstrapAllCatalogs();
     wireSyncListener();
     schedulePeriodicRefreshes();
+    metrics.start(
+        Collections.unmodifiableCollection(catalogsByName.values()),
+        nodeId);
   }
 
   /**
@@ -508,6 +511,8 @@ public final class Andersoni {
     if (!stopped.compareAndSet(false, true)) {
       return;
     }
+
+    metrics.stop();
 
     cancelScheduledRefreshes();
 

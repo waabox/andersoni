@@ -430,7 +430,13 @@ class AndersoniTest {
     metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
     expectLastCall().once();
 
+    metrics.start(anyObject(Collection.class), eq("node-1"));
+    expectLastCall().once();
+
     // Stop.
+    metrics.stop();
+    expectLastCall().once();
+
     leaderElection.stop();
     expectLastCall().once();
 
@@ -509,7 +515,13 @@ class AndersoniTest {
     metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
     expectLastCall().once();
 
+    metrics.start(anyObject(Collection.class), eq("node-2"));
+    expectLastCall().once();
+
     // Stop.
+    metrics.stop();
+    expectLastCall().once();
+
     leaderElection.stop();
     expectLastCall().once();
 
@@ -585,6 +597,12 @@ class AndersoniTest {
     metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
     expectLastCall().once();
 
+    metrics.start(anyObject(Collection.class), eq("node-2"));
+    expectLastCall().once();
+
+    metrics.stop();
+    expectLastCall().once();
+
     leaderElection.stop();
     expectLastCall().once();
 
@@ -639,6 +657,12 @@ class AndersoniTest {
     metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
     expectLastCall().once();
 
+    metrics.start(anyObject(Collection.class), eq("node-2"));
+    expectLastCall().once();
+
+    metrics.stop();
+    expectLastCall().once();
+
     leaderElection.stop();
     expectLastCall().once();
 
@@ -684,6 +708,12 @@ class AndersoniTest {
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
 
     metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
+    expectLastCall().once();
+
+    metrics.start(anyObject(Collection.class), eq("node-1"));
+    expectLastCall().once();
+
+    metrics.stop();
     expectLastCall().once();
 
     leaderElection.stop();
@@ -866,6 +896,12 @@ class AndersoniTest {
     metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
     expectLastCall().once();
 
+    metrics.start(anyObject(Collection.class), eq("node-1"));
+    expectLastCall().once();
+
+    metrics.stop();
+    expectLastCall().once();
+
     syncStrategy.stop();
     expectLastCall().once();
 
@@ -941,6 +977,12 @@ class AndersoniTest {
     expectLastCall().once();
 
     metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
+    expectLastCall().once();
+
+    metrics.start(anyObject(Collection.class), eq("node-1"));
+    expectLastCall().once();
+
+    metrics.stop();
     expectLastCall().once();
 
     leaderElection.stop();
@@ -1363,6 +1405,12 @@ class AndersoniTest {
     metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
     expectLastCall().once();
 
+    metrics.start(anyObject(Collection.class), eq("node-1"));
+    expectLastCall().once();
+
+    metrics.stop();
+    expectLastCall().once();
+
     leaderElection.stop();
     expectLastCall().once();
 
@@ -1435,6 +1483,12 @@ class AndersoniTest {
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
 
     metrics.refreshFailed(eq("dated-events"), anyObject(Throwable.class));
+    expectLastCall().once();
+
+    metrics.start(anyObject(Collection.class), eq("node-1"));
+    expectLastCall().once();
+
+    metrics.stop();
     expectLastCall().once();
 
     leaderElection.stop();

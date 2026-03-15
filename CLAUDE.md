@@ -28,6 +28,7 @@ Multi-module Maven project. Version managed in parent pom, inherited by all chil
 | `andersoni-snapshot-s3` | S3 snapshot persistence |
 | `andersoni-snapshot-fs` | Filesystem snapshot (dev/test) |
 | `andersoni-spring-boot-starter` | Spring Boot auto-configuration |
+| `andersoni-metrics-datadog` | Datadog DogStatsD metrics |
 | `andersoni-admin` | K8s admin console (Spring Boot app) |
 | `andersoni-example` | Full-stack demo app (standalone, not in parent modules) |
 
@@ -49,6 +50,7 @@ org.waabox.andersoni.snapshot.fs        # Filesystem snapshot store
 org.waabox.andersoni.leader             # LeaderElectionStrategy
 org.waabox.andersoni.leader.k8s         # K8s Lease leader election
 org.waabox.andersoni.metrics            # AndersoniMetrics
+org.waabox.andersoni.metrics.datadog    # Datadog DogStatsD metrics
 org.waabox.andersoni.spring             # Spring Boot auto-configuration
 org.waabox.andersoni.admin              # Admin console
 org.waabox.andersoni.example            # Example app
