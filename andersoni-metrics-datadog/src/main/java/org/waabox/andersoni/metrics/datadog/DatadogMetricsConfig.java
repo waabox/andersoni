@@ -169,6 +169,7 @@ public final class DatadogMetricsConfig {
      * @return this builder
      */
     public Builder prefix(final String thePrefix) {
+      Objects.requireNonNull(thePrefix, "prefix must not be null");
       this.prefix = thePrefix;
       return this;
     }
@@ -192,6 +193,8 @@ public final class DatadogMetricsConfig {
      * @return this builder
      */
     public Builder pollingInterval(final Duration thePollingInterval) {
+      Objects.requireNonNull(thePollingInterval,
+          "pollingInterval must not be null");
       this.pollingInterval = thePollingInterval;
       return this;
     }

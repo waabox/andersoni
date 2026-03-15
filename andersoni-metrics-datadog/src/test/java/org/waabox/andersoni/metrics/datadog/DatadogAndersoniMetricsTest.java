@@ -210,15 +210,8 @@ class DatadogAndersoniMetricsTest {
         DatadogAndersoniMetrics.create(client);
     metrics.start(List.of(catalog), "node-1");
 
-    // Invoke reportGauges via reflection to test synchronously
-    try {
-      final var method =
-          DatadogAndersoniMetrics.class.getDeclaredMethod("reportGauges");
-      method.setAccessible(true);
-      method.invoke(metrics);
-    } catch (final Exception e) {
-      throw new RuntimeException(e);
-    }
+    // Invoke reportGauges directly (package-private) for synchronous testing
+    metrics.reportGauges();
 
     metrics.stop();
 

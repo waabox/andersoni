@@ -232,7 +232,7 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
    * catalog are caught and logged so one failing catalog does not
    * prevent others from reporting.
    */
-  private void reportGauges() {
+  void reportGauges() {
     final String node = this.nodeId;
     final Collection<Catalog<?>> cats = this.catalogs;
     if (cats == null || node == null) {
