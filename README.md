@@ -159,12 +159,18 @@ This enables progressive drill-down queries: by country only, by country + top c
 The `graphQuery()` DSL accepts conditions by traversal field name. The **query planner** automatically selects the best hotpath based on longest usable prefix:
 
 ```java
-// Country only → uses CompositeKey("AR")
-catalog.graphQuery()
+// From Andersoni (typed) — since 1.5.1
+andersoni.graphQuery("publications", Publication.class)
     .where("country").eq("AR")
     .execute();
 
-// Country + category drill-down → uses CompositeKey("AR", "deportes/futbol")
+// Country + category drill-down
+andersoni.graphQuery("publications", Publication.class)
+    .where("country").eq("AR")
+    .and("category").eq("deportes/futbol")
+    .execute();
+
+// From Catalog directly
 catalog.graphQuery()
     .where("country").eq("AR")
     .and("category").eq("deportes/futbol")
@@ -197,22 +203,27 @@ Catalog.of(Publication.class)
     .named("publications")
     .loadWith(loader)
     // Regular index for simple lookups
-    .index("by-slug").by(Publication::slug, Function.identity())
+    .index("by-venue").by(Publication::venue, Venue::name)
     // Multi-key index for ancestry
-    .indexMulti("by-category").by(pub -> pub.category().ancestorIds())
+    .indexMulti("by-organizer").by(Publication::organizerIds)
     // Graph index for cross-entity composite queries
-    .indexGraph("by-country-category")
+    .indexGraph("publications-graph")
         .traverseMany("country", Publication::events,
             event -> event.country().code())
         .traversePath("category", "/", Publication::categoryPath)
+        .traverse("slug", Publication::slug)
         .hotpath("country", "category")
+        .hotpath("country", "slug")
         .done()
     .build();
 
 // Each index type has its own query API
-catalog.search("by-slug", "my-event");                    // regular
-catalog.search("by-category", categoryId);                // multi-key
-catalog.graphQuery().where("country").eq("AR").execute();  // graph
+andersoni.search("publications", "by-venue", "Wembley");   // regular
+andersoni.search("publications", "by-organizer", orgId);    // multi-key
+andersoni.graphQuery("publications", Publication.class)      // graph
+    .where("country").eq("AR")
+    .and("category").eq("deportes")
+    .execute();
 ```
 
 ## How It Compares
@@ -271,21 +282,22 @@ Andersoni fits when you have **read-heavy reference data** queried by multiple c
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-core</artifactId>
-    <version>1.5.0</version>
+    <version>1.5.1</version>
 </dependency>
 ```
 
 ```java
-// Define catalog with regular indexes and a graph index
+// Define catalog with graph index
 Catalog<Event> catalog = Catalog.of(Event.class)
     .named("events")
     .loadWith(() -> eventRepository.findAll())
     .index("by-venue").by(Event::venue, Venue::name)
-    .index("by-sport").by(Event::sport, Sport::name)
-    .indexGraph("by-country-category")
+    .indexGraph("events-graph")
         .traverseMany("country", Event::organizers, Organizer::countryCode)
         .traversePath("category", "/", Event::categoryPath)
+        .traverse("slug", Event::slug)
         .hotpath("country", "category")
+        .hotpath("country", "slug")
         .done()
     .build();
 
@@ -296,21 +308,27 @@ andersoni.start();
 // Simple index lookup
 List<Event> events = andersoni.search("events", "by-venue", "Wembley");
 
-// Graph index: all events in AR
-catalog.graphQuery()
+// Graph query: all events in AR
+andersoni.graphQuery("events", Event.class)
     .where("country").eq("AR")
     .execute();
 
-// Graph index: AR + top category (matches deportes/futbol, deportes/basket, etc.)
-catalog.graphQuery()
+// Graph query: AR + top category (matches deportes/futbol, deportes/basket, etc.)
+andersoni.graphQuery("events", Event.class)
     .where("country").eq("AR")
     .and("category").eq("deportes")
     .execute();
 
-// Graph index: AR + specific subcategory (only futbol)
-catalog.graphQuery()
+// Graph query: AR + specific subcategory (only futbol)
+andersoni.graphQuery("events", Event.class)
     .where("country").eq("AR")
     .and("category").eq("deportes/futbol")
+    .execute();
+
+// Graph query: find by slug scoped to country
+andersoni.graphQuery("events", Event.class)
+    .where("country").eq("AR")
+    .and("slug").eq("champions-final")
     .execute();
 ```
 
