@@ -48,9 +48,9 @@ Benchmarked on Apple M-series, JDK 21, 8 threads. Catalog with 3 regular indices
 
 | Items | Build Time | Avg Search Latency | Concurrent Throughput | Memory |
 |---|---|---|---|---|
-| 10,000 | 35 ms | ~65 ns | ~12M ops/s | ~14 MB |
-| 100,000 | 130 ms | ~33 ns | ~83M ops/s | ~25 MB |
-| 500,000 | 490 ms | ~30 ns | ~130M ops/s | ~13 MB |
+| 10,000 | 37 ms | ~65 ns | ~16M ops/s | ~13 MB |
+| 100,000 | 120 ms | ~34 ns | ~67M ops/s | ~25 MB |
+| 500,000 | 492 ms | ~32 ns | ~176M ops/s | ~14 MB |
 
 Search latency is a `HashMap.get()` on an immutable snapshot — no locks, no synchronization, no copying. Throughput scales linearly with cores because readers never contend with each other.
 
@@ -92,17 +92,17 @@ Graph indexes (`indexGraph()`) navigate entity relationships and pre-compute com
 
 | Metric | Graph Index | indexMulti (manual keys) |
 |---|---|---|
-| Indexation time | ~25 ms | ~7 ms |
+| Indexation time | ~23 ms | ~7 ms |
 | Keys generated | 560 unique, ~57K entries | — |
 | Memory | ~564 KB | — |
 
 | Query | Graph Index | indexMulti |
 |---|---|---|
-| Country only | ~826 ns | ~35 ns |
-| Country + top category | ~631 ns | ~163 ns |
-| Country + full path | ~309 ns | — |
+| Country only | ~729 ns | ~34 ns |
+| Country + top category | ~605 ns | ~146 ns |
+| Country + full path | ~303 ns | — |
 
-Graph indexes trade raw query speed (~5-20x slower) for a **clean domain model**: the entity no longer generates index keys manually. All queries remain sub-microsecond. The query planner selects the best hotpath automatically.
+Graph indexes trade raw query speed for a **clean domain model**: the entity no longer generates index keys manually. All queries remain sub-microsecond. The query planner overhead is ~500-700ns per query (hotpath selection + CompositeKey construction). The actual HashMap lookup is identical in both cases.
 
 **When to use graph indexes:** when your index keys cross entity relationships (e.g., `Publication → Event → Country`) and you want to keep indexing logic out of the domain model. For simple single-field indexes, regular `index()` or `indexMulti()` is faster.
 
