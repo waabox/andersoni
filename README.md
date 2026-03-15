@@ -86,6 +86,135 @@ Dates indexed as ISO strings (`"2024-01-15"`) enable date range and pattern quer
 
 Range operations (`between`, `greaterThan`, etc.) are O(log n + k) where k is the number of matching entries. Text operations (`startsWith`, `endsWith`) use TreeMap prefix scans; `contains` performs a full key scan O(keys). Latency scales with result set size — queries returning fewer items are proportionally faster.
 
+### Graph Index
+
+Graph indexes (`indexGraph()`) navigate entity relationships and pre-compute composite keys via hotpaths. Benchmarked with 10,000 publications, 10 countries, 5 categories x 10 subcategories, ~2 events per publication:
+
+| Metric | Graph Index | indexMulti (manual keys) |
+|---|---|---|
+| Indexation time | ~25 ms | ~7 ms |
+| Keys generated | 560 unique, ~57K entries | — |
+| Memory | ~564 KB | — |
+
+| Query | Graph Index | indexMulti |
+|---|---|---|
+| Country only | ~826 ns | ~35 ns |
+| Country + top category | ~631 ns | ~163 ns |
+| Country + full path | ~309 ns | — |
+
+Graph indexes trade raw query speed (~5-20x slower) for a **clean domain model**: the entity no longer generates index keys manually. All queries remain sub-microsecond. The query planner selects the best hotpath automatically.
+
+**When to use graph indexes:** when your index keys cross entity relationships (e.g., `Publication → Event → Country`) and you want to keep indexing logic out of the domain model. For simple single-field indexes, regular `index()` or `indexMulti()` is faster.
+
+## Graph Index & Query Planner
+
+Graph indexes define **traversals** over entity relationships and **hotpaths** that declare which traversal combinations to pre-compute as composite keys at indexing time. All lookups are O(1) via HashMap.
+
+### Defining a Graph Index
+
+```java
+Catalog<Publication> catalog = Catalog.of(Publication.class)
+    .named("publications")
+    .loadWith(() -> repository.findAll())
+    .indexGraph("by-country-category")
+        // Fan-out traversal: Publication -> events[] -> country code
+        .traverseMany("country", Publication::events,
+            event -> event.country().code())
+        // Path traversal: splits "deportes/futbol/liga" into prefix keys
+        .traversePath("category", "/", Publication::categoryPath)
+        // Pre-compute keys for (country, category) combinations
+        .hotpath("country", "category")
+        .done()
+    .build();
+```
+
+### Traversal Types
+
+| Type | DSL | Produces | Example |
+|---|---|---|---|
+| **Simple** | `.traverse("name", T::value)` | 1 value | `Publication::slug` → `"my-event"` |
+| **Fan-out** | `.traverseMany("name", T::collection, C::value)` | N distinct values | `Publication::events` → `["AR", "MX"]` |
+| **Path** | `.traversePath("name", "/", T::path)` | N prefix keys | `"deportes/futbol"` → `["deportes", "deportes/futbol"]` |
+
+### Hotpaths & Key Generation
+
+A hotpath declares which traversals to combine. The engine generates the **cartesian product** of traversal values, plus **prefix keys** at every depth level:
+
+```
+Publication with country=["AR","MX"] and categoryPath="deportes/futbol"
+
+Hotpath ("country", "category") generates:
+  CompositeKey("AR")                        ← prefix (country only)
+  CompositeKey("MX")                        ← prefix (country only)
+  CompositeKey("AR", "deportes")            ← country + top category
+  CompositeKey("AR", "deportes/futbol")     ← country + full path
+  CompositeKey("MX", "deportes")            ← country + top category
+  CompositeKey("MX", "deportes/futbol")     ← country + full path
+```
+
+This enables progressive drill-down queries: by country only, by country + top category, by country + full subcategory path — all O(1).
+
+### Querying with the Query Planner
+
+The `graphQuery()` DSL accepts conditions by traversal field name. The **query planner** automatically selects the best hotpath based on longest usable prefix:
+
+```java
+// Country only → uses CompositeKey("AR")
+catalog.graphQuery()
+    .where("country").eq("AR")
+    .execute();
+
+// Country + category drill-down → uses CompositeKey("AR", "deportes/futbol")
+catalog.graphQuery()
+    .where("country").eq("AR")
+    .and("category").eq("deportes/futbol")
+    .execute();
+```
+
+The planner evaluates all hotpaths across all graph indexes, picks the one with the highest field coverage, and performs a single HashMap lookup. If conditions reference fields not covered by any hotpath, the query throws `UnsupportedOperationException` — this forces explicit index design rather than silently degrading to a full scan.
+
+### Safety Limits
+
+To prevent combinatorial explosion when fan-out traversals produce many values, set `maxKeysPerItem`:
+
+```java
+.indexGraph("by-country-category")
+    .traverseMany("country", Publication::events, e -> e.country().code())
+    .traversePath("category", "/", Publication::categoryPath)
+    .hotpath("country", "category")
+    .maxKeysPerItem(50)  // default: 100
+    .done()
+```
+
+If any item generates more keys than the limit during indexation, `IndexKeyLimitExceededException` is thrown immediately (fail-fast).
+
+### Mixing Index Types
+
+Graph indexes coexist with all other index types. Use the right tool for each access pattern:
+
+```java
+Catalog.of(Publication.class)
+    .named("publications")
+    .loadWith(loader)
+    // Regular index for simple lookups
+    .index("by-slug").by(Publication::slug, Function.identity())
+    // Multi-key index for ancestry
+    .indexMulti("by-category").by(pub -> pub.category().ancestorIds())
+    // Graph index for cross-entity composite queries
+    .indexGraph("by-country-category")
+        .traverseMany("country", Publication::events,
+            event -> event.country().code())
+        .traversePath("category", "/", Publication::categoryPath)
+        .hotpath("country", "category")
+        .done()
+    .build();
+
+// Each index type has its own query API
+catalog.search("by-slug", "my-event");                    // regular
+catalog.search("by-category", categoryId);                // multi-key
+catalog.graphQuery().where("country").eq("AR").execute();  // graph
+```
+
 ## How It Compares
 
 Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.

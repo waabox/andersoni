@@ -101,6 +101,51 @@ public final class AndersoniBenchmark {
     }
   }
 
+  /** A country for graph index benchmarking. */
+  record BenchCountry(String code) {}
+
+  /** An event for graph index benchmarking. */
+  record BenchEvent(BenchCountry country) {}
+
+  /** A publication for graph index benchmarking. */
+  record BenchPublication(String id, String categoryPath,
+      List<BenchEvent> events) {
+
+    @Override
+    public String toString() {
+      return id;
+    }
+  }
+
+  /** Top-level categories. */
+  private static final String[] TOP_CATEGORIES = {
+      "deportes", "musica", "tecnologia", "arte", "educacion"
+  };
+
+  /** Subcategories per top-level category. */
+  private static final String[][] SUBCATEGORIES = new String[5][10];
+
+  /** All category paths (flat): 5 top + 50 sub = 55 paths. */
+  private static final String[] ALL_CATEGORY_PATHS;
+
+  /** Countries for graph index benchmarking. */
+  private static final String[] COUNTRIES = {
+      "AR", "MX", "BR", "CL", "CO", "PE", "UY", "EC", "VE", "PY"
+  };
+
+  static {
+    final List<String> allPaths = new ArrayList<>();
+    for (int c = 0; c < TOP_CATEGORIES.length; c++) {
+      allPaths.add(TOP_CATEGORIES[c]);
+      for (int s = 0; s < 10; s++) {
+        final String sub = TOP_CATEGORIES[c] + "/sub-" + s;
+        SUBCATEGORIES[c][s] = sub;
+        allPaths.add(sub);
+      }
+    }
+    ALL_CATEGORY_PATHS = allPaths.toArray(new String[0]);
+  }
+
   /** Private constructor to prevent instantiation. */
   private AndersoniBenchmark() {
   }
@@ -125,6 +170,8 @@ public final class AndersoniBenchmark {
     printGeneralBenchmarks();
 
     printQueryDslBenchmarks();
+
+    printGraphIndexBenchmarks();
 
     System.out.println();
     System.out.println(
@@ -593,6 +640,215 @@ public final class AndersoniBenchmark {
           .contains("-" + String.format("%02d", day));
     }
     return (double) (System.nanoTime() - start) / SEARCH_ITERATIONS;
+  }
+
+  /**
+   * Prints graph index benchmarks: indexation cost, query latency, and
+   * key generation stats.
+   *
+   * <p>Data model: 10,000 publications, each with 1-3 events (each event
+   * has a country), and a category path with 2 levels (top/sub).
+   * 5 top-level categories x 10 subcategories = 50 leaf paths.
+   *
+   * @throws Exception if any step fails
+   */
+  private static void printGraphIndexBenchmarks() throws Exception {
+    System.out.println();
+    System.out.println(
+        "----------------------------------------------------------");
+    System.out.println(
+        "  Graph Index Benchmarks (indexation cost + query latency)");
+    System.out.println(
+        "----------------------------------------------------------");
+
+    final int pubCount = 10_000;
+    final Random rng = new Random(42);
+
+    // Generate publications: each has 1-3 events with random countries,
+    // and a random category path (top/sub).
+    final List<BenchPublication> publications = new ArrayList<>(pubCount);
+    for (int i = 0; i < pubCount; i++) {
+      final int eventCount = 1 + rng.nextInt(3);
+      final List<BenchEvent> events = new ArrayList<>(eventCount);
+      for (int e = 0; e < eventCount; e++) {
+        events.add(new BenchEvent(
+            new BenchCountry(COUNTRIES[rng.nextInt(COUNTRIES.length)])));
+      }
+      final int topIdx = rng.nextInt(TOP_CATEGORIES.length);
+      final int subIdx = rng.nextInt(10);
+      final String path = SUBCATEGORIES[topIdx][subIdx];
+      publications.add(new BenchPublication("pub-" + i, path, events));
+    }
+
+    // Build catalog with graph index.
+    final Catalog<BenchPublication> graphCatalog =
+        Catalog.of(BenchPublication.class)
+            .named("graph-bench")
+            .data(publications)
+            .indexGraph("by-country-category")
+                .traverseMany("country", BenchPublication::events,
+                    event -> event.country().code())
+                .traversePath("category", "/",
+                    BenchPublication::categoryPath)
+                .hotpath("country", "category")
+                .done()
+            .build();
+
+    // Measure indexation time (multiple runs for stability).
+    final int indexRuns = 20;
+    final long[] indexTimes = new long[indexRuns];
+    for (int r = 0; r < indexRuns; r++) {
+      final long start = System.nanoTime();
+      graphCatalog.bootstrap();
+      indexTimes[r] = System.nanoTime() - start;
+    }
+    // Drop first 5 (warmup), average the rest.
+    long indexSum = 0;
+    for (int r = 5; r < indexRuns; r++) {
+      indexSum += indexTimes[r];
+    }
+    final double avgIndexMs = (indexSum / (double) (indexRuns - 5))
+        / 1_000_000.0;
+
+    // Build for querying.
+    graphCatalog.bootstrap();
+
+    // Count total keys generated.
+    final CatalogInfo info = graphCatalog.info();
+    final long totalKeys = info.indices().stream()
+        .mapToLong(IndexInfo::uniqueKeys).sum();
+    final long totalEntries = info.indices().stream()
+        .mapToLong(IndexInfo::totalEntries).sum();
+
+    System.out.printf("  Publications:     %,d%n", pubCount);
+    System.out.printf("  Categories:       %d top x 10 sub = 50 paths%n",
+        TOP_CATEGORIES.length);
+    System.out.printf("  Countries:        %d%n", COUNTRIES.length);
+    System.out.printf("  Avg events/pub:   ~2%n");
+    System.out.printf("  Index keys:       %,d unique, %,d total entries%n",
+        totalKeys, totalEntries);
+    System.out.printf("  Indexation time:  %.2f ms (avg of %d runs)%n",
+        avgIndexMs, indexRuns - 5);
+    System.out.printf("  Memory estimate:  %.1f KB%n",
+        info.totalEstimatedSizeBytes() / 1024.0);
+    System.out.println();
+
+    // Query latency benchmarks.
+    final int queryIterations = 100_000;
+
+    // 1. Query by country only.
+    final long q1Start = System.nanoTime();
+    for (int i = 0; i < queryIterations; i++) {
+      graphCatalog.graphQuery()
+          .where("country").eq(COUNTRIES[i % COUNTRIES.length])
+          .execute();
+    }
+    final double q1Ns = (double) (System.nanoTime() - q1Start)
+        / queryIterations;
+
+    // 2. Query by country + top category.
+    final long q2Start = System.nanoTime();
+    for (int i = 0; i < queryIterations; i++) {
+      graphCatalog.graphQuery()
+          .where("country").eq(COUNTRIES[i % COUNTRIES.length])
+          .and("category").eq(
+              TOP_CATEGORIES[i % TOP_CATEGORIES.length])
+          .execute();
+    }
+    final double q2Ns = (double) (System.nanoTime() - q2Start)
+        / queryIterations;
+
+    // 3. Query by country + full path (top/sub).
+    final long q3Start = System.nanoTime();
+    for (int i = 0; i < queryIterations; i++) {
+      graphCatalog.graphQuery()
+          .where("country").eq(COUNTRIES[i % COUNTRIES.length])
+          .and("category").eq(
+              ALL_CATEGORY_PATHS[i % ALL_CATEGORY_PATHS.length])
+          .execute();
+    }
+    final double q3Ns = (double) (System.nanoTime() - q3Start)
+        / queryIterations;
+
+    System.out.printf("  %-40s %10.0f ns%n",
+        "graphQuery: country only", q1Ns);
+    System.out.printf("  %-40s %10.0f ns%n",
+        "graphQuery: country + top category", q2Ns);
+    System.out.printf("  %-40s %10.0f ns%n",
+        "graphQuery: country + full path", q3Ns);
+
+    // Compare with equivalent indexMulti approach.
+    final Catalog<BenchPublication> multiKeyCatalog =
+        Catalog.of(BenchPublication.class)
+            .named("multi-key-bench")
+            .data(publications)
+            .indexMulti("by-country-category")
+                .by(pub -> {
+                  final List<Object> keys = new ArrayList<>();
+                  for (final BenchEvent event : pub.events()) {
+                    final String country = event.country().code();
+                    final String catPath = pub.categoryPath();
+                    if (catPath == null || catPath.isEmpty()) {
+                      continue;
+                    }
+                    final String[] segments = catPath.split("/");
+                    final StringBuilder sb = new StringBuilder();
+                    // Country-only key.
+                    keys.add(country);
+                    for (final String seg : segments) {
+                      if (sb.length() > 0) {
+                        sb.append('/');
+                      }
+                      sb.append(seg);
+                      keys.add(country + "::" + sb);
+                    }
+                  }
+                  return keys;
+                })
+            .build();
+
+    // Measure indexMulti indexation time.
+    final long[] multiIndexTimes = new long[indexRuns];
+    for (int r = 0; r < indexRuns; r++) {
+      final long start = System.nanoTime();
+      multiKeyCatalog.bootstrap();
+      multiIndexTimes[r] = System.nanoTime() - start;
+    }
+    long multiSum = 0;
+    for (int r = 5; r < indexRuns; r++) {
+      multiSum += multiIndexTimes[r];
+    }
+    final double avgMultiMs = (multiSum / (double) (indexRuns - 5))
+        / 1_000_000.0;
+
+    multiKeyCatalog.bootstrap();
+
+    // Query latency for indexMulti.
+    final long m1Start = System.nanoTime();
+    for (int i = 0; i < queryIterations; i++) {
+      multiKeyCatalog.search("by-country-category",
+          COUNTRIES[i % COUNTRIES.length]);
+    }
+    final double m1Ns = (double) (System.nanoTime() - m1Start)
+        / queryIterations;
+
+    final long m2Start = System.nanoTime();
+    for (int i = 0; i < queryIterations; i++) {
+      multiKeyCatalog.search("by-country-category",
+          COUNTRIES[i % COUNTRIES.length] + "::"
+              + TOP_CATEGORIES[i % TOP_CATEGORIES.length]);
+    }
+    final double m2Ns = (double) (System.nanoTime() - m2Start)
+        / queryIterations;
+
+    System.out.println();
+    System.out.println("  --- Comparison: indexMulti (manual keys) ---");
+    System.out.printf("  Indexation time:  %.2f ms (avg of %d runs)%n",
+        avgMultiMs, indexRuns - 5);
+    System.out.printf("  %-40s %10.0f ns%n",
+        "search: country only", m1Ns);
+    System.out.printf("  %-40s %10.0f ns%n",
+        "search: country + top category", m2Ns);
   }
 
   /**

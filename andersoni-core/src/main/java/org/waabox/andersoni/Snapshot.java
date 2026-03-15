@@ -781,6 +781,13 @@ public final class Snapshot<T> {
   }
 
   private static long estimateKeySize(final Object key) {
+    if (key instanceof CompositeKey ck) {
+      long size = 40L; // object header + List overhead + hash field
+      for (final Object component : ck.components()) {
+        size += estimateKeySize(component);
+      }
+      return size;
+    }
     if (key instanceof String s) {
       return STRING_BASE + s.length();
     }
