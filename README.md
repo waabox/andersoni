@@ -276,6 +276,7 @@ Andersoni fits when you have **read-heavy reference data** queried by multiple c
 ```
 
 ```java
+// Define catalog with regular indexes and a graph index
 Catalog<Event> catalog = Catalog.of(Event.class)
     .named("events")
     .loadWith(() -> eventRepository.findAll())
@@ -295,10 +296,21 @@ andersoni.start();
 // Simple index lookup
 List<Event> events = andersoni.search("events", "by-venue", "Wembley");
 
-// Graph index query with planner
-List<Event> arSports = catalog.graphQuery()
+// Graph index: all events in AR
+catalog.graphQuery()
+    .where("country").eq("AR")
+    .execute();
+
+// Graph index: AR + top category (matches deportes/futbol, deportes/basket, etc.)
+catalog.graphQuery()
     .where("country").eq("AR")
     .and("category").eq("deportes")
+    .execute();
+
+// Graph index: AR + specific subcategory (only futbol)
+catalog.graphQuery()
+    .where("country").eq("AR")
+    .and("category").eq("deportes/futbol")
     .execute();
 ```
 
