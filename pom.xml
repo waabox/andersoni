@@ -50,6 +50,7 @@
     <module>andersoni-json-serializer</module>
     <module>andersoni-spring-boot-starter</module>
     <module>andersoni-admin</module>
+    <module>andersoni-metrics-datadog</module>
   </modules>
 
   <properties>
