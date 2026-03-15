@@ -232,7 +232,7 @@ Andersoni is **not a general-purpose cache**. It solves a specific problem: mult
 
 ### vs Redis / Hazelcast / Infinispan
 
-These provide distributed shared state. Andersoni provides **local read-only views** with optional sync. The difference matters: Redis gives you a single mutable store that all nodes read/write over the network. Andersoni gives each node its own immutable snapshot — reads are a pointer dereference (~30ns), not a network call (~0.5-1ms). The tradeoff is that Andersoni data is eventually consistent across nodes (sync delay depends on strategy: Kafka ~ms, HTTP ~ms, DB polling ~seconds).
+These provide distributed shared state. Andersoni provides **local read-only views** with optional sync. The difference matters: Redis gives you a single mutable store that all nodes read/write over the network. Andersoni gives each node its own immutable snapshot — reads are a pointer dereference (~30ns), not a network call (~0.5-1ms). Within a single node, Andersoni is **fully consistent**: all indices reflect the same snapshot at all times. Cross-node consistency depends on the sync strategy configured (Kafka ~ms, HTTP ~ms, DB polling ~seconds).
 
 Note: Hazelcast and Infinispan support embedded mode with near-cache, which reduces read latency significantly. If you already run one of these, adding Andersoni may not be justified.
 
@@ -241,7 +241,7 @@ Note: Hazelcast and Infinispan support embedded mode with near-cache, which redu
 | Deployment | External or embedded | In-process JAR |
 | Read latency | ~0.5-1ms (remote) | ~30ns (local) |
 | Write model | Mutable shared state | Immutable snapshots |
-| Consistency | Strong (single source) | Eventually consistent |
+| Consistency | Strong (single source) | Snapshot-consistent per node; cross-node depends on sync strategy |
 | Infrastructure | Servers to manage | None |
 
 **They win at**: mutable shared state, strong consistency, operational tooling, large-scale clusters.
@@ -273,7 +273,7 @@ Andersoni fits when you have **read-heavy reference data** queried by multiple c
 - **You need per-entry TTL or size-bounded eviction** — use Caffeine. Andersoni refreshes entire snapshots; there is no per-item expiration.
 - **Your data changes every few seconds** — full snapshot rebuilds on every change are wasteful. Andersoni is designed for data that refreshes on the order of minutes, not seconds.
 - **You already have Redis/Hazelcast running and it works** — adding another caching layer introduces complexity. If your current setup meets latency requirements, keep it.
-- **You need strong consistency across nodes** — Andersoni syncs are eventually consistent. The lag depends on your sync strategy (Kafka is near-realtime, DB polling can be seconds).
+- **You need strong consistency across nodes** — within each node, Andersoni is fully snapshot-consistent. But cross-node sync depends on the strategy configured (Kafka is near-realtime, DB polling can be seconds). If your use case requires all nodes to see the exact same data at the exact same time, Andersoni is not the right fit.
 - **Your dataset is very large (tens of millions+)** — snapshots live fully in heap. At 500K items with 3 indices, expect ~70MB. Scale accordingly and consider GC pressure from snapshot swaps on very large datasets.
 
 ## Quick Start
