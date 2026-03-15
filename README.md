@@ -282,7 +282,7 @@ Andersoni fits when you have **read-heavy reference data** queried by multiple c
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-core</artifactId>
-    <version>1.5.1</version>
+    <version>1.6.0</version>
 </dependency>
 ```
 
@@ -348,6 +348,7 @@ For Spring Boot, sync strategies, snapshot persistence, K8s deployment, and more
 | `andersoni-snapshot-s3` | S3 snapshot persistence |
 | `andersoni-snapshot-fs` | Filesystem snapshot (dev/test) |
 | `andersoni-spring-boot-starter` | Spring Boot auto-configuration |
+| `andersoni-metrics-datadog` | Datadog DogStatsD metrics |
 | `andersoni-admin` | K8s admin console |
 
 ## Building
