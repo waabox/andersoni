@@ -1,5 +1,8 @@
 package org.waabox.andersoni.metrics;
 
+import java.util.Collection;
+import org.waabox.andersoni.Catalog;
+
 /**
  * An abstraction for recording operational metrics of the Andersoni
  * cache library.
@@ -42,4 +45,27 @@ public interface AndersoniMetrics {
    */
   void indexSizeReported(String catalogName, String indexName,
       long estimatedSizeBytes);
+
+  /**
+   * Called when the Andersoni engine has fully started.
+   *
+   * <p>Implementations can use this to begin periodic metric reporting.
+   * The provided catalogs are the same instances managed by the engine
+   * and their snapshots can be read lock-free at any time.
+   *
+   * @param catalogs the registered catalogs, never null
+   * @param nodeId   the node identifier, never null
+   */
+  default void start(final Collection<Catalog<?>> catalogs,
+      final String nodeId) {
+  }
+
+  /**
+   * Called when the Andersoni engine is stopping.
+   *
+   * <p>Implementations should release any resources (schedulers, clients)
+   * allocated during {@link #start}.
+   */
+  default void stop() {
+  }
 }
