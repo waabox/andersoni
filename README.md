@@ -93,14 +93,14 @@ Graph indexes (`indexGraph()`) navigate entity relationships and pre-compute com
 | Metric | Graph Index | indexMulti (manual keys) |
 |---|---|---|
 | Indexation time | ~23 ms | ~7 ms |
-| Keys generated | 560 unique, ~57K entries | — |
-| Memory | ~564 KB | — |
+| Keys generated | 560 unique, ~57K entries | - |
+| Memory | ~564 KB | - |
 
 | Query | Graph Index | indexMulti |
 |---|---|---|
 | Country only | ~729 ns | ~34 ns |
 | Country + top category | ~605 ns | ~146 ns |
-| Country + full path | ~303 ns | — |
+| Country + full path | ~303 ns | - |
 
 Graph indexes trade raw query speed for a **clean domain model**: the entity no longer generates index keys manually. All queries remain sub-microsecond. The query planner overhead is ~500-700ns per query (hotpath selection + CompositeKey construction). The actual HashMap lookup is identical in both cases.
 
