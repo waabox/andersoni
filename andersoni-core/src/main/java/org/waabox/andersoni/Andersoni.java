@@ -382,6 +382,56 @@ public final class Andersoni {
   }
 
   /**
+   * Creates a graph query builder for the named catalog, bound to the
+   * current snapshot.
+   *
+   * <p>The returned {@link GraphQueryBuilder} uses the query planner to
+   * select the best graph index and hotpath for the given conditions.
+   *
+   * @param catalogName the name of the catalog to query, never null
+   *
+   * @return a GraphQueryBuilder bound to the current snapshot, never null
+   *
+   * @throws NullPointerException     if catalogName is null
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public GraphQueryBuilder<?> graphQuery(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    return catalog.graphQuery();
+  }
+
+  /**
+   * Creates a typed graph query builder for the named catalog, bound to
+   * the current snapshot.
+   *
+   * @param catalogName the name of the catalog to query, never null
+   * @param type        the expected item type, never null
+   * @param <T>         the expected element type
+   *
+   * @return a typed GraphQueryBuilder for the catalog, never null
+   *
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> GraphQueryBuilder<T> graphQuery(final String catalogName,
+      final Class<T> type) {
+    Objects.requireNonNull(type, "type must not be null");
+    return (GraphQueryBuilder<T>) graphQuery(catalogName);
+  }
+
+  /**
    * Refreshes a catalog locally and synchronizes the refresh event across
    * nodes.
    *
@@ -478,6 +528,29 @@ public final class Andersoni {
    */
   public Collection<Catalog<?>> catalogs() {
     return Collections.unmodifiableCollection(catalogsByName.values());
+  }
+
+  /**
+   * Returns a registered catalog by name, cast to the expected type.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param type        the expected item type, never null
+   * @param <T>         the item type
+   *
+   * @return the catalog, never null
+   *
+   * @throws NullPointerException     if any argument is null
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> Catalog<T> catalog(final String catalogName,
+      final Class<T> type) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(type, "type must not be null");
+    return (Catalog<T>) requireCatalog(catalogName);
   }
 
   /**
