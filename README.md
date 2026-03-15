@@ -38,7 +38,7 @@
   <img src="./assets/logo-tr.png" width="300"/>
 </p>
 
-In-memory indexed cache library for Java 21. Define search indices over your domain objects with a fluent DSL, get lock-free reads via immutable snapshots, and sync across nodes with pluggable strategies.
+**Nanosecond-latency, lock-free reads.** In-memory indexed cache for Java 21 with a fluent DSL — regular, sorted, multi-key, and graph-based indexes, compound queries, immutable snapshots, pluggable cross-node sync, and built-in observability.
 
 > **[Read the full documentation on the Wiki](https://github.com/waabox/andersoni/wiki)** — getting started, core concepts, catalog DSL, Spring Boot integration, sync strategies, snapshot persistence, leader election, observability, DevOps & Kubernetes, deployment guide, and FAQ.
 
