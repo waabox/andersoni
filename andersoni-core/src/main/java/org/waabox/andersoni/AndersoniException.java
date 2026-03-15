@@ -9,7 +9,7 @@ package org.waabox.andersoni;
  *
  * @author waabox(waabox[at]gmail[dot]com)
  */
-public final class AndersoniException extends RuntimeException {
+public class AndersoniException extends RuntimeException {
 
   private static final long serialVersionUID = 1L;
 
