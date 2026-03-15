@@ -85,6 +85,9 @@ public final class Catalog<T> {
   /** The multi-key index definitions for this catalog. */
   private final List<MultiKeyIndexDefinition<T>> multiKeyIndexDefinitions;
 
+  /** The graph index definitions for this catalog. */
+  private final List<GraphIndexDefinition<T>> graphIndexDefinitions;
+
   /** The data loader, null if using static data. */
   private final DataLoader<T> dataLoader;
 
@@ -112,6 +115,7 @@ public final class Catalog<T> {
    * @param sortedIndexDefinitions    the sorted index definitions, never null
    * @param multiKeyIndexDefinitions  the multi-key index definitions,
    *                                  never null
+   * @param graphIndexDefinitions     the graph index definitions, never null
    * @param serializer                the optional serializer, may be null
    * @param refreshInterval           the optional refresh interval, may be
    *                                  null
@@ -122,6 +126,7 @@ public final class Catalog<T> {
       final List<IndexDefinition<T>> indexDefinitions,
       final List<SortedIndexDefinition<T>> sortedIndexDefinitions,
       final List<MultiKeyIndexDefinition<T>> multiKeyIndexDefinitions,
+      final List<GraphIndexDefinition<T>> graphIndexDefinitions,
       final SnapshotSerializer<T> serializer,
       final Duration refreshInterval) {
     this.name = name;
@@ -133,6 +138,8 @@ public final class Catalog<T> {
         new ArrayList<>(sortedIndexDefinitions));
     this.multiKeyIndexDefinitions = Collections.unmodifiableList(
         new ArrayList<>(multiKeyIndexDefinitions));
+    this.graphIndexDefinitions = Collections.unmodifiableList(
+        new ArrayList<>(graphIndexDefinitions));
     this.serializer = serializer;
     this.refreshInterval = refreshInterval;
     this.current = new AtomicReference<>(Snapshot.empty());
@@ -288,6 +295,21 @@ public final class Catalog<T> {
   }
 
   /**
+   * Creates a graph query builder bound to the current snapshot.
+   *
+   * <p>The returned {@link GraphQueryBuilder} uses the query planner to
+   * select the best graph index and hotpath for the given conditions.
+   * The query is bound to the snapshot that is current at invocation time.
+   *
+   * @return a GraphQueryBuilder bound to the current snapshot, never null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public GraphQueryBuilder<T> graphQuery() {
+    return new GraphQueryBuilder<>(current.get(), name, graphIndexDefinitions);
+  }
+
+  /**
    * Returns the name of this catalog.
    *
    * @return the catalog name, never null
@@ -370,6 +392,11 @@ public final class Catalog<T> {
     // Build multi-key indices.
     for (final MultiKeyIndexDefinition<T> multiDef : multiKeyIndexDefinitions) {
       indices.put(multiDef.name(), multiDef.buildIndex(data));
+    }
+
+    // Build graph indices.
+    for (final GraphIndexDefinition<T> graphDef : graphIndexDefinitions) {
+      indices.put(graphDef.name(), graphDef.buildIndex(data));
     }
 
     // Build sorted indices.
@@ -569,8 +596,11 @@ public final class Catalog<T> {
     /** The accumulated multi-key index definitions. */
     private final List<MultiKeyIndexDefinition<T>> multiKeyIndexDefinitions;
 
+    /** The accumulated graph index definitions. */
+    private final List<GraphIndexDefinition<T>> graphIndexDefinitions;
+
     /** The set of registered index names for duplicate detection (shared
-     *  between regular, sorted, and multi-key indexes). */
+     *  between regular, sorted, multi-key, and graph indexes). */
     private final Set<String> indexNames;
 
     /**
@@ -589,6 +619,7 @@ public final class Catalog<T> {
       this.indexDefinitions = new ArrayList<>();
       this.sortedIndexDefinitions = new ArrayList<>();
       this.multiKeyIndexDefinitions = new ArrayList<>();
+      this.graphIndexDefinitions = new ArrayList<>();
       this.indexNames = new HashSet<>();
     }
 
@@ -703,6 +734,27 @@ public final class Catalog<T> {
     }
 
     /**
+     * Starts defining a new graph-based composite index with the given name.
+     *
+     * @param indexName the graph index name, never null or empty
+     * @return a GraphIndexStep for defining the graph index, never null
+     * @throws NullPointerException     if indexName is null
+     * @throws IllegalArgumentException if indexName is empty or duplicate
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public GraphIndexStep<T> indexGraph(final String indexName) {
+      Objects.requireNonNull(indexName, "indexName must not be null");
+      if (indexName.isEmpty()) {
+        throw new IllegalArgumentException("indexName must not be empty");
+      }
+      if (!indexNames.add(indexName)) {
+        throw new IllegalArgumentException("Duplicate index name: '" + indexName + "'");
+      }
+      return new GraphIndexStep<>(this, indexName);
+    }
+
+    /**
      * Builds the Catalog with all the accumulated configuration.
      *
      * @return a new Catalog instance, never null
@@ -714,13 +766,15 @@ public final class Catalog<T> {
      */
     public Catalog<T> build() {
       if (indexDefinitions.isEmpty() && sortedIndexDefinitions.isEmpty()
-          && multiKeyIndexDefinitions.isEmpty()) {
+          && multiKeyIndexDefinitions.isEmpty()
+          && graphIndexDefinitions.isEmpty()) {
         throw new IllegalStateException(
             "At least one index definition is required");
       }
       return new Catalog<>(name, dataLoader, initialData,
           indexDefinitions, sortedIndexDefinitions,
-          multiKeyIndexDefinitions, serializer, refreshInterval);
+          multiKeyIndexDefinitions, graphIndexDefinitions,
+          serializer, refreshInterval);
     }
 
     /**
@@ -778,6 +832,16 @@ public final class Catalog<T> {
             "Duplicate index name: '" + multiKeyIndexDefinition.name() + "'");
       }
       multiKeyIndexDefinitions.add(multiKeyIndexDefinition);
+    }
+
+    /**
+     * Adds a graph index definition to the builder. Package-private,
+     * called by {@link GraphIndexStep}.
+     *
+     * @param graphIndexDefinition the definition to add, never null
+     */
+    void addGraphIndex(final GraphIndexDefinition<T> graphIndexDefinition) {
+      graphIndexDefinitions.add(graphIndexDefinition);
     }
   }
 
@@ -946,6 +1010,111 @@ public final class Catalog<T> {
       final MultiKeyIndexDefinition<T> def =
           MultiKeyIndexDefinition.<T>named(indexName).by(keysExtractor);
       buildStep.addMultiKeyIndex(def);
+      return buildStep;
+    }
+  }
+
+  /**
+   * Intermediate builder step for defining a graph-based composite index.
+   *
+   * @param <T> the type of data items
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public static final class GraphIndexStep<T> {
+
+    private final BuildStep<T> buildStep;
+    private final GraphIndexDefinition.Builder<T> graphBuilder;
+
+    private GraphIndexStep(final BuildStep<T> buildStep, final String indexName) {
+      this.buildStep = buildStep;
+      this.graphBuilder = GraphIndexDefinition.named(indexName);
+    }
+
+    /**
+     * Adds a simple traversal that extracts a single value from the root entity.
+     *
+     * @param traversalName the unique name for this traversal, never null
+     * @param extractor the function to extract the value, never null
+     * @return this step for further chaining, never null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public GraphIndexStep<T> traverse(final String traversalName,
+        final java.util.function.Function<T, ?> extractor) {
+      graphBuilder.traverse(traversalName, extractor);
+      return this;
+    }
+
+    /**
+     * Adds a fan-out traversal that extracts a collection and maps each element.
+     *
+     * @param <C> the type of collection element
+     * @param traversalName the unique name for this traversal, never null
+     * @param collectionAccessor the function to extract the collection, never null
+     * @param valueExtractor the function to extract a value from each element, never null
+     * @return this step for further chaining, never null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public <C> GraphIndexStep<T> traverseMany(final String traversalName,
+        final java.util.function.Function<T, ? extends java.util.Collection<C>> collectionAccessor,
+        final java.util.function.Function<C, ?> valueExtractor) {
+      graphBuilder.traverseMany(traversalName, collectionAccessor, valueExtractor);
+      return this;
+    }
+
+    /**
+     * Adds a path traversal that extracts a delimited path string and produces all prefix segments.
+     *
+     * @param traversalName the unique name for this traversal, never null
+     * @param separator the path segment separator, never null or empty
+     * @param extractor the function to extract the path string, never null
+     * @return this step for further chaining, never null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public GraphIndexStep<T> traversePath(final String traversalName, final String separator,
+        final java.util.function.Function<T, String> extractor) {
+      graphBuilder.traversePath(traversalName, separator, extractor);
+      return this;
+    }
+
+    /**
+     * Declares a hotpath specifying which traversal fields to combine as composite key prefixes.
+     *
+     * @param fieldNames the ordered traversal names to combine, never null or empty
+     * @return this step for further chaining, never null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public GraphIndexStep<T> hotpath(final String... fieldNames) {
+      graphBuilder.hotpath(fieldNames);
+      return this;
+    }
+
+    /**
+     * Sets the maximum number of composite keys that may be generated for a single item.
+     *
+     * @param max the maximum keys per item, must be positive
+     * @return this step for further chaining, never null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public GraphIndexStep<T> maxKeysPerItem(final int max) {
+      graphBuilder.maxKeysPerItem(max);
+      return this;
+    }
+
+    /**
+     * Finalizes the graph index definition and returns to the parent builder.
+     *
+     * @return the parent BuildStep for further chaining, never null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public BuildStep<T> done() {
+      buildStep.addGraphIndex(graphBuilder.build());
       return buildStep;
     }
   }
