@@ -271,7 +271,7 @@ Andersoni fits when you have **read-heavy reference data** queried by multiple c
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-core</artifactId>
-    <version>1.2.1</version>
+    <version>1.5.0</version>
 </dependency>
 ```
 
@@ -280,14 +280,26 @@ Catalog<Event> catalog = Catalog.of(Event.class)
     .named("events")
     .loadWith(() -> eventRepository.findAll())
     .index("by-venue").by(Event::venue, Venue::name)
-    .index("by-sport").by(Event::sport)
+    .index("by-sport").by(Event::sport, Sport::name)
+    .indexGraph("by-country-category")
+        .traverseMany("country", Event::organizers, Organizer::countryCode)
+        .traversePath("category", "/", Event::categoryPath)
+        .hotpath("country", "category")
+        .done()
     .build();
 
 Andersoni andersoni = Andersoni.builder().build();
 andersoni.register(catalog);
 andersoni.start();
 
+// Simple index lookup
 List<Event> events = andersoni.search("events", "by-venue", "Wembley");
+
+// Graph index query with planner
+List<Event> arSports = catalog.graphQuery()
+    .where("country").eq("AR")
+    .and("category").eq("deportes")
+    .execute();
 ```
 
 For Spring Boot, sync strategies, snapshot persistence, K8s deployment, and more — see the **[Wiki](https://github.com/waabox/andersoni/wiki)**.
@@ -296,7 +308,8 @@ For Spring Boot, sync strategies, snapshot persistence, K8s deployment, and more
 
 | Module | Purpose |
 |---|---|
-| `andersoni-core` | Engine, DSL, Snapshot, core interfaces (zero dependencies) |
+| `andersoni-core` | Engine, DSL, Snapshot, Graph Index, Query Planner (zero dependencies) |
+| `andersoni-json-serializer` | Jackson-based snapshot serializer |
 | `andersoni-sync-kafka` | Kafka broadcast sync |
 | `andersoni-spring-sync-kafka` | Spring Kafka auto-configured sync |
 | `andersoni-sync-http` | HTTP peer-to-peer sync |
