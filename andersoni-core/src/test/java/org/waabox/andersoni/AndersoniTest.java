@@ -221,7 +221,8 @@ class AndersoniTest {
   }
 
   @Test
-  void whenReceivingRefreshEvent_givenDifferentHash_shouldRefreshCatalog() {
+  void whenReceivingRefreshEvent_givenDifferentHash_shouldRefreshCatalog()
+      throws InterruptedException {
     final Sport football = new Sport("Football");
     final Sport rugby = new Sport("Rugby");
     final Venue maracana = new Venue("Maracana");
@@ -272,6 +273,9 @@ class AndersoniTest {
         "events", "node-2", 2L, "different-hash",
         java.time.Instant.now());
     listener.onRefresh(event);
+
+    // Allow the virtual thread to complete the async refresh.
+    Thread.sleep(200);
 
     // Verify the catalog was refreshed with new data.
     final List<?> rugbyResults = andersoni.search(
@@ -857,7 +861,8 @@ class AndersoniTest {
   }
 
   @Test
-  void whenReceivingRefreshEvent_givenDataLoaderThrows_shouldCatchAndLog() {
+  void whenReceivingRefreshEvent_givenDataLoaderThrows_shouldCatchAndLog()
+      throws InterruptedException {
     final Sport football = new Sport("Football");
     final Venue maracana = new Venue("Maracana");
     final Event e1 = new Event("1", football, maracana);
@@ -928,6 +933,9 @@ class AndersoniTest {
 
     // Should not throw, the exception is caught internally.
     listener.onRefresh(event);
+
+    // Allow the virtual thread to complete the async refresh.
+    Thread.sleep(200);
 
     // Original data should still be searchable.
     final List<?> results = andersoni.search(
