@@ -118,15 +118,21 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
    * @param record the Kafka consumer record, never null
    */
   @KafkaListener(
-      topics = "#{@springKafkaSyncStrategy.getTopic()}")
+      topics = "#{@springKafkaSyncStrategy.getTopic()}",
+      containerFactory = "andersoniKafkaListenerContainerFactory")
   public void onMessage(final ConsumerRecord<String, String> record) {
     try {
       final RefreshEvent event = RefreshEventCodec.deserialize(record.value());
       for (final RefreshListener listener : listeners) {
-        listener.onRefresh(event);
+        try {
+          listener.onRefresh(event);
+        } catch (final Exception e) {
+          log.error("Listener threw exception while processing event for "
+              + "catalog '{}': {}", event.catalogName(), e.getMessage(), e);
+        }
       }
     } catch (final Exception e) {
-      log.error("Failed to process refresh event from partition {} "
+      log.error("Failed to deserialize refresh event from partition {} "
           + "offset {}: {}", record.partition(), record.offset(),
           e.getMessage(), e);
     }

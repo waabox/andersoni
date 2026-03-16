@@ -51,4 +51,40 @@ class SpringKafkaSyncPropertiesTest {
 
     assertEquals("my-app-", properties.getConsumerGroupPrefix());
   }
+
+  @Test
+  void whenCreatingProperties_givenDefaults_shouldHaveDefaultAcks() {
+    final SpringKafkaSyncProperties properties =
+        new SpringKafkaSyncProperties();
+
+    assertEquals("1", properties.getAcks());
+  }
+
+  @Test
+  void whenSettingAcks_shouldReturnConfiguredValue() {
+    final SpringKafkaSyncProperties properties =
+        new SpringKafkaSyncProperties();
+
+    properties.setAcks("all");
+
+    assertEquals("all", properties.getAcks());
+  }
+
+  @Test
+  void whenCreatingProperties_givenDefaults_shouldHaveNullNodeId() {
+    final SpringKafkaSyncProperties properties =
+        new SpringKafkaSyncProperties();
+
+    assertNull(properties.getNodeId());
+  }
+
+  @Test
+  void whenSettingNodeId_shouldReturnConfiguredValue() {
+    final SpringKafkaSyncProperties properties =
+        new SpringKafkaSyncProperties();
+
+    properties.setNodeId("node-42");
+
+    assertEquals("node-42", properties.getNodeId());
+  }
 }

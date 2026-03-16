@@ -178,6 +178,38 @@ class SpringKafkaSyncStrategyTest {
 
   @Test
   @SuppressWarnings("unchecked")
+  void whenReceivingMessage_givenFirstListenerThrows_shouldStillNotifySecond() {
+    final KafkaTemplate<String, String> template = createMock(
+        KafkaTemplate.class);
+
+    final SpringKafkaSyncStrategy strategy =
+        new SpringKafkaSyncStrategy(template, "test-topic");
+
+    final List<RefreshEvent> received = new ArrayList<>();
+
+    // First listener throws
+    strategy.subscribe(event -> {
+      throw new RuntimeException("boom");
+    });
+    // Second listener should still be called
+    strategy.subscribe(received::add);
+
+    final Instant timestamp = Instant.parse("2024-01-01T00:00:00Z");
+    final RefreshEvent event = new RefreshEvent(
+        "events", "node-uuid-1", 1L, "abc123", timestamp);
+    final String json = RefreshEventCodec.serialize(event);
+
+    final ConsumerRecord<String, String> record =
+        new ConsumerRecord<>("test-topic", 0, 0L, "events", json);
+
+    strategy.onMessage(record);
+
+    assertEquals(1, received.size());
+    assertEquals(event, received.get(0));
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
   void whenGettingTopic_shouldReturnConfiguredTopic() {
     final KafkaTemplate<String, String> template = createMock(
         KafkaTemplate.class);
