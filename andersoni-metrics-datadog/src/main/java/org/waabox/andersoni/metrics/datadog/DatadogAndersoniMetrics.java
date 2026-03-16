@@ -175,6 +175,60 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
 
   /** {@inheritDoc} */
   @Override
+  public void syncPublished(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    final String node = this.nodeId;
+    if (node != null) {
+      client.count("sync.published", 1,
+          "catalog:" + catalogName, "node:" + node);
+    } else {
+      client.count("sync.published", 1,
+          "catalog:" + catalogName);
+    }
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void syncReceived(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    final String node = this.nodeId;
+    if (node != null) {
+      client.count("sync.received", 1,
+          "catalog:" + catalogName, "node:" + node);
+    } else {
+      client.count("sync.received", 1,
+          "catalog:" + catalogName);
+    }
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void syncPublishFailed(final String catalogName,
+      final Throwable cause) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    final String node = this.nodeId;
+    if (node != null) {
+      client.count("sync.publish.failed", 1,
+          "catalog:" + catalogName, "node:" + node);
+    } else {
+      client.count("sync.publish.failed", 1,
+          "catalog:" + catalogName);
+    }
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void syncReceiveFailed(final Throwable cause) {
+    final String node = this.nodeId;
+    if (node != null) {
+      client.count("sync.receive.failed", 1, "node:" + node);
+    } else {
+      client.count("sync.receive.failed", 1);
+    }
+  }
+
+  /** {@inheritDoc} */
+  @Override
   public void start(final Collection<Catalog<?>> theCatalogs,
       final String theNodeId) {
     Objects.requireNonNull(theCatalogs, "catalogs must not be null");

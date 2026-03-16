@@ -14,6 +14,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -63,6 +64,7 @@ public class SpringKafkaSyncAutoConfiguration {
    * @return the producer factory, never null
    */
   @Bean
+  @ConditionalOnMissingBean(name = "andersoniProducerFactory")
   public ProducerFactory<String, String> andersoniProducerFactory(
       final SpringKafkaSyncProperties properties) {
 
@@ -73,7 +75,7 @@ public class SpringKafkaSyncAutoConfiguration {
         StringSerializer.class);
     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
         StringSerializer.class);
-    props.put(ProducerConfig.ACKS_CONFIG, "1");
+    props.put(ProducerConfig.ACKS_CONFIG, properties.getAcks());
 
     return new DefaultKafkaProducerFactory<>(props);
   }
@@ -90,11 +92,14 @@ public class SpringKafkaSyncAutoConfiguration {
    * @return the consumer factory, never null
    */
   @Bean
+  @ConditionalOnMissingBean(name = "andersoniConsumerFactory")
   public ConsumerFactory<String, String> andersoniConsumerFactory(
       final SpringKafkaSyncProperties properties) {
 
-    final String groupId = properties.getConsumerGroupPrefix()
-        + UUID.randomUUID();
+    final String suffix = properties.getNodeId() != null
+        ? properties.getNodeId()
+        : UUID.randomUUID().toString();
+    final String groupId = properties.getConsumerGroupPrefix() + suffix;
 
     final Map<String, Object> props = new HashMap<>();
     props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
@@ -119,7 +124,9 @@ public class SpringKafkaSyncAutoConfiguration {
    * @return the Kafka template, never null
    */
   @Bean
+  @ConditionalOnMissingBean(name = "andersoniKafkaTemplate")
   public KafkaTemplate<String, String> andersoniKafkaTemplate(
+      @Qualifier("andersoniProducerFactory")
       final ProducerFactory<String, String> producerFactory) {
 
     return new KafkaTemplate<>(producerFactory);
@@ -133,8 +140,10 @@ public class SpringKafkaSyncAutoConfiguration {
    * @return the listener container factory, never null
    */
   @Bean
+  @ConditionalOnMissingBean(name = "andersoniKafkaListenerContainerFactory")
   public ConcurrentKafkaListenerContainerFactory<String, String>
-      kafkaListenerContainerFactory(
+      andersoniKafkaListenerContainerFactory(
+          @Qualifier("andersoniConsumerFactory")
           final ConsumerFactory<String, String> consumerFactory) {
 
     final ConcurrentKafkaListenerContainerFactory<String, String> factory =

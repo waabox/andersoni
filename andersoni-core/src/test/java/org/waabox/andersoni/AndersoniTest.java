@@ -892,6 +892,10 @@ class AndersoniTest {
     metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
     expectLastCall().once();
 
+    // Expect syncReceived before the refresh attempt.
+    metrics.syncReceived("events");
+    expectLastCall().once();
+
     // Expect the failure metric when sync refresh fails.
     metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
     expectLastCall().once();

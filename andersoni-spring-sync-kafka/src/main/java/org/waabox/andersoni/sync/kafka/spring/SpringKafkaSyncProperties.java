@@ -24,6 +24,12 @@ public class SpringKafkaSyncProperties {
    * defaults to "andersoni-". */
   private String consumerGroupPrefix = "andersoni-";
 
+  /** The producer acknowledgment level, defaults to "1". */
+  private String acks = "1";
+
+  /** The optional stable node identifier for consumer group naming. */
+  private String nodeId;
+
   /** Returns the Kafka bootstrap servers connection string.
    *
    * @return the bootstrap servers, may be null if not yet configured
@@ -70,5 +76,37 @@ public class SpringKafkaSyncProperties {
    */
   public void setConsumerGroupPrefix(final String theConsumerGroupPrefix) {
     consumerGroupPrefix = theConsumerGroupPrefix;
+  }
+
+  /** Returns the producer acknowledgment level.
+   *
+   * @return the acks setting, never null
+   */
+  public String getAcks() {
+    return acks;
+  }
+
+  /** Sets the producer acknowledgment level.
+   *
+   * @param theAcks the acks setting (e.g. "0", "1", "all"), never null
+   */
+  public void setAcks(final String theAcks) {
+    acks = theAcks;
+  }
+
+  /** Returns the optional stable node identifier for consumer group naming.
+   *
+   * @return the node identifier, may be null if not configured
+   */
+  public String getNodeId() {
+    return nodeId;
+  }
+
+  /** Sets the stable node identifier for consumer group naming.
+   *
+   * @param theNodeId the node identifier, may be null
+   */
+  public void setNodeId(final String theNodeId) {
+    nodeId = theNodeId;
   }
 }

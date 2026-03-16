@@ -47,6 +47,39 @@ public interface AndersoniMetrics {
       long estimatedSizeBytes);
 
   /**
+   * Records a sync event published to the cluster.
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void syncPublished(final String catalogName) {
+  }
+
+  /**
+   * Records a sync event received from another node.
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void syncReceived(final String catalogName) {
+  }
+
+  /**
+   * Records a sync publish failure.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param cause       the failure cause, never null
+   */
+  default void syncPublishFailed(final String catalogName, final Throwable cause) {
+  }
+
+  /**
+   * Records a sync receive/deserialization failure.
+   *
+   * @param cause the failure cause, never null
+   */
+  default void syncReceiveFailed(final Throwable cause) {
+  }
+
+  /**
    * Called when the Andersoni engine has fully started.
    *
    * <p>Implementations can use this to begin periodic metric reporting.

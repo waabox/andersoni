@@ -474,7 +474,14 @@ public final class Andersoni {
           snapshot.version(),
           snapshot.hash(),
           Instant.now());
-      syncStrategy.publish(event);
+      try {
+        syncStrategy.publish(event);
+        metrics.syncPublished(catalogName);
+      } catch (final Exception e) {
+        log.error("Failed to publish sync event for catalog '{}': {}",
+            catalogName, e.getMessage(), e);
+        metrics.syncPublishFailed(catalogName, e);
+      }
     }
   }
 
@@ -820,6 +827,7 @@ public final class Andersoni {
         return;
       }
 
+      metrics.syncReceived(event.catalogName());
       refreshFromEvent(event.catalogName(), catalog);
     });
 

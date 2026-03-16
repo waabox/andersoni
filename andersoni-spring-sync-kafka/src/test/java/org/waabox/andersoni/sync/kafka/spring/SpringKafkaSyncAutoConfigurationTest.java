@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
@@ -32,7 +33,7 @@ class SpringKafkaSyncAutoConfigurationTest {
           assertTrue(context.containsBean("andersoniProducerFactory"));
           assertTrue(context.containsBean("andersoniConsumerFactory"));
           assertTrue(context.containsBean("andersoniKafkaTemplate"));
-          assertTrue(context.containsBean("kafkaListenerContainerFactory"));
+          assertTrue(context.containsBean("andersoniKafkaListenerContainerFactory"));
           assertTrue(context.containsBean("springKafkaSyncStrategy"));
 
           assertNotNull(context.getBean(ProducerFactory.class));
@@ -88,6 +89,44 @@ class SpringKafkaSyncAutoConfigurationTest {
 
           assertNotNull(strategy);
           assertTrue(strategy.getTopic().equals("custom-topic"));
+        });
+  }
+
+  @Test
+  void whenExistingKafkaListenerContainerFactory_shouldNotOverwrite() {
+    contextRunner
+        .withPropertyValues(
+            "andersoni.sync.kafka.bootstrap-servers=localhost:9092")
+        .withBean("kafkaListenerContainerFactory",
+            ConcurrentKafkaListenerContainerFactory.class,
+            () -> new ConcurrentKafkaListenerContainerFactory<>())
+        .run(context -> {
+          assertTrue(context.containsBean("kafkaListenerContainerFactory"));
+          assertTrue(context.containsBean("andersoniKafkaListenerContainerFactory"));
+          assertTrue(context.containsBean("springKafkaSyncStrategy"));
+        });
+  }
+
+  @Test
+  void whenNodeIdSet_shouldCreateConsumerFactoryWithStableGroup() {
+    contextRunner
+        .withPropertyValues(
+            "andersoni.sync.kafka.bootstrap-servers=localhost:9092",
+            "andersoni.sync.kafka.node-id=node-42")
+        .run(context -> {
+          assertNotNull(context.getBean(ConsumerFactory.class));
+          assertNotNull(context.getBean(SpringKafkaSyncStrategy.class));
+        });
+  }
+
+  @Test
+  void whenAcksSet_shouldCreateProducerFactoryWithCustomAcks() {
+    contextRunner
+        .withPropertyValues(
+            "andersoni.sync.kafka.bootstrap-servers=localhost:9092",
+            "andersoni.sync.kafka.acks=all")
+        .run(context -> {
+          assertNotNull(context.getBean(ProducerFactory.class));
         });
   }
 }

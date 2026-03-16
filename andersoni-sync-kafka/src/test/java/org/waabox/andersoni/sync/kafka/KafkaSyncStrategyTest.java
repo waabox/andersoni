@@ -2,6 +2,8 @@ package org.waabox.andersoni.sync.kafka;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
@@ -138,5 +140,71 @@ class KafkaSyncStrategyTest {
     final RefreshEvent restored = RefreshEventCodec.deserialize(json);
 
     assertEquals(original, restored);
+  }
+
+  @Test
+  void whenCreatingConfig_givenDefaults_shouldHaveDefaultAcks() {
+    final KafkaSyncConfig config = KafkaSyncConfig.create("localhost:9092");
+    assertEquals("1", config.acks());
+  }
+
+  @Test
+  void whenCreatingConfig_givenCustomAcks_shouldUseCustomValue() {
+    final KafkaSyncConfig config = KafkaSyncConfig.builder()
+        .bootstrapServers("localhost:9092")
+        .acks("all")
+        .build();
+    assertEquals("all", config.acks());
+  }
+
+  @Test
+  void whenCreatingConfig_givenNodeId_shouldUseItForConsumerGroup() {
+    final KafkaSyncConfig config = KafkaSyncConfig.builder()
+        .bootstrapServers("localhost:9092")
+        .nodeId("node-42")
+        .build();
+    assertEquals("node-42", config.nodeId());
+  }
+
+  @Test
+  void whenCreatingConfig_givenNoNodeId_shouldDefaultToNull() {
+    final KafkaSyncConfig config = KafkaSyncConfig.create("localhost:9092");
+    assertNull(config.nodeId());
+  }
+
+  @Test
+  void whenCreatingConfig_givenBuilder_shouldHaveCorrectDefaults() {
+    final KafkaSyncConfig config = KafkaSyncConfig.builder()
+        .bootstrapServers("localhost:9092")
+        .build();
+    assertEquals("localhost:9092", config.bootstrapServers());
+    assertEquals("andersoni-sync", config.topic());
+    assertEquals("andersoni-", config.consumerGroupPrefix());
+    assertEquals("1", config.acks());
+    assertNull(config.nodeId());
+  }
+
+  @Test
+  void whenPublishing_givenNotStarted_shouldThrowIllegalStateException() {
+    final KafkaSyncConfig config = KafkaSyncConfig.create("localhost:9092");
+    final KafkaSyncStrategy strategy = new KafkaSyncStrategy(config);
+
+    final RefreshEvent event = new RefreshEvent(
+        "events", "node-1", 1L, "hash",
+        Instant.parse("2024-01-01T00:00:00Z"));
+
+    assertThrows(IllegalStateException.class, () -> strategy.publish(event));
+  }
+
+  @Test
+  void whenPublishing_givenAlreadyStopped_shouldThrowIllegalStateException() {
+    final KafkaSyncConfig config = KafkaSyncConfig.create("localhost:9092");
+    final KafkaSyncStrategy strategy = new KafkaSyncStrategy(config);
+
+    final RefreshEvent event = new RefreshEvent(
+        "events", "node-1", 1L, "hash",
+        Instant.parse("2024-01-01T00:00:00Z"));
+
+    assertThrows(IllegalStateException.class, () -> strategy.publish(event));
   }
 }
