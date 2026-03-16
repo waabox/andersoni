@@ -342,6 +342,92 @@ class AndersoniTest {
   }
 
   @Test
+  void whenReceivingMultipleRefreshEvents_givenRapidFire_shouldCoalesce()
+      throws InterruptedException {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final java.util.concurrent.CountDownLatch refreshStarted =
+        new java.util.concurrent.CountDownLatch(1);
+    final java.util.concurrent.CountDownLatch releaseRefresh =
+        new java.util.concurrent.CountDownLatch(1);
+    final java.util.concurrent.atomic.AtomicInteger refreshCount =
+        new java.util.concurrent.atomic.AtomicInteger(0);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          final int count = refreshCount.incrementAndGet();
+          // On first refresh after bootstrap (count > 1), block until
+          // released so we can fire more events while it's running.
+          if (count == 2) {
+            refreshStarted.countDown();
+            try {
+              releaseRefresh.await();
+            } catch (final InterruptedException ex) {
+              Thread.currentThread().interrupt();
+            }
+          }
+          return List.of(e1);
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Capture<RefreshListener> listenerCapture = newCapture();
+
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    syncStrategy.subscribe(capture(listenerCapture));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+    replay(syncStrategy);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .syncStrategy(syncStrategy)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    // refreshCount == 1 after bootstrap.
+    assertEquals(1, refreshCount.get());
+
+    final RefreshListener listener = listenerCapture.getValue();
+
+    // Fire first event — this will start a refresh that blocks.
+    listener.onRefresh(new RefreshEvent(
+        "events", "node-2", 2L, "hash-2", java.time.Instant.now()));
+
+    // Wait until the first async refresh has started and is blocked.
+    refreshStarted.await();
+
+    // Fire 3 more events rapidly — all should be coalesced.
+    for (int i = 3; i <= 5; i++) {
+      listener.onRefresh(new RefreshEvent(
+          "events", "node-2", i, "hash-" + i, java.time.Instant.now()));
+    }
+
+    // Release the blocked refresh.
+    releaseRefresh.countDown();
+
+    // Wait for all async work to complete.
+    Thread.sleep(500);
+
+    // Bootstrap (1) + first async refresh (2) + at most one coalesced (3).
+    // The 3 rapid-fire events should have been coalesced into at most 1.
+    assertTrue(refreshCount.get() <= 3,
+        "Expected at most 3 refreshes (bootstrap + first + coalesced), "
+        + "but got " + refreshCount.get());
+
+    andersoni.stop();
+    verify(syncStrategy);
+  }
+
+  @Test
   void whenStopping_shouldStopSyncAndLeader() {
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     final LeaderElectionStrategy leaderElection =
