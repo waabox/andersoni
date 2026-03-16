@@ -166,6 +166,149 @@ class DatadogAndersoniMetricsTest {
   }
 
   @Test
+  void whenSyncPublished_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.published"), eq(1L),
+        eq("catalog:products"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.syncPublished("products");
+
+    verify(client);
+  }
+
+  @Test
+  void whenSyncPublished_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.published"), eq(1L),
+        eq("catalog:products"), eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.syncPublished("products");
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenSyncReceived_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.received"), eq(1L),
+        eq("catalog:products"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.syncReceived("products");
+
+    verify(client);
+  }
+
+  @Test
+  void whenSyncReceived_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.received"), eq(1L),
+        eq("catalog:products"), eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.syncReceived("products");
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenSyncPublishFailed_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.publish.failed"), eq(1L),
+        eq("catalog:products"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.syncPublishFailed("products", new RuntimeException("fail"));
+
+    verify(client);
+  }
+
+  @Test
+  void whenSyncPublishFailed_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.publish.failed"), eq(1L),
+        eq("catalog:products"), eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.syncPublishFailed("products", new RuntimeException("fail"));
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenSyncReceiveFailed_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.receive.failed"), eq(1L));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.syncReceiveFailed(new RuntimeException("fail"));
+
+    verify(client);
+  }
+
+  @Test
+  void whenSyncReceiveFailed_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.receive.failed"), eq(1L),
+        eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.syncReceiveFailed(new RuntimeException("fail"));
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
   void whenReportingGauges_givenCatalogWithIndex_shouldReportAllGauges() {
     final StatsDClient client = createMock(StatsDClient.class);
 
