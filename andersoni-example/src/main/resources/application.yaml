@@ -77,7 +77,8 @@ k8s:
 # consuming. Spring manages the full Kafka listener lifecycle.
 #
 # Uses a broadcast pattern: each node gets its own consumer group
-# (consumerGroupPrefix + UUID), so every instance receives every message.
+# (consumerGroupPrefix + nodeId-or-UUID), so every instance receives
+# every message.
 # ===========================================================================
   sync:
     kafka:
@@ -93,10 +94,23 @@ k8s:
       topic: ${KAFKA_SYNC_TOPIC:andersoni-events}
 
       # Prefix for generating unique consumer group IDs per node.
-      # Each node creates a consumer group as: <prefix> + <random-UUID>
+      # Each node creates a consumer group as: <prefix> + <nodeId-or-UUID>
       # This ensures broadcast semantics (every node receives every message).
       # Default: "andersoni-"
       consumer-group-prefix: ${KAFKA_CONSUMER_GROUP_PREFIX:andersoni-example-}
+
+      # Stable node identifier for consumer group naming.
+      # When set, the consumer group is <prefix> + <node-id> instead of
+      # <prefix> + <random-UUID>, producing stable consumer groups that
+      # are reused across restarts and avoid orphaned groups in the broker.
+      # Reuses the same HOSTNAME used for andersoni.node-id.
+      node-id: ${HOSTNAME:local-dev}
+
+      # Producer acknowledgment level: "0", "1", or "all".
+      # "1" (default) = leader ack only. "all" = all in-sync replicas
+      # must acknowledge, providing stronger delivery guarantees at the
+      # cost of higher latency.
+      acks: ${KAFKA_ACKS:all}
 
 # ===========================================================================
 # S3 Snapshot Store (andersoni-snapshot-s3)
