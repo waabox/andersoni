@@ -87,6 +87,12 @@ public final class KafkaSyncStrategy implements SyncStrategy {
   public void publish(final RefreshEvent event) {
     Objects.requireNonNull(event, "event must not be null");
 
+    if (!running.get()) {
+      throw new IllegalStateException(
+          "Cannot publish: KafkaSyncStrategy is not running. "
+          + "Call start() first.");
+    }
+
     final String json = RefreshEventCodec.serialize(event);
     final ProducerRecord<String, String> record = new ProducerRecord<>(
         config.topic(), event.catalogName(), json);
@@ -221,7 +227,7 @@ public final class KafkaSyncStrategy implements SyncStrategy {
         StringSerializer.class.getName());
     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
         StringSerializer.class.getName());
-    props.put(ProducerConfig.ACKS_CONFIG, "1");
+    props.put(ProducerConfig.ACKS_CONFIG, config.acks());
     return new KafkaProducer<>(props);
   }
 
@@ -231,8 +237,10 @@ public final class KafkaSyncStrategy implements SyncStrategy {
    * @return the Kafka consumer, never null
    */
   private KafkaConsumer<String, String> createConsumer() {
-    final String groupId = config.consumerGroupPrefix()
-        + UUID.randomUUID();
+    final String groupSuffix = config.nodeId() != null
+        ? config.nodeId()
+        : UUID.randomUUID().toString();
+    final String groupId = config.consumerGroupPrefix() + groupSuffix;
 
     final Properties props = new Properties();
     props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
@@ -244,6 +252,7 @@ public final class KafkaSyncStrategy implements SyncStrategy {
         StringDeserializer.class.getName());
     props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
     props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
+    log.info("Kafka consumer group: {}", groupId);
     return new KafkaConsumer<>(props);
   }
 
