@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
 import org.waabox.andersoni.snapshot.SnapshotStore;
 
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -19,6 +20,11 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.sts.StsClient;
+import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
+import software.amazon.awssdk.services.sts.auth.StsAssumeRoleWithWebIdentityCredentialsProvider;
+import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
+import software.amazon.awssdk.services.sts.model.AssumeRoleWithWebIdentityRequest;
 
 /**
  * A {@link SnapshotStore} implementation that persists snapshots to
@@ -38,6 +44,11 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  *   <li>{@code x-amz-meta-created-at} - ISO-8601 creation timestamp</li>
  *   <li>{@code x-amz-meta-catalog-name} - the catalog name</li>
  * </ul>
+ *
+ * <p>Supports AWS STS credential acquisition. When a {@code roleArn} is
+ * configured, the store obtains temporary credentials via
+ * {@code AssumeRole} or {@code AssumeRoleWithWebIdentity} (when a web
+ * identity token file is also provided).
  *
  * <p>When an {@link S3Client} is not provided via the config, this store
  * creates a default client from the configured region. In that case,
@@ -78,12 +89,19 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
   /** Whether this store owns the S3 client and should close it. */
   private final boolean ownsClient;
 
+  /** The STS client used for credential renewal, may be null. */
+  private final StsClient stsClient;
+
   /**
    * Creates a new S3SnapshotStore from the given configuration.
    *
    * <p>If the configuration does not provide an S3Client, a default
-   * client is built using the configured region. The store will close
-   * this client when {@link #close()} is called.
+   * client is built using the configured region. When a {@code roleArn}
+   * is configured, the client uses STS-based credentials via
+   * {@code AssumeRole} or {@code AssumeRoleWithWebIdentity}.
+   *
+   * <p>The store will close the S3 client and STS client (if created)
+   * when {@link #close()} is called.
    *
    * @param config the S3 snapshot configuration, never null
    *
@@ -98,11 +116,24 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
     if (config.s3Client().isPresent()) {
       this.s3Client = config.s3Client().get();
       this.ownsClient = false;
+      this.stsClient = null;
+    } else if (config.roleArn().isPresent()) {
+      this.stsClient = StsClient.builder()
+          .region(config.region())
+          .build();
+      final AwsCredentialsProvider credentialsProvider =
+          buildStsCredentialsProvider(config, stsClient);
+      this.s3Client = S3Client.builder()
+          .region(config.region())
+          .credentialsProvider(credentialsProvider)
+          .build();
+      this.ownsClient = true;
     } else {
       this.s3Client = S3Client.builder()
           .region(config.region())
           .build();
       this.ownsClient = true;
+      this.stsClient = null;
     }
   }
 
@@ -207,16 +238,20 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
   }
 
   /**
-   * Closes the S3 client if this store created it.
+   * Closes the S3 client and STS client if this store created them.
    *
-   * <p>If the client was provided via configuration, it is not closed
-   * since the caller retains ownership.
+   * <p>If the S3 client was provided via configuration, it is not
+   * closed since the caller retains ownership.
    */
   @Override
   public void close() {
     if (ownsClient) {
       log.debug("Closing S3 client owned by this store");
       s3Client.close();
+    }
+    if (stsClient != null) {
+      log.debug("Closing STS client owned by this store");
+      stsClient.close();
     }
   }
 
@@ -228,5 +263,89 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
    */
   private String buildKey(final String catalogName) {
     return prefix + catalogName + "/" + DATA_FILE;
+  }
+
+  /**
+   * Builds an STS-based credentials provider from the given config.
+   *
+   * <p>If a web identity token file is configured, uses
+   * {@code AssumeRoleWithWebIdentity}. Otherwise, uses plain
+   * {@code AssumeRole}.
+   *
+   * @param config the snapshot config with STS fields, never null
+   * @param theStsClient the STS client to use, never null
+   * @return the credentials provider, never null
+   */
+  private static AwsCredentialsProvider buildStsCredentialsProvider(
+      final S3SnapshotConfig config, final StsClient theStsClient) {
+
+    final String roleArn = config.roleArn().orElseThrow();
+
+    if (config.webIdentityTokenFile().isPresent()) {
+      return buildWebIdentityCredentialsProvider(
+          config, theStsClient, roleArn);
+    }
+    return buildAssumeRoleCredentialsProvider(
+        config, theStsClient, roleArn);
+  }
+
+  /**
+   * Builds an {@code AssumeRoleWithWebIdentity} credentials provider.
+   *
+   * @param config the snapshot config, never null
+   * @param theStsClient the STS client, never null
+   * @param roleArn the role ARN to assume, never null
+   * @return the credentials provider, never null
+   */
+  private static AwsCredentialsProvider
+      buildWebIdentityCredentialsProvider(
+          final S3SnapshotConfig config, final StsClient theStsClient,
+          final String roleArn) {
+
+    log.info("Configuring STS AssumeRoleWithWebIdentity for role '{}'",
+        roleArn);
+
+    final AssumeRoleWithWebIdentityRequest.Builder requestBuilder =
+        AssumeRoleWithWebIdentityRequest.builder()
+            .roleArn(roleArn)
+            .roleSessionName(config.sessionName())
+            .webIdentityToken(
+                config.webIdentityTokenFile().orElseThrow().toString());
+
+    config.durationSeconds().ifPresent(requestBuilder::durationSeconds);
+
+    return StsAssumeRoleWithWebIdentityCredentialsProvider.builder()
+        .stsClient(theStsClient)
+        .refreshRequest(requestBuilder.build())
+        .build();
+  }
+
+  /**
+   * Builds an {@code AssumeRole} credentials provider.
+   *
+   * @param config the snapshot config, never null
+   * @param theStsClient the STS client, never null
+   * @param roleArn the role ARN to assume, never null
+   * @return the credentials provider, never null
+   */
+  private static AwsCredentialsProvider
+      buildAssumeRoleCredentialsProvider(
+          final S3SnapshotConfig config, final StsClient theStsClient,
+          final String roleArn) {
+
+    log.info("Configuring STS AssumeRole for role '{}'", roleArn);
+
+    final AssumeRoleRequest.Builder requestBuilder =
+        AssumeRoleRequest.builder()
+            .roleArn(roleArn)
+            .roleSessionName(config.sessionName());
+
+    config.externalId().ifPresent(requestBuilder::externalId);
+    config.durationSeconds().ifPresent(requestBuilder::durationSeconds);
+
+    return StsAssumeRoleCredentialsProvider.builder()
+        .stsClient(theStsClient)
+        .refreshRequest(requestBuilder.build())
+        .build();
   }
 }

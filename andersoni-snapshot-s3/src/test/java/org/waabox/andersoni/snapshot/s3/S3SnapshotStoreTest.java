@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
@@ -223,5 +224,64 @@ class S3SnapshotStoreTest {
 
     assertEquals("custom/products/snapshot.dat",
         requestCapture.getValue().key());
+  }
+
+  @Test
+  void whenCreatingConfig_givenStsAssumeRole_shouldRetainStsFields() {
+
+    final S3SnapshotConfig config = S3SnapshotConfig.builder()
+        .bucket("test-bucket")
+        .region(Region.US_EAST_1)
+        .roleArn("arn:aws:iam::123456789:role/test-role")
+        .sessionName("my-session")
+        .externalId("ext-123")
+        .durationSeconds(3600)
+        .build();
+
+    assertEquals("arn:aws:iam::123456789:role/test-role",
+        config.roleArn().orElseThrow());
+    assertEquals("my-session", config.sessionName());
+    assertEquals("ext-123", config.externalId().orElseThrow());
+    assertEquals(3600, config.durationSeconds().orElseThrow());
+    assertTrue(config.webIdentityTokenFile().isEmpty(),
+        "webIdentityTokenFile should be empty for AssumeRole");
+  }
+
+  @Test
+  void whenCreatingConfig_givenStsWebIdentity_shouldRetainTokenFilePath() {
+
+    final Path tokenFile = Path.of("/var/run/secrets/token");
+
+    final S3SnapshotConfig config = S3SnapshotConfig.builder()
+        .bucket("test-bucket")
+        .region(Region.US_EAST_1)
+        .roleArn("arn:aws:iam::123456789:role/irsa-role")
+        .webIdentityTokenFile(tokenFile)
+        .build();
+
+    assertEquals("arn:aws:iam::123456789:role/irsa-role",
+        config.roleArn().orElseThrow());
+    assertEquals(tokenFile,
+        config.webIdentityTokenFile().orElseThrow());
+    assertEquals("andersoni-snapshot", config.sessionName());
+  }
+
+  @Test
+  void whenCreatingConfig_givenNoStsFields_shouldReturnEmptyOptionals() {
+
+    final S3SnapshotConfig config = S3SnapshotConfig.builder()
+        .bucket("test-bucket")
+        .region(Region.US_EAST_1)
+        .build();
+
+    assertTrue(config.roleArn().isEmpty(),
+        "roleArn should be empty when not set");
+    assertTrue(config.webIdentityTokenFile().isEmpty(),
+        "webIdentityTokenFile should be empty when not set");
+    assertTrue(config.externalId().isEmpty(),
+        "externalId should be empty when not set");
+    assertTrue(config.durationSeconds().isEmpty(),
+        "durationSeconds should be empty when not set");
+    assertEquals("andersoni-snapshot", config.sessionName());
   }
 }
