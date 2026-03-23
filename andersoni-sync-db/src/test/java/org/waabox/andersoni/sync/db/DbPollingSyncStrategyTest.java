@@ -21,6 +21,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventCodec;
 
 /** Unit tests for {@link DbPollingSyncStrategy}.
  *
@@ -89,8 +91,8 @@ class DbPollingSyncStrategyTest {
     // Query the table directly to verify the row exists.
     try (final Connection conn = dataSource.getConnection();
          final PreparedStatement ps = conn.prepareStatement(
-             "SELECT catalog_name, source_node_id, version, hash, "
-                 + "updated_at FROM andersoni_sync_log "
+             "SELECT catalog_name, source_node_id, version, event_type, "
+                 + "event_json, updated_at FROM andersoni_sync_log "
                  + "WHERE catalog_name = ?")) {
 
       ps.setString(1, "products");
@@ -100,7 +102,8 @@ class DbPollingSyncStrategyTest {
         assertEquals("products", rs.getString("catalog_name"));
         assertEquals("node-1", rs.getString("source_node_id"));
         assertEquals(1L, rs.getLong("version"));
-        assertEquals("hash-abc", rs.getString("hash"));
+        assertEquals("REFRESH", rs.getString("event_type"));
+        assertNotNull(rs.getString("event_json"));
         assertNotNull(rs.getTimestamp("updated_at"));
       }
     }
@@ -129,7 +132,7 @@ class DbPollingSyncStrategyTest {
     // Verify only one row exists, with updated values.
     try (final Connection conn = dataSource.getConnection();
          final PreparedStatement ps = conn.prepareStatement(
-             "SELECT version, hash FROM andersoni_sync_log "
+             "SELECT version, event_type, event_json FROM andersoni_sync_log "
                  + "WHERE catalog_name = ?")) {
 
       ps.setString(1, "products");
@@ -137,7 +140,8 @@ class DbPollingSyncStrategyTest {
       try (final ResultSet rs = ps.executeQuery()) {
         assertTrue(rs.next(), "Row should exist for catalog 'products'");
         assertEquals(2L, rs.getLong("version"));
-        assertEquals("hash-v2", rs.getString("hash"));
+        assertEquals("REFRESH", rs.getString("event_type"));
+        assertNotNull(rs.getString("event_json"));
       }
     }
 
@@ -158,7 +162,7 @@ class DbPollingSyncStrategyTest {
   }
 
   @Test
-  void whenPolling_givenChangedHash_shouldNotifyListeners()
+  void whenPolling_givenChangedVersion_shouldNotifyListeners()
       throws Exception {
 
     final DbPollingSyncConfig config = DbPollingSyncConfig.create(
@@ -167,7 +171,7 @@ class DbPollingSyncStrategyTest {
     strategy = new DbPollingSyncStrategy(config);
 
     final CountDownLatch latch = new CountDownLatch(1);
-    final List<RefreshEvent> received = new ArrayList<>();
+    final List<SyncEvent> received = new ArrayList<>();
 
     strategy.subscribe(event -> {
       received.add(event);
@@ -177,17 +181,23 @@ class DbPollingSyncStrategyTest {
     strategy.start();
 
     // Simulate another node writing directly to the table.
+    final RefreshEvent remoteEvent = new RefreshEvent(
+        "orders", "remote-node", 5L, "remote-hash", Instant.now());
+    final String eventJson = SyncEventCodec.serialize(remoteEvent);
+
     try (final Connection conn = dataSource.getConnection();
          final PreparedStatement ps = conn.prepareStatement(
              "MERGE INTO andersoni_sync_log "
-                 + "(catalog_name, source_node_id, version, hash, updated_at)"
-                 + " VALUES (?, ?, ?, ?, ?)")) {
+                 + "(catalog_name, source_node_id, version, event_type,"
+                 + " event_json, updated_at)"
+                 + " VALUES (?, ?, ?, ?, ?, ?)")) {
 
       ps.setString(1, "orders");
       ps.setString(2, "remote-node");
       ps.setLong(3, 5L);
-      ps.setString(4, "remote-hash");
-      ps.setTimestamp(5, java.sql.Timestamp.from(Instant.now()));
+      ps.setString(4, "REFRESH");
+      ps.setString(5, eventJson);
+      ps.setTimestamp(6, java.sql.Timestamp.from(Instant.now()));
       ps.executeUpdate();
     }
 
@@ -199,34 +209,41 @@ class DbPollingSyncStrategyTest {
     assertEquals("orders", received.get(0).catalogName());
     assertEquals("remote-node", received.get(0).sourceNodeId());
     assertEquals(5L, received.get(0).version());
-    assertEquals("remote-hash", received.get(0).hash());
+    assertTrue(received.get(0) instanceof RefreshEvent);
+    assertEquals("remote-hash", ((RefreshEvent) received.get(0)).hash());
   }
 
   @Test
-  void whenPolling_givenSameHash_shouldNotNotifyAgain() throws Exception {
+  void whenPolling_givenSameVersion_shouldNotNotifyAgain() throws Exception {
 
     final DbPollingSyncConfig config = DbPollingSyncConfig.create(
         dataSource, "andersoni_sync_log", Duration.ofMillis(100));
 
     strategy = new DbPollingSyncStrategy(config);
 
-    final List<RefreshEvent> received = new ArrayList<>();
+    final List<SyncEvent> received = new ArrayList<>();
     strategy.subscribe(received::add);
 
     strategy.start();
 
     // Insert a row simulating a remote change.
+    final RefreshEvent remoteEvent = new RefreshEvent(
+        "users", "remote-node", 1L, "stable-hash", Instant.now());
+    final String eventJson = SyncEventCodec.serialize(remoteEvent);
+
     try (final Connection conn = dataSource.getConnection();
          final PreparedStatement ps = conn.prepareStatement(
              "MERGE INTO andersoni_sync_log "
-                 + "(catalog_name, source_node_id, version, hash, updated_at)"
-                 + " VALUES (?, ?, ?, ?, ?)")) {
+                 + "(catalog_name, source_node_id, version, event_type,"
+                 + " event_json, updated_at)"
+                 + " VALUES (?, ?, ?, ?, ?, ?)")) {
 
       ps.setString(1, "users");
       ps.setString(2, "remote-node");
       ps.setLong(3, 1L);
-      ps.setString(4, "stable-hash");
-      ps.setTimestamp(5, java.sql.Timestamp.from(Instant.now()));
+      ps.setString(4, "REFRESH");
+      ps.setString(5, eventJson);
+      ps.setTimestamp(6, java.sql.Timestamp.from(Instant.now()));
       ps.executeUpdate();
     }
 
@@ -234,6 +251,6 @@ class DbPollingSyncStrategyTest {
     Thread.sleep(500);
 
     assertEquals(1, received.size(),
-        "Listener should be notified exactly once for the same hash");
+        "Listener should be notified exactly once for the same version");
   }
 }
