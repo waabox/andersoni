@@ -2,6 +2,7 @@ package org.waabox.andersoni.metrics;
 
 import java.util.Collection;
 import org.waabox.andersoni.Catalog;
+import org.waabox.andersoni.PatchOperation;
 
 /**
  * An abstraction for recording operational metrics of the Andersoni
@@ -77,6 +78,48 @@ public interface AndersoniMetrics {
    * @param cause the failure cause, never null
    */
   default void syncReceiveFailed(final Throwable cause) {
+  }
+
+  /** Records a successful local patch operation.
+   * @param catalogName the name of the catalog, never null
+   * @param operation   the type of patch operation, never null
+   */
+  default void patchApplied(final String catalogName,
+      final PatchOperation operation) {
+  }
+
+  /** Records a failed local patch operation.
+   * @param catalogName the name of the catalog, never null
+   * @param operation   the type of patch operation, never null
+   * @param cause       the failure cause, never null
+   */
+  default void patchFailed(final String catalogName,
+      final PatchOperation operation, final Throwable cause) {
+  }
+
+  /** Records a patch event published to the cluster.
+   * @param catalogName the name of the catalog, never null
+   * @param operation   the type of patch operation, never null
+   */
+  default void patchPublished(final String catalogName,
+      final PatchOperation operation) {
+  }
+
+  /** Records a patch publish failure.
+   * @param catalogName the name of the catalog, never null
+   * @param operation   the type of patch operation, never null
+   * @param cause       the failure cause, never null
+   */
+  default void patchPublishFailed(final String catalogName,
+      final PatchOperation operation, final Throwable cause) {
+  }
+
+  /** Records a patch event received from another node.
+   * @param catalogName the name of the catalog, never null
+   * @param operation   the type of patch operation, never null
+   */
+  default void patchReceived(final String catalogName,
+      final PatchOperation operation) {
   }
 
   /**
