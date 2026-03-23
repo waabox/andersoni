@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.waabox.andersoni.Catalog;
 import org.waabox.andersoni.CatalogInfo;
 import org.waabox.andersoni.IndexInfo;
+import org.waabox.andersoni.PatchOperation;
 import org.waabox.andersoni.metrics.AndersoniMetrics;
 
 import com.timgroup.statsd.NonBlockingStatsDClientBuilder;
@@ -224,6 +225,91 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
       client.count("sync.receive.failed", 1, "node:" + node);
     } else {
       client.count("sync.receive.failed", 1);
+    }
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void patchApplied(final String catalogName,
+      final PatchOperation operation) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(operation, "operation must not be null");
+    final String node = this.nodeId;
+    if (node != null) {
+      client.count("patch.applied", 1,
+          "catalog:" + catalogName, "operation:" + operation.name(),
+          "node:" + node);
+    } else {
+      client.count("patch.applied", 1,
+          "catalog:" + catalogName, "operation:" + operation.name());
+    }
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void patchFailed(final String catalogName,
+      final PatchOperation operation, final Throwable cause) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(operation, "operation must not be null");
+    final String node = this.nodeId;
+    if (node != null) {
+      client.count("patch.failed", 1,
+          "catalog:" + catalogName, "operation:" + operation.name(),
+          "node:" + node);
+    } else {
+      client.count("patch.failed", 1,
+          "catalog:" + catalogName, "operation:" + operation.name());
+    }
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void patchPublished(final String catalogName,
+      final PatchOperation operation) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(operation, "operation must not be null");
+    final String node = this.nodeId;
+    if (node != null) {
+      client.count("patch.published", 1,
+          "catalog:" + catalogName, "operation:" + operation.name(),
+          "node:" + node);
+    } else {
+      client.count("patch.published", 1,
+          "catalog:" + catalogName, "operation:" + operation.name());
+    }
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void patchPublishFailed(final String catalogName,
+      final PatchOperation operation, final Throwable cause) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(operation, "operation must not be null");
+    final String node = this.nodeId;
+    if (node != null) {
+      client.count("patch.publish.failed", 1,
+          "catalog:" + catalogName, "operation:" + operation.name(),
+          "node:" + node);
+    } else {
+      client.count("patch.publish.failed", 1,
+          "catalog:" + catalogName, "operation:" + operation.name());
+    }
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void patchReceived(final String catalogName,
+      final PatchOperation operation) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(operation, "operation must not be null");
+    final String node = this.nodeId;
+    if (node != null) {
+      client.count("patch.received", 1,
+          "catalog:" + catalogName, "operation:" + operation.name(),
+          "node:" + node);
+    } else {
+      client.count("patch.received", 1,
+          "catalog:" + catalogName, "operation:" + operation.name());
     }
   }
 
