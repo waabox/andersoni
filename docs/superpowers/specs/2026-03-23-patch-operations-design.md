@@ -106,6 +106,8 @@ New fields when identity function is present:
 
 The identity map is `null` when no identity function is configured. Built during `buildAndSwapSnapshot` alongside existing indices.
 
+The identity function is stored on both `Catalog` (passed via builder, used to feed into snapshot builds) and `Snapshot` (for patch validation and `findById` lookups). The `Catalog` private constructor gains a new `Function<T, Object> identityFunction` parameter.
+
 ### 4. SyncEvent Hierarchy
 
 Replace the standalone `RefreshEvent` with a polymorphic event hierarchy using the visitor pattern.
@@ -165,7 +167,7 @@ public record PatchEvent(
 }
 ```
 
-**PatchOperation enum**:
+**PatchOperation enum** (in `org.waabox.andersoni` root package, since it's used by both Catalog patch API and metrics):
 ```java
 public enum PatchOperation {
     ADD, UPDATE, UPSERT, REMOVE
@@ -254,9 +256,13 @@ public void onRefresh(RefreshEvent event) {
 
 @Override
 public void onPatch(PatchEvent event) {
-    // skip if from self, deserialize items, apply patch locally
+    // skip if from self, deserialize items via catalog's SnapshotSerializer,
+    // then call the corresponding Catalog local method (e.g., catalog.add(),
+    // catalog.upsert()) — NOT the *AndSync methods, to avoid re-broadcast.
 }
 ```
+
+**Version field semantics**: `PatchEvent.version()` contains the snapshot version *after* the local patch was applied (since `buildAndSwapSnapshot` increments the version counter). This field is carried for future strict ordering support but is not used for deduplication in this design.
 
 **Serializer requirement**: If `SyncStrategy` is configured and a catalog has an identity function, the catalog must have a `SnapshotSerializer`. Validated at bootstrap time — fail fast with a clear error.
 
@@ -270,6 +276,8 @@ The existing `AsyncRefreshDispatcher` gains a new `dispatchPatch(catalogName, Ru
 - Refreshes continue to coalesce as today
 
 **Refresh/patch interaction**: If a full refresh coalesces away while a patch is being applied, this is acceptable — the full refresh would have overwritten the patch result anyway. If a patch arrives while a full refresh is in progress, the patch waits on the semaphore and applies after the refresh completes. The patch may then conflict (e.g., adding an item the refresh already included), which is handled by the receiving-side error policy (swallow and log).
+
+**Duplicate patch events**: With at-least-once delivery transports (e.g., Kafka), duplicate `PatchEvent`s may arrive. These cause transient errors (e.g., `add` with an already-existing key) which are handled by the receiving-side error policy (swallow and log).
 
 ### 9. Hash Divergence
 
