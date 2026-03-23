@@ -8,7 +8,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.TreeMap;
+import java.util.function.Function;
 
 /**
  * An immutable point-in-time view of catalog data and its indices.
@@ -51,6 +53,10 @@ public final class Snapshot<T> {
   /** The instant when this snapshot was created. */
   private final Instant createdAt;
 
+  /** The identity map for O(1) lookups by key, or null if no identity
+   * function was configured. */
+  private final Map<Object, T> identityMap;
+
   /**
    * Creates a new snapshot.
    *
@@ -61,12 +67,15 @@ public final class Snapshot<T> {
    * @param version            the version number
    * @param hash               the content hash, never null
    * @param createdAt          the creation timestamp, never null
+   * @param identityMap        the identity map for O(1) lookups, or null
+   *                           if no identity function was configured
    */
   private Snapshot(final List<T> data,
       final Map<String, Map<Object, List<T>>> indices,
       final Map<String, NavigableMap<Comparable<?>, List<T>>> sortedIndices,
       final Map<String, NavigableMap<String, List<T>>> reversedKeyIndices,
-      final long version, final String hash, final Instant createdAt) {
+      final long version, final String hash, final Instant createdAt,
+      final Map<Object, T> identityMap) {
     this.data = data;
     this.indices = indices;
     this.sortedIndices = sortedIndices;
@@ -74,6 +83,7 @@ public final class Snapshot<T> {
     this.version = version;
     this.hash = hash;
     this.createdAt = createdAt;
+    this.identityMap = identityMap;
   }
 
   /**
@@ -98,7 +108,39 @@ public final class Snapshot<T> {
       final long version, final String hash) {
 
     return of(data, indices, Collections.emptyMap(), Collections.emptyMap(),
-        version, hash);
+        version, hash, null);
+  }
+
+  /**
+   * Creates a new snapshot from the given data and indices, with an identity
+   * function for O(1) lookups by key.
+   *
+   * <p>All provided collections are defensively copied into unmodifiable
+   * structures. The creation timestamp is set to the current instant.
+   *
+   * @param data             the list of data items, never null
+   * @param indices          the index definitions mapping index name to
+   *                         key-to-items mappings, never null
+   * @param version          the version number for this snapshot
+   * @param hash             the content hash identifying this snapshot,
+   *                         never null
+   * @param identityFunction the function to extract identity keys from
+   *                         items, never null
+   * @param <T>              the type of data items
+   *
+   * @return a new immutable snapshot, never null
+   *
+   * @throws NullPointerException if any argument is null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public static <T> Snapshot<T> of(final List<T> data,
+      final Map<String, Map<Object, List<T>>> indices,
+      final long version, final String hash,
+      final Function<T, Object> identityFunction) {
+
+    return of(data, indices, Collections.emptyMap(), Collections.emptyMap(),
+        version, hash, identityFunction);
   }
 
   /**
@@ -133,6 +175,46 @@ public final class Snapshot<T> {
       final Map<String, NavigableMap<String, List<T>>> reversedKeyIndices,
       final long version, final String hash) {
 
+    return of(data, indices, sortedIndices, reversedKeyIndices,
+        version, hash, null);
+  }
+
+  /**
+   * Creates a new snapshot from the given data, indices, sorted indices,
+   * reversed-key indices, and an identity function for O(1) lookups.
+   *
+   * <p>All provided collections are defensively copied into unmodifiable
+   * structures. The creation timestamp is set to the current instant.
+   *
+   * @param data               the list of data items, never null
+   * @param indices            the index definitions mapping index name to
+   *                           key-to-items mappings, never null
+   * @param sortedIndices      the sorted index definitions mapping index
+   *                           name to navigable key-to-items mappings,
+   *                           never null
+   * @param reversedKeyIndices the reversed-key index definitions for
+   *                           efficient endsWith queries, never null
+   * @param version            the version number for this snapshot
+   * @param hash               the content hash identifying this snapshot,
+   *                           never null
+   * @param identityFunction   the function to extract identity keys from
+   *                           items, or null if no identity map is needed
+   * @param <T>                the type of data items
+   *
+   * @return a new immutable snapshot, never null
+   *
+   * @throws NullPointerException if data, indices, sortedIndices,
+   *         reversedKeyIndices, or hash is null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public static <T> Snapshot<T> of(final List<T> data,
+      final Map<String, Map<Object, List<T>>> indices,
+      final Map<String, NavigableMap<Comparable<?>, List<T>>> sortedIndices,
+      final Map<String, NavigableMap<String, List<T>>> reversedKeyIndices,
+      final long version, final String hash,
+      final Function<T, Object> identityFunction) {
+
     Objects.requireNonNull(data, "data must not be null");
     Objects.requireNonNull(indices, "indices must not be null");
     Objects.requireNonNull(sortedIndices, "sortedIndices must not be null");
@@ -152,8 +234,11 @@ public final class Snapshot<T> {
     final Map<String, NavigableMap<String, List<T>>> immutableReversed =
         copyReversedKeyIndices(reversedKeyIndices);
 
+    final Map<Object, T> identity = buildIdentityMap(
+        immutableData, identityFunction);
+
     return new Snapshot<>(immutableData, immutableIndices, immutableSorted,
-        immutableReversed, version, hash, Instant.now());
+        immutableReversed, version, hash, Instant.now(), identity);
   }
 
   /**
@@ -169,7 +254,8 @@ public final class Snapshot<T> {
    */
   public static <T> Snapshot<T> empty() {
     return new Snapshot<>(Collections.emptyList(), Collections.emptyMap(),
-        Collections.emptyMap(), Collections.emptyMap(), 0L, "", Instant.now());
+        Collections.emptyMap(), Collections.emptyMap(), 0L, "", Instant.now(),
+        null);
   }
 
   /**
@@ -232,6 +318,38 @@ public final class Snapshot<T> {
    */
   public Instant createdAt() {
     return createdAt;
+  }
+
+  /**
+   * Finds an item by its identity key.
+   *
+   * <p>Returns {@link Optional#empty()} if no identity function was
+   * configured or the key is not present in the identity map.
+   *
+   * @param key the identity key to look up, never null
+   *
+   * @return an optional containing the matching item, or empty
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public Optional<T> findById(final Object key) {
+    Objects.requireNonNull(key, "key must not be null");
+    if (identityMap == null) {
+      return Optional.empty();
+    }
+    return Optional.ofNullable(identityMap.get(key));
+  }
+
+  /**
+   * Returns the unmodifiable identity map, or null if no identity function
+   * was configured.
+   *
+   * @return the identity map, or null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public Map<Object, T> identityMap() {
+    return identityMap;
   }
 
   // -----------------------------------------------------------------------
@@ -586,6 +704,37 @@ public final class Snapshot<T> {
       return null;
     }
     return prefix.substring(0, prefix.length() - 1) + (char) (lastChar + 1);
+  }
+
+  // -----------------------------------------------------------------------
+  // Identity map builder
+  // -----------------------------------------------------------------------
+
+  /**
+   * Builds an unmodifiable identity map from the given data using the
+   * identity function, or returns null if no identity function is provided.
+   *
+   * <p>When duplicate keys exist, the last item in the list wins
+   * (last-write-wins semantics).
+   *
+   * @param data             the data items, never null
+   * @param identityFunction the function to extract identity keys, or null
+   * @param <T>              the type of data items
+   *
+   * @return an unmodifiable identity map, or null if identityFunction is
+   *         null
+   */
+  private static <T> Map<Object, T> buildIdentityMap(final List<T> data,
+      final Function<T, Object> identityFunction) {
+    if (identityFunction == null) {
+      return null;
+    }
+    final Map<Object, T> map = new HashMap<>();
+    for (final T item : data) {
+      final Object key = identityFunction.apply(item);
+      map.put(key, item);
+    }
+    return Collections.unmodifiableMap(map);
   }
 
   // -----------------------------------------------------------------------
