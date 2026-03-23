@@ -28,7 +28,9 @@ import org.waabox.andersoni.metrics.NoopAndersoniMetrics;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.snapshot.SnapshotStore;
+import org.waabox.andersoni.sync.PatchEvent;
 import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.SyncEventHandler;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /**
@@ -217,6 +219,21 @@ public final class Andersoni {
     }
     leaderElection.start();
     bootstrapAllCatalogs();
+
+    if (syncStrategy != null) {
+      for (final Map.Entry<String, Catalog<?>> entry
+          : catalogsByName.entrySet()) {
+        final Catalog<?> cat = entry.getValue();
+        if (cat.identityFunction().isPresent()
+            && cat.serializer().isEmpty()) {
+          throw new IllegalStateException(
+              "Catalog '" + entry.getKey() + "' has an identity function "
+              + "and SyncStrategy is configured, but no serializer. "
+              + "Add .serializer() to the catalog builder.");
+        }
+      }
+    }
+
     asyncRefreshDispatcher = new AsyncRefreshDispatcher(
         catalogsByName.keySet());
     wireSyncListener();
@@ -493,6 +510,194 @@ public final class Andersoni {
   }
 
   /**
+   * Adds a single item to a catalog and publishes a patch event to the
+   * sync layer if configured.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param item        the item to add, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException    if the instance has been stopped
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <T> void addAndSync(final String catalogName, final T item) {
+    addAndSync(catalogName, List.of(
+        Objects.requireNonNull(item, "item must not be null")));
+  }
+
+  /**
+   * Adds a collection of items to a catalog and publishes a patch event
+   * to the sync layer if configured.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param items       the items to add, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException    if the instance has been stopped
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> void addAndSync(final String catalogName,
+      final Collection<T> items) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(items, "items must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException("Cannot patch after stop()");
+    }
+    final Catalog<T> catalog = (Catalog<T>) requireCatalog(catalogName);
+    catalog.add(items);
+    metrics.patchApplied(catalogName, PatchOperation.ADD);
+    publishPatchEvent(catalogName, PatchOperation.ADD, catalog, items);
+  }
+
+  /**
+   * Updates a single item in a catalog and publishes a patch event to the
+   * sync layer if configured.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param item        the item to update, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException    if the instance has been stopped
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <T> void updateAndSync(final String catalogName, final T item) {
+    updateAndSync(catalogName, List.of(
+        Objects.requireNonNull(item, "item must not be null")));
+  }
+
+  /**
+   * Updates a collection of items in a catalog and publishes a patch event
+   * to the sync layer if configured.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param items       the items to update, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException    if the instance has been stopped
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> void updateAndSync(final String catalogName,
+      final Collection<T> items) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(items, "items must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException("Cannot patch after stop()");
+    }
+    final Catalog<T> catalog = (Catalog<T>) requireCatalog(catalogName);
+    catalog.update(items);
+    metrics.patchApplied(catalogName, PatchOperation.UPDATE);
+    publishPatchEvent(catalogName, PatchOperation.UPDATE, catalog, items);
+  }
+
+  /**
+   * Upserts a single item in a catalog and publishes a patch event to the
+   * sync layer if configured.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param item        the item to upsert, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException    if the instance has been stopped
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <T> void upsertAndSync(final String catalogName, final T item) {
+    upsertAndSync(catalogName, List.of(
+        Objects.requireNonNull(item, "item must not be null")));
+  }
+
+  /**
+   * Upserts a collection of items in a catalog and publishes a patch event
+   * to the sync layer if configured.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param items       the items to upsert, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException    if the instance has been stopped
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> void upsertAndSync(final String catalogName,
+      final Collection<T> items) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(items, "items must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException("Cannot patch after stop()");
+    }
+    final Catalog<T> catalog = (Catalog<T>) requireCatalog(catalogName);
+    catalog.upsert(items);
+    metrics.patchApplied(catalogName, PatchOperation.UPSERT);
+    publishPatchEvent(catalogName, PatchOperation.UPSERT, catalog, items);
+  }
+
+  /**
+   * Removes a single item from a catalog and publishes a patch event to
+   * the sync layer if configured.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param item        the item to remove, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException    if the instance has been stopped
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <T> void removeAndSync(final String catalogName, final T item) {
+    removeAndSync(catalogName, List.of(
+        Objects.requireNonNull(item, "item must not be null")));
+  }
+
+  /**
+   * Removes a collection of items from a catalog and publishes a patch
+   * event to the sync layer if configured.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param items       the items to remove, never null
+   * @param <T>         the item type
+   *
+   * @throws IllegalStateException    if the instance has been stopped
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> void removeAndSync(final String catalogName,
+      final Collection<T> items) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(items, "items must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException("Cannot patch after stop()");
+    }
+    final Catalog<T> catalog = (Catalog<T>) requireCatalog(catalogName);
+    catalog.remove(items);
+    metrics.patchApplied(catalogName, PatchOperation.REMOVE);
+    publishPatchEvent(catalogName, PatchOperation.REMOVE, catalog, items);
+  }
+
+  /**
    * Refreshes a catalog locally without synchronizing across nodes.
    *
    * <p>This method is intended for internal use when receiving sync events
@@ -570,6 +775,24 @@ public final class Andersoni {
     Objects.requireNonNull(catalogName, "catalogName must not be null");
     Objects.requireNonNull(type, "type must not be null");
     return (Catalog<T>) requireCatalog(catalogName);
+  }
+
+  /**
+   * Returns a registered catalog by name.
+   *
+   * @param catalogName the name of the catalog, never null
+   *
+   * @return the catalog, never null
+   *
+   * @throws NullPointerException     if catalogName is null
+   * @throws IllegalArgumentException if no catalog with the given name
+   *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public Catalog<?> catalog(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    return requireCatalog(catalogName);
   }
 
   /**
@@ -813,35 +1036,123 @@ public final class Andersoni {
       return;
     }
 
-    syncStrategy.subscribe(event -> {
-      if (nodeId.equals(event.sourceNodeId())) {
-        log.debug("Ignoring sync event from self for catalog '{}'",
-            event.catalogName());
-        return;
-      }
+    final SyncEventHandler handler = new SyncEventHandler() {
 
-      final Catalog<?> catalog = catalogsByName.get(event.catalogName());
-      if (catalog == null) {
-        log.warn("Received sync event for unknown catalog '{}'",
-            event.catalogName());
-        return;
-      }
-
-      if (event instanceof RefreshEvent refreshEvent) {
-        final String localHash = catalog.currentSnapshot().hash();
-        if (localHash.equals(refreshEvent.hash())) {
-          log.debug("Catalog '{}' already at hash {}, ignoring event",
-              event.catalogName(), refreshEvent.hash());
+      @Override
+      public void onRefresh(final RefreshEvent event) {
+        if (nodeId.equals(event.sourceNodeId())) {
+          log.debug("Ignoring refresh event from self for catalog '{}'",
+              event.catalogName());
           return;
         }
+
+        final Catalog<?> catalog = catalogsByName.get(event.catalogName());
+        if (catalog == null) {
+          log.warn("Received refresh event for unknown catalog '{}'",
+              event.catalogName());
+          return;
+        }
+
+        final String localHash = catalog.currentSnapshot().hash();
+        if (localHash.equals(event.hash())) {
+          log.debug("Catalog '{}' already at hash {}, ignoring event",
+              event.catalogName(), event.hash());
+          return;
+        }
+
+        metrics.syncReceived(event.catalogName());
+        asyncRefreshDispatcher.dispatch(event.catalogName(),
+            () -> refreshFromEvent(event.catalogName(), catalog));
       }
 
-      metrics.syncReceived(event.catalogName());
-      asyncRefreshDispatcher.dispatch(event.catalogName(),
-          () -> refreshFromEvent(event.catalogName(), catalog));
-    });
+      @Override
+      @SuppressWarnings("unchecked")
+      public void onPatch(final PatchEvent event) {
+        if (nodeId.equals(event.sourceNodeId())) {
+          log.debug("Ignoring patch event from self for catalog '{}'",
+              event.catalogName());
+          return;
+        }
 
+        final Catalog<?> catalog = catalogsByName.get(event.catalogName());
+        if (catalog == null) {
+          log.warn("Received patch event for unknown catalog '{}'",
+              event.catalogName());
+          return;
+        }
+
+        metrics.patchReceived(event.catalogName(), event.operationType());
+        asyncRefreshDispatcher.dispatchPatch(event.catalogName(), () -> {
+          try {
+            final SnapshotSerializer<Object> serializer =
+                (SnapshotSerializer<Object>) catalog.serializer()
+                    .orElseThrow(() -> new IllegalStateException(
+                        "Catalog '" + event.catalogName()
+                        + "' has no serializer for patch deserialization"));
+            final List<Object> items =
+                serializer.deserialize(event.payload());
+            final Catalog<Object> typedCatalog =
+                (Catalog<Object>) catalog;
+
+            switch (event.operationType()) {
+              case ADD -> typedCatalog.add(items);
+              case UPDATE -> typedCatalog.update(items);
+              case UPSERT -> typedCatalog.upsert(items);
+              case REMOVE -> typedCatalog.remove(items);
+            }
+
+            metrics.patchApplied(event.catalogName(),
+                event.operationType());
+            log.info("Applied {} patch to catalog '{}' from node '{}'",
+                event.operationType(), event.catalogName(),
+                event.sourceNodeId());
+          } catch (final Exception e) {
+            log.error("Failed to apply patch to catalog '{}': {}",
+                event.catalogName(), e.getMessage(), e);
+            metrics.patchFailed(event.catalogName(),
+                event.operationType(), e);
+          }
+        });
+      }
+    };
+
+    syncStrategy.subscribe(event -> event.accept(handler));
     syncStrategy.start();
+  }
+
+  /**
+   * Publishes a patch event to the sync layer for the given catalog and
+   * items. Does nothing if no sync strategy is configured.
+   *
+   * @param catalogName the catalog name, never null
+   * @param operation   the patch operation type, never null
+   * @param catalog     the catalog, never null
+   * @param items       the items that were patched, never null
+   * @param <T>         the item type
+   */
+  private <T> void publishPatchEvent(final String catalogName,
+      final PatchOperation operation, final Catalog<T> catalog,
+      final Collection<T> items) {
+    if (syncStrategy == null) {
+      return;
+    }
+    final SnapshotSerializer<T> serializer = catalog.serializer()
+        .orElseThrow(() -> new IllegalStateException(
+            "Catalog '" + catalogName
+            + "' requires a serializer for patch sync"));
+    final byte[] payload = serializer.serialize(List.copyOf(items));
+    final Snapshot<?> snapshot = catalog.currentSnapshot();
+    final PatchEvent event = new PatchEvent(
+        catalogName, nodeId, snapshot.version(), operation, payload,
+        Instant.now());
+    try {
+      syncStrategy.publish(event);
+      metrics.patchPublished(catalogName, operation);
+    } catch (final Exception e) {
+      log.error("Failed to publish patch event for catalog '{}': {}",
+          catalogName, e.getMessage(), e);
+      metrics.patchPublishFailed(catalogName, operation, e);
+    }
   }
 
   /**
@@ -1093,6 +1404,38 @@ public final class Andersoni {
           Thread.currentThread().interrupt();
           pending.set(false);
           log.warn("Refresh interrupted for catalog '{}'", catalogName);
+        }
+      });
+    }
+
+    /**
+     * Dispatches a patch task for the given catalog to a virtual thread.
+     *
+     * <p>Unlike {@link #dispatch(String, Runnable)}, patch tasks are NOT
+     * coalesced — every patch must be applied. The per-catalog semaphore
+     * still ensures serial execution.
+     *
+     * @param catalogName the catalog to patch, never null
+     * @param patchTask   the patch task to execute, never null
+     */
+    void dispatchPatch(final String catalogName, final Runnable patchTask) {
+      final Semaphore semaphore = semaphores.get(catalogName);
+      if (semaphore == null) {
+        log.warn("No dispatcher configured for catalog '{}'", catalogName);
+        return;
+      }
+      Thread.startVirtualThread(() -> {
+        try {
+          semaphore.acquire();
+          try {
+            patchTask.run();
+          } finally {
+            semaphore.release();
+          }
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          log.warn("Patch dispatch interrupted for catalog '{}'",
+              catalogName);
         }
       });
     }
