@@ -815,23 +815,25 @@ public final class Andersoni {
 
     syncStrategy.subscribe(event -> {
       if (nodeId.equals(event.sourceNodeId())) {
-        log.debug("Ignoring refresh event from self for catalog '{}'",
+        log.debug("Ignoring sync event from self for catalog '{}'",
             event.catalogName());
         return;
       }
 
       final Catalog<?> catalog = catalogsByName.get(event.catalogName());
       if (catalog == null) {
-        log.warn("Received refresh event for unknown catalog '{}'",
+        log.warn("Received sync event for unknown catalog '{}'",
             event.catalogName());
         return;
       }
 
-      final String localHash = catalog.currentSnapshot().hash();
-      if (localHash.equals(event.hash())) {
-        log.debug("Catalog '{}' already at hash {}, ignoring event",
-            event.catalogName(), event.hash());
-        return;
+      if (event instanceof RefreshEvent refreshEvent) {
+        final String localHash = catalog.currentSnapshot().hash();
+        if (localHash.equals(refreshEvent.hash())) {
+          log.debug("Catalog '{}' already at hash {}, ignoring event",
+              event.catalogName(), refreshEvent.hash());
+          return;
+        }
       }
 
       metrics.syncReceived(event.catalogName());
