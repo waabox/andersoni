@@ -39,17 +39,21 @@ public final class SyncEventCodec {
     json.put("version", event.version());
     json.put("timestamp", event.timestamp().toString());
 
-    if (event instanceof RefreshEvent r) {
-      json.put("type", TYPE_REFRESH);
-      json.put("hash", r.hash());
-    } else if (event instanceof PatchEvent p) {
-      json.put("type", TYPE_PATCH);
-      json.put("operationType", p.operationType().name());
-      json.put("payload", Base64.getEncoder().encodeToString(p.payload()));
-    } else {
-      throw new IllegalArgumentException(
-          "Unknown SyncEvent type: " + event.getClass().getName());
-    }
+    event.accept(new SyncEventHandler() {
+      @Override
+      public void onRefresh(final RefreshEvent r) {
+        json.put("type", TYPE_REFRESH);
+        json.put("hash", r.hash());
+      }
+
+      @Override
+      public void onPatch(final PatchEvent p) {
+        json.put("type", TYPE_PATCH);
+        json.put("operationType", p.operationType().name());
+        json.put("payload",
+            Base64.getEncoder().encodeToString(p.payload()));
+      }
+    });
 
     return json.toString();
   }

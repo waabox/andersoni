@@ -17,9 +17,11 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.waabox.andersoni.AndersoniException;
+import org.waabox.andersoni.sync.PatchEvent;
 import org.waabox.andersoni.sync.RefreshEvent;
 import org.waabox.andersoni.sync.SyncEvent;
 import org.waabox.andersoni.sync.SyncEventCodec;
+import org.waabox.andersoni.sync.SyncEventHandler;
 import org.waabox.andersoni.sync.SyncListener;
 import org.waabox.andersoni.sync.SyncStrategy;
 
@@ -76,8 +78,18 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
   public void publish(final SyncEvent event) {
     Objects.requireNonNull(event, "event cannot be null");
 
-    final String eventType =
-        (event instanceof RefreshEvent) ? "REFRESH" : "PATCH";
+    final String[] eventType = new String[1];
+    event.accept(new SyncEventHandler() {
+      @Override
+      public void onRefresh(final RefreshEvent r) {
+        eventType[0] = "REFRESH";
+      }
+
+      @Override
+      public void onPatch(final PatchEvent p) {
+        eventType[0] = "PATCH";
+      }
+    });
     final String eventJson = SyncEventCodec.serialize(event);
 
     final String updateSql = "UPDATE " + config.tableName()
@@ -96,7 +108,7 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
       try (final PreparedStatement ps = conn.prepareStatement(updateSql)) {
         ps.setString(1, event.sourceNodeId());
         ps.setLong(2, event.version());
-        ps.setString(3, eventType);
+        ps.setString(3, eventType[0]);
         ps.setString(4, eventJson);
         ps.setTimestamp(5, Timestamp.from(Instant.now()));
         ps.setString(6, event.catalogName());
@@ -109,7 +121,7 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
           ps.setString(1, event.catalogName());
           ps.setString(2, event.sourceNodeId());
           ps.setLong(3, event.version());
-          ps.setString(4, eventType);
+          ps.setString(4, eventType[0]);
           ps.setString(5, eventJson);
           ps.setTimestamp(6, Timestamp.from(Instant.now()));
           ps.executeUpdate();
