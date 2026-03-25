@@ -13,6 +13,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import org.waabox.andersoni.Catalog;
+import org.waabox.andersoni.PatchOperation;
 
 import com.timgroup.statsd.StatsDClient;
 
@@ -356,6 +357,195 @@ class DatadogAndersoniMetricsTest {
     // Invoke reportGauges directly (package-private) for synchronous testing
     metrics.reportGauges();
 
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchApplied_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.applied"), eq(1L),
+        eq("catalog:products"), eq("operation:ADD"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.patchApplied("products", PatchOperation.ADD);
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchApplied_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.applied"), eq(1L),
+        eq("catalog:products"), eq("operation:UPSERT"),
+        eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.patchApplied("products", PatchOperation.UPSERT);
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchFailed_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.failed"), eq(1L),
+        eq("catalog:products"), eq("operation:UPDATE"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.patchFailed("products", PatchOperation.UPDATE,
+        new RuntimeException("fail"));
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchFailed_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.failed"), eq(1L),
+        eq("catalog:products"), eq("operation:REMOVE"),
+        eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.patchFailed("products", PatchOperation.REMOVE,
+        new RuntimeException("fail"));
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchPublished_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.published"), eq(1L),
+        eq("catalog:products"), eq("operation:ADD"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.patchPublished("products", PatchOperation.ADD);
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchPublished_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.published"), eq(1L),
+        eq("catalog:products"), eq("operation:UPSERT"),
+        eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.patchPublished("products", PatchOperation.UPSERT);
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchPublishFailed_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.publish.failed"), eq(1L),
+        eq("catalog:products"), eq("operation:UPDATE"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.patchPublishFailed("products", PatchOperation.UPDATE,
+        new RuntimeException("fail"));
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchPublishFailed_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.publish.failed"), eq(1L),
+        eq("catalog:products"), eq("operation:REMOVE"),
+        eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.patchPublishFailed("products", PatchOperation.REMOVE,
+        new RuntimeException("fail"));
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchReceived_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.received"), eq(1L),
+        eq("catalog:products"), eq("operation:ADD"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.patchReceived("products", PatchOperation.ADD);
+
+    verify(client);
+  }
+
+  @Test
+  void whenPatchReceived_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("patch.received"), eq(1L),
+        eq("catalog:products"), eq("operation:UPSERT"),
+        eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.patchReceived("products", PatchOperation.UPSERT);
     metrics.stop();
 
     verify(client);

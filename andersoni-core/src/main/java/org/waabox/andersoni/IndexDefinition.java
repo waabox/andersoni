@@ -167,5 +167,25 @@ public final class IndexDefinition<T> {
       };
       return new IndexDefinition<>(name, composed);
     }
+
+    /**
+     * Defines the key extraction using a single function that extracts
+     * the index key directly from the domain object.
+     *
+     * <p>Use this when the key is a direct property of the domain object,
+     * e.g., {@code by(Item::id)}.
+     *
+     * @param extractor the function to extract the key, never null
+     *
+     * @return a fully configured index definition, never null
+     *
+     * @throws NullPointerException if extractor is null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public IndexDefinition<T> by(final Function<T, ?> extractor) {
+      Objects.requireNonNull(extractor, "extractor must not be null");
+      return new IndexDefinition<>(name, extractor);
+    }
   }
 }

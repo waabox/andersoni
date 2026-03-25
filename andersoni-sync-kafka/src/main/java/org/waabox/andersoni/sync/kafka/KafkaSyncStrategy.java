@@ -21,17 +21,17 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
-import org.waabox.andersoni.sync.RefreshListener;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventCodec;
+import org.waabox.andersoni.sync.SyncListener;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /** Kafka-based implementation of {@link SyncStrategy} that broadcasts
- * {@link RefreshEvent}s to all nodes in the cluster.
+ * {@link SyncEvent}s to all nodes in the cluster.
  *
  * <p>This strategy uses a unique consumer group per instance (broadcast
- * pattern) so that every node receives every refresh event. Messages are
- * serialized as JSON strings using {@link RefreshEventCodec}.
+ * pattern) so that every node receives every sync event. Messages are
+ * serialized as JSON strings using {@link SyncEventCodec}.
  *
  * <p>Typical usage:
  * <pre>
@@ -60,7 +60,7 @@ public final class KafkaSyncStrategy implements SyncStrategy {
   private final KafkaSyncConfig config;
 
   /** The registered listeners, never null. Thread-safe. */
-  private final List<RefreshListener> listeners = new CopyOnWriteArrayList<>();
+  private final List<SyncListener> listeners = new CopyOnWriteArrayList<>();
 
   /** Flag indicating whether the poll loop is running. */
   private final AtomicBoolean running = new AtomicBoolean(false);
@@ -84,7 +84,7 @@ public final class KafkaSyncStrategy implements SyncStrategy {
 
   /** {@inheritDoc} */
   @Override
-  public void publish(final RefreshEvent event) {
+  public void publish(final SyncEvent event) {
     Objects.requireNonNull(event, "event must not be null");
 
     if (!running.get()) {
@@ -93,16 +93,16 @@ public final class KafkaSyncStrategy implements SyncStrategy {
           + "Call start() first.");
     }
 
-    final String json = RefreshEventCodec.serialize(event);
+    final String json = SyncEventCodec.serialize(event);
     final ProducerRecord<String, String> record = new ProducerRecord<>(
         config.topic(), event.catalogName(), json);
 
     producer.send(record, (metadata, exception) -> {
       if (exception != null) {
-        log.error("Failed to publish refresh event for catalog '{}': {}",
+        log.error("Failed to publish sync event for catalog '{}': {}",
             event.catalogName(), exception.getMessage(), exception);
       } else {
-        log.debug("Published refresh event for catalog '{}' to partition {} "
+        log.debug("Published sync event for catalog '{}' to partition {} "
             + "offset {}", event.catalogName(), metadata.partition(),
             metadata.offset());
       }
@@ -111,7 +111,7 @@ public final class KafkaSyncStrategy implements SyncStrategy {
 
   /** {@inheritDoc} */
   @Override
-  public void subscribe(final RefreshListener listener) {
+  public void subscribe(final SyncListener listener) {
     Objects.requireNonNull(listener, "listener must not be null");
     listeners.add(listener);
   }
@@ -170,16 +170,16 @@ public final class KafkaSyncStrategy implements SyncStrategy {
     log.info("KafkaSyncStrategy stopped");
   }
 
-  /** Notifies all registered listeners of a refresh event.
+  /** Notifies all registered listeners of a sync event.
    *
    * <p>Package-private for testability.
    *
-   * @param event the refresh event to dispatch, never null
+   * @param event the sync event to dispatch, never null
    */
-  void notifyListeners(final RefreshEvent event) {
-    for (final RefreshListener listener : listeners) {
+  void notifyListeners(final SyncEvent event) {
+    for (final SyncListener listener : listeners) {
       try {
-        listener.onRefresh(event);
+        listener.onEvent(event);
       } catch (final Exception e) {
         log.error("Listener threw exception while processing event for "
             + "catalog '{}': {}", event.catalogName(), e.getMessage(), e);
@@ -197,11 +197,11 @@ public final class KafkaSyncStrategy implements SyncStrategy {
             consumer.poll(POLL_TIMEOUT);
         for (final ConsumerRecord<String, String> record : records) {
           try {
-            final RefreshEvent event = RefreshEventCodec.deserialize(
+            final SyncEvent event = SyncEventCodec.deserialize(
                 record.value());
             notifyListeners(event);
           } catch (final Exception e) {
-            log.error("Failed to deserialize refresh event from partition {} "
+            log.error("Failed to deserialize sync event from partition {} "
                 + "offset {}: {}", record.partition(), record.offset(),
                 e.getMessage(), e);
           }

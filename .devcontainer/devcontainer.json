@@ -1,0 +1,22 @@
+{
+	"name": "Andersoni Dev",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+
+	"runArgs": ["--name=andersoni"],
+
+	"remoteEnv": {
+		"JAVA_HOME": "/usr/lib/jvm/java-21-amazon-corretto"
+	},
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"vscjava.vscode-java-pack"
+			]
+		}
+	},
+
+	"remoteUser": "root"
+}

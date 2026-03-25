@@ -5,6 +5,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -103,6 +104,9 @@ public final class Catalog<T> {
   /** The name of this catalog. */
   private final String name;
 
+  /** The optional identity function for patch operations and O(1) lookups. */
+  private final Function<T, Object> identityFunction;
+
   /**
    * Creates a new Catalog instance.
    *
@@ -119,6 +123,8 @@ public final class Catalog<T> {
    * @param serializer                the optional serializer, may be null
    * @param refreshInterval           the optional refresh interval, may be
    *                                  null
+   * @param identityFunction          the optional identity function, may be
+   *                                  null
    */
   private Catalog(final String name,
       final DataLoader<T> dataLoader,
@@ -128,7 +134,8 @@ public final class Catalog<T> {
       final List<MultiKeyIndexDefinition<T>> multiKeyIndexDefinitions,
       final List<GraphIndexDefinition<T>> graphIndexDefinitions,
       final SnapshotSerializer<T> serializer,
-      final Duration refreshInterval) {
+      final Duration refreshInterval,
+      final Function<T, Object> identityFunction) {
     this.name = name;
     this.dataLoader = dataLoader;
     this.initialData = initialData;
@@ -142,6 +149,7 @@ public final class Catalog<T> {
         new ArrayList<>(graphIndexDefinitions));
     this.serializer = serializer;
     this.refreshInterval = refreshInterval;
+    this.identityFunction = identityFunction;
     this.current = new AtomicReference<>(Snapshot.empty());
     this.refreshLock = new ReentrantLock();
     this.versionCounter = new AtomicLong(0);
@@ -375,6 +383,311 @@ public final class Catalog<T> {
   }
 
   /**
+   * Returns the optional identity function for this catalog.
+   *
+   * @return an Optional containing the identity function if configured,
+   *         or empty if not
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public Optional<Function<T, Object>> identityFunction() {
+    return Optional.ofNullable(identityFunction);
+  }
+
+  /**
+   * Finds an item by its identity key using lock-free read access.
+   *
+   * <p>Delegates to the current {@link Snapshot#findById(Object)}.
+   * Returns {@link Optional#empty()} if no identity function was configured
+   * or the key is not found.
+   *
+   * @param key the identity key to look up, never null
+   *
+   * @return an optional containing the matching item, or empty
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public Optional<T> findById(final Object key) {
+    Objects.requireNonNull(key, "key must not be null");
+    return current.get().findById(key);
+  }
+
+  // -----------------------------------------------------------------------
+  // Patch operations
+  // -----------------------------------------------------------------------
+
+  /**
+   * Adds a single item to the catalog. The item's identity key must not
+   * already exist.
+   *
+   * <p>This operation is atomic: it acquires the refresh lock, validates,
+   * rebuilds the snapshot, and swaps atomically.
+   *
+   * @param item the item to add, never null
+   *
+   * @throws NullPointerException     if item is null
+   * @throws IllegalStateException    if no identity function is configured
+   * @throws IllegalArgumentException if an item with the same identity key
+   *                                  already exists
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void add(final T item) {
+    add(List.of(Objects.requireNonNull(item, "item must not be null")));
+  }
+
+  /**
+   * Adds a collection of items to the catalog. All identity keys must be
+   * unique and not already exist.
+   *
+   * <p>This operation is all-or-nothing: if any item has a duplicate key,
+   * the entire batch is rejected and the snapshot remains unchanged.
+   *
+   * @param items the items to add, never null
+   *
+   * @throws NullPointerException     if items is null
+   * @throws IllegalStateException    if no identity function is configured
+   * @throws IllegalArgumentException if any item has a duplicate identity key
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void add(final Collection<T> items) {
+    Objects.requireNonNull(items, "items must not be null");
+    requireIdentityFunction();
+    refreshLock.lock();
+    try {
+      final Snapshot<T> snapshot = current.get();
+      final Map<Object, T> identityMap = snapshot.identityMap();
+      final Set<Object> seenKeys = new HashSet<>();
+      for (final T item : items) {
+        final Object key = identityFunction.apply(item);
+        if (!seenKeys.add(key)) {
+          throw new IllegalArgumentException(
+              "Duplicate identity key '" + key
+                  + "' within batch for catalog '" + name + "'");
+        }
+        if (identityMap != null && identityMap.containsKey(key)) {
+          throw new IllegalArgumentException(
+              "Item with identity key '" + key
+                  + "' already exists in catalog '" + name + "'");
+        }
+      }
+      final List<T> newData = new ArrayList<>(snapshot.data());
+      newData.addAll(items);
+      buildAndSwapSnapshot(newData);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Updates a single existing item in the catalog. The item's identity key
+   * must already exist.
+   *
+   * <p>This operation is atomic: it acquires the refresh lock, validates,
+   * rebuilds the snapshot, and swaps atomically.
+   *
+   * @param item the item to update, never null
+   *
+   * @throws NullPointerException     if item is null
+   * @throws IllegalStateException    if no identity function is configured
+   * @throws IllegalArgumentException if no item with the identity key exists
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void update(final T item) {
+    update(List.of(Objects.requireNonNull(item, "item must not be null")));
+  }
+
+  /**
+   * Updates a collection of existing items in the catalog. All identity keys
+   * must already exist.
+   *
+   * <p>This operation is all-or-nothing: if any item's key is missing,
+   * the entire batch is rejected and the snapshot remains unchanged.
+   *
+   * @param items the items to update, never null
+   *
+   * @throws NullPointerException     if items is null
+   * @throws IllegalStateException    if no identity function is configured
+   * @throws IllegalArgumentException if any item's identity key does not exist
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void update(final Collection<T> items) {
+    Objects.requireNonNull(items, "items must not be null");
+    requireIdentityFunction();
+    refreshLock.lock();
+    try {
+      final Snapshot<T> snapshot = current.get();
+      final Map<Object, T> identityMap = snapshot.identityMap();
+      final Map<Object, T> updateMap = new HashMap<>();
+      for (final T item : items) {
+        final Object key = identityFunction.apply(item);
+        if (identityMap == null || !identityMap.containsKey(key)) {
+          throw new IllegalArgumentException(
+              "Item with identity key '" + key
+                  + "' does not exist in catalog '" + name + "'");
+        }
+        if (updateMap.put(key, item) != null) {
+          throw new IllegalArgumentException(
+              "Duplicate identity key '" + key
+                  + "' within batch for catalog '" + name + "'");
+        }
+      }
+      final List<T> newData = new ArrayList<>();
+      for (final T existing : snapshot.data()) {
+        final Object key = identityFunction.apply(existing);
+        if (updateMap.containsKey(key)) {
+          newData.add(updateMap.get(key));
+        } else {
+          newData.add(existing);
+        }
+      }
+      buildAndSwapSnapshot(newData);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Upserts a single item: adds it if its identity key is new, or replaces
+   * the existing item if the key already exists.
+   *
+   * @param item the item to upsert, never null
+   *
+   * @throws NullPointerException  if item is null
+   * @throws IllegalStateException if no identity function is configured
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void upsert(final T item) {
+    upsert(List.of(Objects.requireNonNull(item, "item must not be null")));
+  }
+
+  /**
+   * Upserts a collection of items: adds new ones and replaces existing ones.
+   *
+   * @param items the items to upsert, never null
+   *
+   * @throws NullPointerException  if items is null
+   * @throws IllegalStateException if no identity function is configured
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void upsert(final Collection<T> items) {
+    Objects.requireNonNull(items, "items must not be null");
+    requireIdentityFunction();
+    refreshLock.lock();
+    try {
+      final Snapshot<T> snapshot = current.get();
+      final Map<Object, T> upsertMap = new HashMap<>();
+      for (final T item : items) {
+        final Object key = identityFunction.apply(item);
+        upsertMap.put(key, item);
+      }
+      final List<T> newData = new ArrayList<>();
+      final Set<Object> replaced = new HashSet<>();
+      for (final T existing : snapshot.data()) {
+        final Object key = identityFunction.apply(existing);
+        if (upsertMap.containsKey(key)) {
+          newData.add(upsertMap.get(key));
+          replaced.add(key);
+        } else {
+          newData.add(existing);
+        }
+      }
+      for (final T item : items) {
+        final Object key = identityFunction.apply(item);
+        if (!replaced.contains(key)) {
+          newData.add(item);
+        }
+      }
+      buildAndSwapSnapshot(newData);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Removes a single item from the catalog. The item's identity key must
+   * exist.
+   *
+   * @param item the item to remove, never null
+   *
+   * @throws NullPointerException     if item is null
+   * @throws IllegalStateException    if no identity function is configured
+   * @throws IllegalArgumentException if no item with the identity key exists
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void remove(final T item) {
+    remove(List.of(Objects.requireNonNull(item, "item must not be null")));
+  }
+
+  /**
+   * Removes a collection of items from the catalog. All identity keys must
+   * exist.
+   *
+   * <p>This operation is all-or-nothing: if any item's key is missing,
+   * the entire batch is rejected and the snapshot remains unchanged.
+   *
+   * @param items the items to remove, never null
+   *
+   * @throws NullPointerException     if items is null
+   * @throws IllegalStateException    if no identity function is configured
+   * @throws IllegalArgumentException if any item's identity key does not exist
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void remove(final Collection<T> items) {
+    Objects.requireNonNull(items, "items must not be null");
+    requireIdentityFunction();
+    refreshLock.lock();
+    try {
+      final Snapshot<T> snapshot = current.get();
+      final Map<Object, T> identityMap = snapshot.identityMap();
+      final Set<Object> keysToRemove = new HashSet<>();
+      for (final T item : items) {
+        final Object key = identityFunction.apply(item);
+        if (identityMap == null || !identityMap.containsKey(key)) {
+          throw new IllegalArgumentException(
+              "Item with identity key '" + key
+                  + "' does not exist in catalog '" + name + "'");
+        }
+        if (!keysToRemove.add(key)) {
+          throw new IllegalArgumentException(
+              "Duplicate identity key '" + key
+                  + "' within batch for catalog '" + name + "'");
+        }
+      }
+      final List<T> newData = new ArrayList<>();
+      for (final T existing : snapshot.data()) {
+        final Object key = identityFunction.apply(existing);
+        if (!keysToRemove.contains(key)) {
+          newData.add(existing);
+        }
+      }
+      buildAndSwapSnapshot(newData);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Validates that an identity function has been configured.
+   *
+   * @throws IllegalStateException if no identity function is configured
+   */
+  private void requireIdentityFunction() {
+    if (identityFunction == null) {
+      throw new IllegalStateException(
+          "Catalog '" + name + "' requires an identity function for patch "
+              + "operations. Use .identifiedBy() in the builder.");
+    }
+  }
+
+  /**
    * Builds all index maps from the given data, computes the hash, creates
    * a new Snapshot, and atomically swaps the current reference.
    *
@@ -421,8 +734,14 @@ public final class Catalog<T> {
     final long version = versionCounter.incrementAndGet();
     final String hash = computeHash(data);
 
-    final Snapshot<T> snapshot = Snapshot.of(data, indices,
-        sortedIndices, reversedKeyIndices, version, hash);
+    final Snapshot<T> snapshot;
+    if (identityFunction != null) {
+      snapshot = Snapshot.of(data, indices, sortedIndices,
+          reversedKeyIndices, version, hash, identityFunction);
+    } else {
+      snapshot = Snapshot.of(data, indices, sortedIndices,
+          reversedKeyIndices, version, hash);
+    }
     current.set(snapshot);
   }
 
@@ -599,6 +918,9 @@ public final class Catalog<T> {
     /** The accumulated graph index definitions. */
     private final List<GraphIndexDefinition<T>> graphIndexDefinitions;
 
+    /** The optional identity function for patch operations. */
+    private Function<T, Object> identityFunction;
+
     /** The set of registered index names for duplicate detection (shared
      *  between regular, sorted, multi-key, and graph indexes). */
     private final Set<String> indexNames;
@@ -638,6 +960,28 @@ public final class Catalog<T> {
       Objects.requireNonNull(snapshotSerializer,
           "serializer must not be null");
       this.serializer = snapshotSerializer;
+      return this;
+    }
+
+    /**
+     * Sets the identity function used to extract a unique key from each
+     * data item. Required for patch operations (add, update, upsert,
+     * remove) and O(1) {@code findById()} lookups.
+     *
+     * @param theIdentityFunction the function to extract identity keys,
+     *                            never null
+     *
+     * @return this builder step for chaining, never null
+     *
+     * @throws NullPointerException if theIdentityFunction is null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    @SuppressWarnings("unchecked")
+    public BuildStep<T> identifiedBy(final Function<T, ?> theIdentityFunction) {
+      Objects.requireNonNull(theIdentityFunction,
+          "identityFunction must not be null");
+      this.identityFunction = (Function<T, Object>) theIdentityFunction;
       return this;
     }
 
@@ -774,7 +1118,7 @@ public final class Catalog<T> {
       return new Catalog<>(name, dataLoader, initialData,
           indexDefinitions, sortedIndexDefinitions,
           multiKeyIndexDefinitions, graphIndexDefinitions,
-          serializer, refreshInterval);
+          serializer, refreshInterval, identityFunction);
     }
 
     /**
@@ -895,6 +1239,28 @@ public final class Catalog<T> {
         final Function<I, ?> second) {
       final IndexDefinition<T> indexDef =
           IndexDefinition.<T>named(indexName).by(first, second);
+      buildStep.addIndex(indexDef);
+      return buildStep;
+    }
+
+    /**
+     * Defines the key extraction using a single function that extracts
+     * the index key directly from the data item.
+     *
+     * <p>Use this when the key is a direct property of the data item,
+     * e.g., {@code by(Item::id)}.
+     *
+     * @param extractor the function to extract the key, never null
+     *
+     * @return the parent BuildStep for further chaining, never null
+     *
+     * @throws NullPointerException if extractor is null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public BuildStep<T> by(final Function<T, ?> extractor) {
+      final IndexDefinition<T> indexDef =
+          IndexDefinition.<T>named(indexName).by(extractor);
       buildStep.addIndex(indexDef);
       return buildStep;
     }

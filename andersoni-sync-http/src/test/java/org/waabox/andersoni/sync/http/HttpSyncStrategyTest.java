@@ -17,7 +17,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventCodec;
 
 /**
  * Integration tests for {@link HttpSyncStrategy}.
@@ -46,7 +47,7 @@ class HttpSyncStrategyTest {
     final HttpSyncStrategy node2 = new HttpSyncStrategy(config2);
 
     final CountDownLatch latch = new CountDownLatch(1);
-    final AtomicReference<RefreshEvent> received = new AtomicReference<>();
+    final AtomicReference<SyncEvent> received = new AtomicReference<>();
 
     node2.subscribe(event -> {
       received.set(event);
@@ -69,12 +70,13 @@ class HttpSyncStrategyTest {
       final boolean completed = latch.await(5, TimeUnit.SECONDS);
       assertTrue(completed, "Listener on node2 should have been notified");
 
-      final RefreshEvent receivedEvent = received.get();
+      final SyncEvent receivedEvent = received.get();
       assertNotNull(receivedEvent);
+      assertTrue(receivedEvent instanceof RefreshEvent);
       assertEquals("products", receivedEvent.catalogName());
       assertEquals("node-1", receivedEvent.sourceNodeId());
       assertEquals(1L, receivedEvent.version());
-      assertEquals("hash1", receivedEvent.hash());
+      assertEquals("hash1", ((RefreshEvent) receivedEvent).hash());
       assertEquals(now, receivedEvent.timestamp());
     } finally {
       node1.stop();
@@ -94,7 +96,7 @@ class HttpSyncStrategyTest {
     final HttpSyncStrategy strategy = new HttpSyncStrategy(config);
 
     final CountDownLatch latch = new CountDownLatch(1);
-    final AtomicReference<RefreshEvent> received = new AtomicReference<>();
+    final AtomicReference<SyncEvent> received = new AtomicReference<>();
 
     strategy.subscribe(event -> {
       received.set(event);
@@ -108,7 +110,7 @@ class HttpSyncStrategyTest {
       final RefreshEvent event = new RefreshEvent(
           "orders", "node-x", 5L, "hashX", now
       );
-      final String json = RefreshEventCodec.serialize(event);
+      final String json = SyncEventCodec.serialize(event);
 
       // Act: POST directly to the server
       final HttpClient client = HttpClient.newHttpClient();
@@ -130,12 +132,13 @@ class HttpSyncStrategyTest {
       assertTrue(completed,
           "Listener should have been notified via direct POST");
 
-      final RefreshEvent receivedEvent = received.get();
+      final SyncEvent receivedEvent = received.get();
       assertNotNull(receivedEvent);
+      assertTrue(receivedEvent instanceof RefreshEvent);
       assertEquals("orders", receivedEvent.catalogName());
       assertEquals("node-x", receivedEvent.sourceNodeId());
       assertEquals(5L, receivedEvent.version());
-      assertEquals("hashX", receivedEvent.hash());
+      assertEquals("hashX", ((RefreshEvent) receivedEvent).hash());
       assertEquals(now, receivedEvent.timestamp());
     } finally {
       strategy.stop();

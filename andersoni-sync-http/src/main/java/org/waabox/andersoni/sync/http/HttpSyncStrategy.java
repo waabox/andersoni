@@ -18,9 +18,9 @@ import org.slf4j.LoggerFactory;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
-import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
-import org.waabox.andersoni.sync.RefreshListener;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventCodec;
+import org.waabox.andersoni.sync.SyncListener;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /**
@@ -67,7 +67,7 @@ public final class HttpSyncStrategy implements SyncStrategy {
   private final HttpSyncConfig config;
 
   /** The list of registered refresh listeners. */
-  private final List<RefreshListener> listeners = new CopyOnWriteArrayList<>();
+  private final List<SyncListener> listeners = new CopyOnWriteArrayList<>();
 
   /** The HTTP server for receiving incoming events. */
   private HttpServer server;
@@ -86,10 +86,10 @@ public final class HttpSyncStrategy implements SyncStrategy {
 
   /** {@inheritDoc} */
   @Override
-  public void publish(final RefreshEvent event) {
+  public void publish(final SyncEvent event) {
     Objects.requireNonNull(event, "event cannot be null");
 
-    final String json = RefreshEventCodec.serialize(event);
+    final String json = SyncEventCodec.serialize(event);
 
     for (final String peerUrl : config.peerUrls()) {
       final String url = peerUrl + config.path();
@@ -107,7 +107,7 @@ public final class HttpSyncStrategy implements SyncStrategy {
             }
           })
           .exceptionally(ex -> {
-            LOG.warn("Failed to publish refresh event to {}", url, ex);
+            LOG.warn("Failed to publish sync event to {}", url, ex);
             return null;
           });
     }
@@ -115,7 +115,7 @@ public final class HttpSyncStrategy implements SyncStrategy {
 
   /** {@inheritDoc} */
   @Override
-  public void subscribe(final RefreshListener listener) {
+  public void subscribe(final SyncListener listener) {
     Objects.requireNonNull(listener, "listener cannot be null");
     listeners.add(listener);
   }
@@ -155,10 +155,10 @@ public final class HttpSyncStrategy implements SyncStrategy {
   }
 
   /**
-   * Handles an incoming HTTP request on the refresh endpoint.
+   * Handles an incoming HTTP request on the sync endpoint.
    *
    * <p>Only POST requests are accepted. The request body must be a valid
-   * JSON representation of a {@link RefreshEvent}. On success, all
+   * JSON representation of a {@link SyncEvent}. On success, all
    * registered listeners are notified.
    *
    * @param exchange the HTTP exchange, never null
@@ -175,11 +175,11 @@ public final class HttpSyncStrategy implements SyncStrategy {
       final String body = new String(
           is.readAllBytes(), StandardCharsets.UTF_8
       );
-      final RefreshEvent event = RefreshEventCodec.deserialize(body);
+      final SyncEvent event = SyncEventCodec.deserialize(body);
 
-      for (final RefreshListener listener : listeners) {
+      for (final SyncListener listener : listeners) {
         try {
-          listener.onRefresh(event);
+          listener.onEvent(event);
         } catch (final Exception e) {
           LOG.warn("Listener threw exception for event: {}", event, e);
         }
@@ -187,7 +187,7 @@ public final class HttpSyncStrategy implements SyncStrategy {
 
       sendResponse(exchange, HTTP_OK, "OK");
     } catch (final Exception e) {
-      LOG.error("Failed to handle refresh event", e);
+      LOG.error("Failed to handle sync event", e);
       sendResponse(exchange, HTTP_INTERNAL_ERROR, "Internal Server Error");
     }
   }

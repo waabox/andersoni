@@ -9,19 +9,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
-import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
-import org.waabox.andersoni.sync.RefreshListener;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventCodec;
+import org.waabox.andersoni.sync.SyncListener;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /** Spring Kafka-based implementation of {@link SyncStrategy} that broadcasts
- * {@link RefreshEvent}s to all nodes in the cluster.
+ * {@link SyncEvent}s to all nodes in the cluster.
  *
  * <p>This strategy delegates publishing to {@link KafkaTemplate} and uses
  * {@link KafkaListener} for consuming. The consumer group is unique per
- * instance (broadcast pattern) so that every node receives every refresh
+ * instance (broadcast pattern) so that every node receives every sync
  * event. Messages are serialized as JSON strings using
- * {@link RefreshEventCodec}.
+ * {@link SyncEventCodec}.
  *
  * <p>Spring manages the full Kafka listener lifecycle, so {@link #start()}
  * and {@link #stop()} are no-ops.
@@ -41,7 +41,7 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
   private final String topic;
 
   /** The registered listeners, never null. Thread-safe. */
-  private final List<RefreshListener> listeners = new CopyOnWriteArrayList<>();
+  private final List<SyncListener> listeners = new CopyOnWriteArrayList<>();
 
   /** Creates a new SpringKafkaSyncStrategy.
    *
@@ -60,18 +60,18 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
 
   /** {@inheritDoc} */
   @Override
-  public void publish(final RefreshEvent event) {
+  public void publish(final SyncEvent event) {
     Objects.requireNonNull(event, "event must not be null");
 
-    final String json = RefreshEventCodec.serialize(event);
+    final String json = SyncEventCodec.serialize(event);
 
     kafkaTemplate.send(topic, event.catalogName(), json)
         .whenComplete((result, exception) -> {
           if (exception != null) {
-            log.error("Failed to publish refresh event for catalog '{}': {}",
+            log.error("Failed to publish sync event for catalog '{}': {}",
                 event.catalogName(), exception.getMessage(), exception);
           } else {
-            log.debug("Published refresh event for catalog '{}' to "
+            log.debug("Published sync event for catalog '{}' to "
                 + "partition {} offset {}",
                 event.catalogName(),
                 result.getRecordMetadata().partition(),
@@ -82,7 +82,7 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
 
   /** {@inheritDoc} */
   @Override
-  public void subscribe(final RefreshListener listener) {
+  public void subscribe(final SyncListener listener) {
     Objects.requireNonNull(listener, "listener must not be null");
     listeners.add(listener);
   }
@@ -108,7 +108,7 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
   }
 
   /** Handles incoming Kafka messages containing serialized
-   * {@link RefreshEvent}s.
+   * {@link SyncEvent}s.
    *
    * <p>The consumer group is configured in the
    * {@code andersoniConsumerFactory} bean (prefix + random UUID),
@@ -122,17 +122,17 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
       containerFactory = "andersoniKafkaListenerContainerFactory")
   public void onMessage(final ConsumerRecord<String, String> record) {
     try {
-      final RefreshEvent event = RefreshEventCodec.deserialize(record.value());
-      for (final RefreshListener listener : listeners) {
+      final SyncEvent event = SyncEventCodec.deserialize(record.value());
+      for (final SyncListener listener : listeners) {
         try {
-          listener.onRefresh(event);
+          listener.onEvent(event);
         } catch (final Exception e) {
           log.error("Listener threw exception while processing event for "
               + "catalog '{}': {}", event.catalogName(), e.getMessage(), e);
         }
       }
     } catch (final Exception e) {
-      log.error("Failed to deserialize refresh event from partition {} "
+      log.error("Failed to deserialize sync event from partition {} "
           + "offset {}: {}", record.partition(), record.offset(),
           e.getMessage(), e);
     }

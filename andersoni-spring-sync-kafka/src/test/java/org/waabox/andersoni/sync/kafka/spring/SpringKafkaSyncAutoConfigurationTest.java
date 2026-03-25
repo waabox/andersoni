@@ -61,10 +61,10 @@ class SpringKafkaSyncAutoConfigurationTest {
         .withBean(SyncStrategy.class, () -> new SyncStrategy() {
           @Override
           public void publish(
-              final org.waabox.andersoni.sync.RefreshEvent event) { }
+              final org.waabox.andersoni.sync.SyncEvent event) { }
           @Override
           public void subscribe(
-              final org.waabox.andersoni.sync.RefreshListener listener) { }
+              final org.waabox.andersoni.sync.SyncListener listener) { }
           @Override
           public void start() { }
           @Override

@@ -10,7 +10,8 @@ import java.time.Instant;
 
 import org.junit.jupiter.api.Test;
 import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
+import org.waabox.andersoni.sync.SyncEvent;
+import org.waabox.andersoni.sync.SyncEventCodec;
 
 /** Unit tests for {@link KafkaSyncStrategy} and {@link KafkaSyncConfig}.
  *
@@ -45,7 +46,7 @@ class KafkaSyncStrategyTest {
     final RefreshEvent event = new RefreshEvent(
         "events", "node-uuid-1", 1L, "abc123", timestamp);
 
-    final String json = RefreshEventCodec.serialize(event);
+    final String json = SyncEventCodec.serialize(event);
 
     assertNotNull(json);
     assertTrue(json.contains("\"catalogName\":\"events\""));
@@ -53,35 +54,39 @@ class KafkaSyncStrategyTest {
     assertTrue(json.contains("\"version\":1"));
     assertTrue(json.contains("\"hash\":\"abc123\""));
     assertTrue(json.contains("\"timestamp\":\"2024-01-01T00:00:00Z\""));
+    assertTrue(json.contains("\"type\":\"REFRESH\""));
   }
 
   @Test
   void whenDeserializing_givenValidJson_shouldParseRefreshEvent() {
-    final String json = "{\"catalogName\":\"events\","
+    final String json = "{\"type\":\"REFRESH\","
+        + "\"catalogName\":\"events\","
         + "\"sourceNodeId\":\"node-uuid-1\","
         + "\"version\":1,"
         + "\"hash\":\"abc123\","
         + "\"timestamp\":\"2024-01-01T00:00:00Z\"}";
 
-    final RefreshEvent event = RefreshEventCodec.deserialize(json);
+    final SyncEvent event = SyncEventCodec.deserialize(json);
 
     assertNotNull(event);
+    assertTrue(event instanceof RefreshEvent);
     assertEquals("events", event.catalogName());
     assertEquals("node-uuid-1", event.sourceNodeId());
     assertEquals(1L, event.version());
-    assertEquals("abc123", event.hash());
+    assertEquals("abc123", ((RefreshEvent) event).hash());
     assertEquals(Instant.parse("2024-01-01T00:00:00Z"), event.timestamp());
   }
 
   @Test
   void whenDeserializing_givenLargeVersion_shouldParseLong() {
-    final String json = "{\"catalogName\":\"catalog\","
+    final String json = "{\"type\":\"REFRESH\","
+        + "\"catalogName\":\"catalog\","
         + "\"sourceNodeId\":\"node\","
         + "\"version\":9999999999,"
         + "\"hash\":\"h\","
         + "\"timestamp\":\"2024-06-15T12:30:00Z\"}";
 
-    final RefreshEvent event = RefreshEventCodec.deserialize(json);
+    final SyncEvent event = SyncEventCodec.deserialize(json);
 
     assertEquals(9999999999L, event.version());
   }
@@ -92,7 +97,7 @@ class KafkaSyncStrategyTest {
         "localhost:9092");
     final KafkaSyncStrategy strategy = new KafkaSyncStrategy(config);
 
-    final java.util.List<RefreshEvent> received = new java.util.ArrayList<>();
+    final java.util.List<SyncEvent> received = new java.util.ArrayList<>();
     strategy.subscribe(received::add);
 
     final Instant timestamp = Instant.parse("2024-01-01T00:00:00Z");
@@ -112,8 +117,8 @@ class KafkaSyncStrategyTest {
         "localhost:9092");
     final KafkaSyncStrategy strategy = new KafkaSyncStrategy(config);
 
-    final java.util.List<RefreshEvent> received1 = new java.util.ArrayList<>();
-    final java.util.List<RefreshEvent> received2 = new java.util.ArrayList<>();
+    final java.util.List<SyncEvent> received1 = new java.util.ArrayList<>();
+    final java.util.List<SyncEvent> received2 = new java.util.ArrayList<>();
     strategy.subscribe(received1::add);
     strategy.subscribe(received2::add);
 
@@ -136,8 +141,8 @@ class KafkaSyncStrategyTest {
     final RefreshEvent original = new RefreshEvent(
         "products", "node-abc-def", 42L, "sha256hash", timestamp);
 
-    final String json = RefreshEventCodec.serialize(original);
-    final RefreshEvent restored = RefreshEventCodec.deserialize(json);
+    final String json = SyncEventCodec.serialize(original);
+    final SyncEvent restored = SyncEventCodec.deserialize(json);
 
     assertEquals(original, restored);
   }
