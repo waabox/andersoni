@@ -196,6 +196,36 @@ class CatalogPatchTest {
     assertTrue(catalog.findById("1").isEmpty());
   }
 
+  // --- intra-batch duplicate detection ---
+
+  @Test
+  void whenAddingCollection_givenDuplicateKeysInBatch_shouldThrow() {
+    final Catalog<Item> catalog = buildCatalog(List.of());
+    assertThrows(IllegalArgumentException.class,
+        () -> catalog.add(List.of(new Item("1", "a"), new Item("1", "b"))));
+    assertEquals(0, catalog.currentSnapshot().data().size());
+  }
+
+  @Test
+  void whenUpdatingCollection_givenDuplicateKeysInBatch_shouldThrow() {
+    final Catalog<Item> catalog = buildCatalog(
+        List.of(new Item("1", "a")));
+    assertThrows(IllegalArgumentException.class,
+        () -> catalog.update(
+            List.of(new Item("1", "x"), new Item("1", "y"))));
+    assertEquals("a", catalog.findById("1").map(Item::value).orElse(null));
+  }
+
+  @Test
+  void whenRemovingCollection_givenDuplicateKeysInBatch_shouldThrow() {
+    final Catalog<Item> catalog = buildCatalog(
+        List.of(new Item("1", "a"), new Item("2", "b")));
+    assertThrows(IllegalArgumentException.class,
+        () -> catalog.remove(
+            List.of(new Item("1", "a"), new Item("1", "a"))));
+    assertEquals(2, catalog.currentSnapshot().data().size());
+  }
+
   // --- index integrity after patch ---
 
   @Test

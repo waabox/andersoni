@@ -213,13 +213,6 @@ public final class Andersoni {
    * </ul>
    */
   public void start() {
-    if (!started.compareAndSet(false, true)) {
-      throw new IllegalStateException(
-          "Andersoni has already been started");
-    }
-    leaderElection.start();
-    bootstrapAllCatalogs();
-
     if (syncStrategy != null) {
       for (final Map.Entry<String, Catalog<?>> entry
           : catalogsByName.entrySet()) {
@@ -233,6 +226,13 @@ public final class Andersoni {
         }
       }
     }
+
+    if (!started.compareAndSet(false, true)) {
+      throw new IllegalStateException(
+          "Andersoni has already been started");
+    }
+    leaderElection.start();
+    bootstrapAllCatalogs();
 
     asyncRefreshDispatcher = new AsyncRefreshDispatcher(
         catalogsByName.keySet());

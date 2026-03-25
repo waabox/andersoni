@@ -458,8 +458,14 @@ public final class Catalog<T> {
     try {
       final Snapshot<T> snapshot = current.get();
       final Map<Object, T> identityMap = snapshot.identityMap();
+      final Set<Object> seenKeys = new HashSet<>();
       for (final T item : items) {
         final Object key = identityFunction.apply(item);
+        if (!seenKeys.add(key)) {
+          throw new IllegalArgumentException(
+              "Duplicate identity key '" + key
+                  + "' within batch for catalog '" + name + "'");
+        }
         if (identityMap != null && identityMap.containsKey(key)) {
           throw new IllegalArgumentException(
               "Item with identity key '" + key
@@ -523,7 +529,11 @@ public final class Catalog<T> {
               "Item with identity key '" + key
                   + "' does not exist in catalog '" + name + "'");
         }
-        updateMap.put(key, item);
+        if (updateMap.put(key, item) != null) {
+          throw new IllegalArgumentException(
+              "Duplicate identity key '" + key
+                  + "' within batch for catalog '" + name + "'");
+        }
       }
       final List<T> newData = new ArrayList<>();
       for (final T existing : snapshot.data()) {
@@ -645,7 +655,11 @@ public final class Catalog<T> {
               "Item with identity key '" + key
                   + "' does not exist in catalog '" + name + "'");
         }
-        keysToRemove.add(key);
+        if (!keysToRemove.add(key)) {
+          throw new IllegalArgumentException(
+              "Duplicate identity key '" + key
+                  + "' within batch for catalog '" + name + "'");
+        }
       }
       final List<T> newData = new ArrayList<>();
       for (final T existing : snapshot.data()) {
