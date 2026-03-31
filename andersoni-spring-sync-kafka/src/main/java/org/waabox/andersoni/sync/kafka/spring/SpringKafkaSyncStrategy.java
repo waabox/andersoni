@@ -118,7 +118,7 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
    * @param record the Kafka consumer record, never null
    */
   @KafkaListener(
-      topics = "#{@springKafkaSyncStrategy.getTopic()}",
+      topics = "${andersoni.sync.kafka.topic:andersoni-sync}",
       containerFactory = "andersoniKafkaListenerContainerFactory")
   public void onMessage(final ConsumerRecord<String, String> record) {
     try {
