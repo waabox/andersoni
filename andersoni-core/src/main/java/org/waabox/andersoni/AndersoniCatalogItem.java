@@ -1,6 +1,5 @@
 package org.waabox.andersoni;
 
-import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 
@@ -50,8 +49,7 @@ final class AndersoniCatalogItem<T> {
       final Map<Class<?>, Object> views) {
     Objects.requireNonNull(item, "item must not be null");
     Objects.requireNonNull(views, "views must not be null");
-    return new AndersoniCatalogItem<>(item,
-        Collections.unmodifiableMap(Map.copyOf(views)));
+    return new AndersoniCatalogItem<>(item, Map.copyOf(views));
   }
 
   /**
