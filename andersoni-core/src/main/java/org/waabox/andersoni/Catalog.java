@@ -446,8 +446,11 @@ public final class Catalog<T> {
     final List<IndexInfo> indexInfos = snapshot.indexInfo();
     final long totalSize = indexInfos.stream()
         .mapToLong(IndexInfo::estimatedSizeBytes).sum();
+    final List<String> viewTypeNames = viewDefinitions.stream()
+        .map(v -> v.viewType().getSimpleName())
+        .toList();
     return new CatalogInfo(name, snapshot.data().size(), indexInfos,
-        totalSize);
+        totalSize, viewDefinitions.size(), viewTypeNames);
   }
 
   /**

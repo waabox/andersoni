@@ -2,6 +2,7 @@ package org.waabox.andersoni;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 
@@ -111,6 +112,24 @@ class CatalogViewTest {
             .view(EventSummary.class,
                 e -> new EventSummary(e.id(), "other"))
             .build());
+  }
+
+  @Test
+  void whenGettingInfo_givenViewsDefined_shouldIncludeViewMetadata() {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .index("by-venue").by(Event::venue, Venue::name)
+        .view(EventSummary.class, e -> new EventSummary(e.id(), e.sport().name()))
+        .view(EventCard.class, e -> new EventCard(e.id(), e.venue().name()))
+        .build();
+    catalog.bootstrap();
+
+    final CatalogInfo info = catalog.info();
+    assertEquals(2, info.viewCount());
+    assertTrue(info.viewTypeNames().contains("EventSummary"));
+    assertTrue(info.viewTypeNames().contains("EventCard"));
   }
 
   @Test
