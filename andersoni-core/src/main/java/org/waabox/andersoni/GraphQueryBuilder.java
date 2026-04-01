@@ -32,24 +32,23 @@ import java.util.stream.Collectors;
 public final class GraphQueryBuilder<T> {
 
   private final Snapshot<T> snapshot;
-  private final String catalogName;
   private final List<GraphIndexDefinition<T>> graphIndexes;
   private final Map<String, GraphQueryCondition> conditions;
 
   /**
-   * Creates a new builder bound to the given snapshot, catalog name, and graph index definitions.
+   * Creates a new builder bound to the given snapshot and graph index
+   * definitions.
    *
    * @param snapshot     the snapshot to query, never null
-   * @param catalogName  the name of the catalog this query targets, never null
-   * @param graphIndexes the graph index definitions available for query planning, never null
+   * @param graphIndexes the graph index definitions available for query
+   *                     planning, never null
    * @throws NullPointerException if any parameter is null
    *
    * @author waabox(waabox[at]gmail[dot]com)
    */
-  GraphQueryBuilder(final Snapshot<T> snapshot, final String catalogName,
+  GraphQueryBuilder(final Snapshot<T> snapshot,
       final List<GraphIndexDefinition<T>> graphIndexes) {
     this.snapshot = Objects.requireNonNull(snapshot, "snapshot must not be null");
-    this.catalogName = Objects.requireNonNull(catalogName, "catalogName must not be null");
     this.graphIndexes = Objects.requireNonNull(graphIndexes, "graphIndexes must not be null");
     this.conditions = new LinkedHashMap<>();
   }

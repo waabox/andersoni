@@ -42,7 +42,7 @@ class GraphQueryBuilderTest {
     final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1, pub2), index);
 
     final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
-        snapshot, "test", List.of(index));
+        snapshot, List.of(index));
     final List<Pub> result = builder
         .where("country").eq("AR")
         .execute();
@@ -61,7 +61,7 @@ class GraphQueryBuilderTest {
     final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1, pub2), index);
 
     final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
-        snapshot, "test", List.of(index));
+        snapshot, List.of(index));
     final List<Pub> result = builder
         .where("country").eq("AR")
         .and("category").eq("deportes/futbol")
@@ -83,7 +83,7 @@ class GraphQueryBuilderTest {
     final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1, pub2, pub3), index);
 
     final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
-        snapshot, "test", List.of(index));
+        snapshot, List.of(index));
     final List<Pub> result = builder
         .where("country").eq("AR")
         .and("category").eq("deportes")
@@ -102,7 +102,7 @@ class GraphQueryBuilderTest {
     final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1), index);
 
     final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
-        snapshot, "test", List.of(index));
+        snapshot, List.of(index));
     final List<Pub> result = builder
         .where("unknown").eq("X")
         .execute();
@@ -118,7 +118,7 @@ class GraphQueryBuilderTest {
     final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1), index);
 
     final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
-        snapshot, "test", List.of(index));
+        snapshot, List.of(index));
 
     assertThrows(UnsupportedOperationException.class, () -> builder
         .where("country").eq("AR")
@@ -134,7 +134,7 @@ class GraphQueryBuilderTest {
     final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1), index);
 
     final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
-        snapshot, "test", List.of(index));
+        snapshot, List.of(index));
     final List<Pub> result = builder.execute();
 
     assertTrue(result.isEmpty());

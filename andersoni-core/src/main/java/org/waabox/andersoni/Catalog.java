@@ -371,7 +371,7 @@ public final class Catalog<T> {
    * @author waabox(waabox[at]gmail[dot]com)
    */
   public GraphQueryBuilder<T> graphQuery() {
-    return new GraphQueryBuilder<>(current.get(), name, graphIndexDefinitions);
+    return new GraphQueryBuilder<>(current.get(), graphIndexDefinitions);
   }
 
   /**
