@@ -1,12 +1,15 @@
 package org.waabox.andersoni;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.waabox.andersoni.snapshot.SnapshotSerializer;
 
 class CatalogViewTest {
 
@@ -157,5 +160,41 @@ class CatalogViewTest {
     catalog.refresh();
     assertEquals(1, catalog.search(
         "by-venue", "Wembley", EventSummary.class).size());
+  }
+
+  @Test
+  void whenComputingHash_givenViewsDefined_shouldHashRawItems() {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+
+    // Simple serializer that only knows about Event, not AndersoniCatalogItem
+    final SnapshotSerializer<Event> serializer = new SnapshotSerializer<>() {
+      @Override
+      public byte[] serialize(final List<Event> items) {
+        final StringBuilder sb = new StringBuilder();
+        for (final Event e : items) {
+          sb.append(e.id()).append(",");
+        }
+        return sb.toString().getBytes();
+      }
+
+      @Override
+      public List<Event> deserialize(final byte[] data) {
+        return List.of();
+      }
+    };
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .index("by-venue").by(Event::venue, Venue::name)
+        .serializer(serializer)
+        .view(EventSummary.class, e -> new EventSummary(e.id(), e.sport().name()))
+        .build();
+
+    catalog.bootstrap();
+
+    final Snapshot<Event> snapshot = catalog.currentSnapshot();
+    assertNotNull(snapshot.hash());
+    assertFalse(snapshot.hash().isEmpty());
   }
 }
