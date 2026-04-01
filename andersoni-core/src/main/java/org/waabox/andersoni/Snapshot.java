@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
@@ -30,17 +31,22 @@ import java.util.TreeMap;
  */
 public final class Snapshot<T> {
 
-  /** The data items in this snapshot. */
+  /** The catalog items with views, never null. */
+  private final List<AndersoniCatalogItem<T>> items;
+
+  /** The data items in this snapshot, derived from items. */
   private final List<T> data;
 
   /** The indices mapping index name to key-to-items mappings. */
-  private final Map<String, Map<Object, List<T>>> indices;
+  private final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> indices;
 
   /** Sorted indices mapping index name to navigable key-to-items mappings. */
-  private final Map<String, NavigableMap<Comparable<?>, List<T>>> sortedIndices;
+  private final Map<String, NavigableMap<Comparable<?>,
+      List<AndersoniCatalogItem<T>>>> sortedIndices;
 
   /** Reversed-key indices for efficient endsWith queries on String keys. */
-  private final Map<String, NavigableMap<String, List<T>>> reversedKeyIndices;
+  private final Map<String, NavigableMap<String,
+      List<AndersoniCatalogItem<T>>>> reversedKeyIndices;
 
   /** The version number of this snapshot. */
   private final long version;
@@ -54,7 +60,8 @@ public final class Snapshot<T> {
   /**
    * Creates a new snapshot.
    *
-   * @param data               the data items, never null
+   * @param items              the catalog items with views, never null
+   * @param data               the data items (derived from items), never null
    * @param indices            the indices, never null
    * @param sortedIndices      the sorted indices, never null
    * @param reversedKeyIndices the reversed-key indices, never null
@@ -62,11 +69,16 @@ public final class Snapshot<T> {
    * @param hash               the content hash, never null
    * @param createdAt          the creation timestamp, never null
    */
-  private Snapshot(final List<T> data,
-      final Map<String, Map<Object, List<T>>> indices,
-      final Map<String, NavigableMap<Comparable<?>, List<T>>> sortedIndices,
-      final Map<String, NavigableMap<String, List<T>>> reversedKeyIndices,
+  private Snapshot(
+      final List<AndersoniCatalogItem<T>> items,
+      final List<T> data,
+      final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> indices,
+      final Map<String, NavigableMap<Comparable<?>,
+          List<AndersoniCatalogItem<T>>>> sortedIndices,
+      final Map<String, NavigableMap<String,
+          List<AndersoniCatalogItem<T>>>> reversedKeyIndices,
       final long version, final String hash, final Instant createdAt) {
+    this.items = items;
     this.data = data;
     this.indices = indices;
     this.sortedIndices = sortedIndices;
@@ -107,6 +119,8 @@ public final class Snapshot<T> {
    *
    * <p>All provided collections are defensively copied into unmodifiable
    * structures. The creation timestamp is set to the current instant.
+   * Each data item is wrapped into an {@link AndersoniCatalogItem} with
+   * empty views for backward compatibility.
    *
    * @param data               the list of data items, never null
    * @param indices            the index definitions mapping index name to
@@ -136,24 +150,103 @@ public final class Snapshot<T> {
     Objects.requireNonNull(data, "data must not be null");
     Objects.requireNonNull(indices, "indices must not be null");
     Objects.requireNonNull(sortedIndices, "sortedIndices must not be null");
-    Objects.requireNonNull(reversedKeyIndices,
-        "reversedKeyIndices must not be null");
+    Objects.requireNonNull(reversedKeyIndices, "reversedKeyIndices must not be null");
     Objects.requireNonNull(hash, "hash must not be null");
 
-    final List<T> immutableData = Collections.unmodifiableList(
-        List.copyOf(data));
+    // Build identity map from T -> AndersoniCatalogItem<T> with empty views
+    final IdentityHashMap<T, AndersoniCatalogItem<T>> wrapperMap = new IdentityHashMap<>();
+    final List<AndersoniCatalogItem<T>> wrappedItems = new ArrayList<>(data.size());
+    for (final T item : data) {
+      final AndersoniCatalogItem<T> wrapper = AndersoniCatalogItem.of(item, Collections.emptyMap());
+      wrapperMap.put(item, wrapper);
+      wrappedItems.add(wrapper);
+    }
 
-    final Map<String, Map<Object, List<T>>> immutableIndices =
+    // Convert indices from T to AndersoniCatalogItem<T>
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> convertedIndices =
+        convertIndices(indices, wrapperMap);
+
+    final Map<String, NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>> convertedSorted =
+        convertSortedIndices(sortedIndices, wrapperMap);
+
+    final Map<String, NavigableMap<String, List<AndersoniCatalogItem<T>>>> convertedReversed =
+        convertReversedKeyIndices(reversedKeyIndices, wrapperMap);
+
+    final List<AndersoniCatalogItem<T>> immutableItems =
+        Collections.unmodifiableList(wrappedItems);
+
+    final List<T> immutableData = Collections.unmodifiableList(List.copyOf(data));
+
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> immutableIndices =
+        copyIndices(convertedIndices);
+
+    final Map<String, NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>> immutableSorted =
+        copySortedIndices(convertedSorted);
+
+    final Map<String, NavigableMap<String, List<AndersoniCatalogItem<T>>>> immutableReversed =
+        copyReversedKeyIndices(convertedReversed);
+
+    return new Snapshot<>(immutableItems, immutableData, immutableIndices,
+        immutableSorted, immutableReversed, version, hash, Instant.now());
+  }
+
+  /**
+   * Creates a new snapshot from pre-built catalog items and their indices.
+   *
+   * <p>This factory is intended for use when views have been pre-computed
+   * and items are already wrapped in {@link AndersoniCatalogItem}. All
+   * provided collections are defensively copied into unmodifiable structures.
+   *
+   * @param items              the catalog items with views, never null
+   * @param indices            the index definitions mapping index name to
+   *                           key-to-items mappings, never null
+   * @param sortedIndices      the sorted index definitions mapping index
+   *                           name to navigable key-to-items mappings,
+   *                           never null
+   * @param reversedKeyIndices the reversed-key index definitions for
+   *                           efficient endsWith queries, never null
+   * @param version            the version number for this snapshot
+   * @param hash               the content hash identifying this snapshot,
+   *                           never null
+   * @param <T>                the type of data items
+   *
+   * @return a new immutable snapshot, never null
+   *
+   * @throws NullPointerException if any argument is null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public static <T> Snapshot<T> ofWithItems(
+      final List<AndersoniCatalogItem<T>> items,
+      final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> indices,
+      final Map<String, NavigableMap<Comparable<?>,
+          List<AndersoniCatalogItem<T>>>> sortedIndices,
+      final Map<String, NavigableMap<String,
+          List<AndersoniCatalogItem<T>>>> reversedKeyIndices,
+      final long version, final String hash) {
+
+    Objects.requireNonNull(items, "items must not be null");
+    Objects.requireNonNull(indices, "indices must not be null");
+    Objects.requireNonNull(sortedIndices, "sortedIndices must not be null");
+    Objects.requireNonNull(reversedKeyIndices, "reversedKeyIndices must not be null");
+    Objects.requireNonNull(hash, "hash must not be null");
+
+    final List<AndersoniCatalogItem<T>> immutableItems =
+        Collections.unmodifiableList(List.copyOf(items));
+
+    final List<T> immutableData = extractItems(immutableItems);
+
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> immutableIndices =
         copyIndices(indices);
 
-    final Map<String, NavigableMap<Comparable<?>, List<T>>> immutableSorted =
+    final Map<String, NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>> immutableSorted =
         copySortedIndices(sortedIndices);
 
-    final Map<String, NavigableMap<String, List<T>>> immutableReversed =
+    final Map<String, NavigableMap<String, List<AndersoniCatalogItem<T>>>> immutableReversed =
         copyReversedKeyIndices(reversedKeyIndices);
 
-    return new Snapshot<>(immutableData, immutableIndices, immutableSorted,
-        immutableReversed, version, hash, Instant.now());
+    return new Snapshot<>(immutableItems, immutableData, immutableIndices,
+        immutableSorted, immutableReversed, version, hash, Instant.now());
   }
 
   /**
@@ -168,8 +261,9 @@ public final class Snapshot<T> {
    * @return an empty snapshot, never null
    */
   public static <T> Snapshot<T> empty() {
-    return new Snapshot<>(Collections.emptyList(), Collections.emptyMap(),
-        Collections.emptyMap(), Collections.emptyMap(), 0L, "", Instant.now());
+    return new Snapshot<>(Collections.emptyList(), Collections.emptyList(),
+        Collections.emptyMap(), Collections.emptyMap(), Collections.emptyMap(),
+        0L, "", Instant.now());
   }
 
   /**
@@ -187,15 +281,46 @@ public final class Snapshot<T> {
   public List<T> search(final String indexName, final Object key) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
-    final Map<Object, List<T>> index = indices.get(indexName);
+    final Map<Object, List<AndersoniCatalogItem<T>>> index = indices.get(indexName);
     if (index == null) {
       return Collections.emptyList();
     }
-    final List<T> result = index.get(key);
+    final List<AndersoniCatalogItem<T>> result = index.get(key);
     if (result == null) {
       return Collections.emptyList();
     }
-    return result;
+    return extractItems(result);
+  }
+
+  /**
+   * Searches the specified index for items matching the given key and
+   * returns the specified view projection.
+   *
+   * @param indexName the name of the index to search, never null
+   * @param key       the key to look up in the index, never null
+   * @param viewType  the view type to project results into, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> search(final String indexName, final Object key,
+      final Class<V> viewType) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    final Map<Object, List<AndersoniCatalogItem<T>>> index = indices.get(indexName);
+    if (index == null) {
+      return Collections.emptyList();
+    }
+    final List<AndersoniCatalogItem<T>> result = index.get(key);
+    if (result == null) {
+      return Collections.emptyList();
+    }
+    return extractViews(result, viewType);
   }
 
   /**
@@ -232,6 +357,16 @@ public final class Snapshot<T> {
    */
   public Instant createdAt() {
     return createdAt;
+  }
+
+  /**
+   * Returns the internal catalog items. Package-private for use by
+   * Catalog and CompoundQuery.
+   *
+   * @return the unmodifiable list of catalog items, never null
+   */
+  List<AndersoniCatalogItem<T>> items() {
+    return items;
   }
 
   // -----------------------------------------------------------------------
@@ -294,9 +429,39 @@ public final class Snapshot<T> {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(from, "from must not be null");
     Objects.requireNonNull(to, "to must not be null");
-    final NavigableMap<Comparable<?>, List<T>> sorted =
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
         requireSortedIndex(indexName);
-    return flattenValues(sorted.subMap(from, true, to, true));
+    return flattenAndExtractItems(sorted.subMap(from, true, to, true));
+  }
+
+  /**
+   * Searches the sorted index for items whose keys fall within the
+   * inclusive range and returns the specified view projection.
+   *
+   * @param indexName the name of the sorted index to search, never null
+   * @param from      the inclusive lower bound, never null
+   * @param to        the inclusive upper bound, never null
+   * @param viewType  the view type to project results into, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> searchBetween(final String indexName,
+      final Comparable<?> from, final Comparable<?> to,
+      final Class<V> viewType) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(from, "from must not be null");
+    Objects.requireNonNull(to, "to must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
+        requireSortedIndex(indexName);
+    return flattenAndExtractViews(sorted.subMap(from, true, to, true), viewType);
   }
 
   /**
@@ -317,9 +482,36 @@ public final class Snapshot<T> {
       final Comparable<?> key) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
-    final NavigableMap<Comparable<?>, List<T>> sorted =
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
         requireSortedIndex(indexName);
-    return flattenValues(sorted.tailMap(key, false));
+    return flattenAndExtractItems(sorted.tailMap(key, false));
+  }
+
+  /**
+   * Searches the sorted index for items whose keys are strictly greater
+   * than the given key and returns the specified view projection.
+   *
+   * @param indexName the name of the sorted index to search, never null
+   * @param key       the exclusive lower bound, never null
+   * @param viewType  the view type to project results into, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> searchGreaterThan(final String indexName,
+      final Comparable<?> key, final Class<V> viewType) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
+        requireSortedIndex(indexName);
+    return flattenAndExtractViews(sorted.tailMap(key, false), viewType);
   }
 
   /**
@@ -340,9 +532,36 @@ public final class Snapshot<T> {
       final Comparable<?> key) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
-    final NavigableMap<Comparable<?>, List<T>> sorted =
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
         requireSortedIndex(indexName);
-    return flattenValues(sorted.tailMap(key, true));
+    return flattenAndExtractItems(sorted.tailMap(key, true));
+  }
+
+  /**
+   * Searches the sorted index for items whose keys are greater than or
+   * equal to the given key and returns the specified view projection.
+   *
+   * @param indexName the name of the sorted index to search, never null
+   * @param key       the inclusive lower bound, never null
+   * @param viewType  the view type to project results into, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> searchGreaterOrEqual(final String indexName,
+      final Comparable<?> key, final Class<V> viewType) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
+        requireSortedIndex(indexName);
+    return flattenAndExtractViews(sorted.tailMap(key, true), viewType);
   }
 
   /**
@@ -363,9 +582,36 @@ public final class Snapshot<T> {
       final Comparable<?> key) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
-    final NavigableMap<Comparable<?>, List<T>> sorted =
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
         requireSortedIndex(indexName);
-    return flattenValues(sorted.headMap(key, false));
+    return flattenAndExtractItems(sorted.headMap(key, false));
+  }
+
+  /**
+   * Searches the sorted index for items whose keys are strictly less
+   * than the given key and returns the specified view projection.
+   *
+   * @param indexName the name of the sorted index to search, never null
+   * @param key       the exclusive upper bound, never null
+   * @param viewType  the view type to project results into, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> searchLessThan(final String indexName,
+      final Comparable<?> key, final Class<V> viewType) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
+        requireSortedIndex(indexName);
+    return flattenAndExtractViews(sorted.headMap(key, false), viewType);
   }
 
   /**
@@ -386,9 +632,36 @@ public final class Snapshot<T> {
       final Comparable<?> key) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
-    final NavigableMap<Comparable<?>, List<T>> sorted =
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
         requireSortedIndex(indexName);
-    return flattenValues(sorted.headMap(key, true));
+    return flattenAndExtractItems(sorted.headMap(key, true));
+  }
+
+  /**
+   * Searches the sorted index for items whose keys are less than or
+   * equal to the given key and returns the specified view projection.
+   *
+   * @param indexName the name of the sorted index to search, never null
+   * @param key       the inclusive upper bound, never null
+   * @param viewType  the view type to project results into, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> searchLessOrEqual(final String indexName,
+      final Comparable<?> key, final Class<V> viewType) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
+        requireSortedIndex(indexName);
+    return flattenAndExtractViews(sorted.headMap(key, true), viewType);
   }
 
   // -----------------------------------------------------------------------
@@ -419,13 +692,47 @@ public final class Snapshot<T> {
     if (prefix.isEmpty()) {
       return Collections.emptyList();
     }
-    final NavigableMap<Comparable<?>, List<T>> sorted =
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
         requireSortedIndex(indexName);
     final String prefixEnd = computePrefixEnd(prefix);
     if (prefixEnd == null) {
-      return flattenValues(sorted.tailMap(prefix, true));
+      return flattenAndExtractItems(sorted.tailMap(prefix, true));
     }
-    return flattenValues(sorted.subMap(prefix, true, prefixEnd, false));
+    return flattenAndExtractItems(sorted.subMap(prefix, true, prefixEnd, false));
+  }
+
+  /**
+   * Searches the sorted index for items whose String keys start with the
+   * given prefix and returns the specified view projection.
+   *
+   * @param indexName the name of the sorted index to search, never null
+   * @param prefix    the prefix to match, never null or empty
+   * @param viewType  the view type to project results into, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> searchStartsWith(final String indexName,
+      final String prefix, final Class<V> viewType) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(prefix, "prefix must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    if (prefix.isEmpty()) {
+      return Collections.emptyList();
+    }
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
+        requireSortedIndex(indexName);
+    final String prefixEnd = computePrefixEnd(prefix);
+    if (prefixEnd == null) {
+      return flattenAndExtractViews(sorted.tailMap(prefix, true), viewType);
+    }
+    return flattenAndExtractViews(sorted.subMap(prefix, true, prefixEnd, false), viewType);
   }
 
   /**
@@ -452,16 +759,53 @@ public final class Snapshot<T> {
     if (suffix.isEmpty()) {
       return Collections.emptyList();
     }
-    final NavigableMap<String, List<T>> reversed =
+    final NavigableMap<String, List<AndersoniCatalogItem<T>>> reversed =
         requireReversedKeyIndex(indexName);
     final String reversedSuffix = new StringBuilder(suffix)
         .reverse().toString();
     final String prefixEnd = computePrefixEnd(reversedSuffix);
     if (prefixEnd == null) {
-      return flattenValues(reversed.tailMap(reversedSuffix, true));
+      return flattenAndExtractItems(reversed.tailMap(reversedSuffix, true));
     }
-    return flattenValues(reversed.subMap(reversedSuffix, true,
+    return flattenAndExtractItems(reversed.subMap(reversedSuffix, true,
         prefixEnd, false));
+  }
+
+  /**
+   * Searches the reversed-key index for items whose String keys end with
+   * the given suffix and returns the specified view projection.
+   *
+   * @param indexName the name of the sorted index to search, never null
+   * @param suffix    the suffix to match, never null or empty
+   * @param viewType  the view type to project results into, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support text queries (key type must be String)
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> searchEndsWith(final String indexName,
+      final String suffix, final Class<V> viewType) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(suffix, "suffix must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    if (suffix.isEmpty()) {
+      return Collections.emptyList();
+    }
+    final NavigableMap<String, List<AndersoniCatalogItem<T>>> reversed =
+        requireReversedKeyIndex(indexName);
+    final String reversedSuffix = new StringBuilder(suffix)
+        .reverse().toString();
+    final String prefixEnd = computePrefixEnd(reversedSuffix);
+    if (prefixEnd == null) {
+      return flattenAndExtractViews(reversed.tailMap(reversedSuffix, true), viewType);
+    }
+    return flattenAndExtractViews(reversed.subMap(reversedSuffix, true,
+        prefixEnd, false), viewType);
   }
 
   /**
@@ -489,10 +833,10 @@ public final class Snapshot<T> {
     if (substring.isEmpty()) {
       return Collections.emptyList();
     }
-    final NavigableMap<Comparable<?>, List<T>> sorted =
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
         requireSortedIndex(indexName);
-    final List<T> result = new ArrayList<>();
-    for (final Map.Entry<Comparable<?>, List<T>> entry
+    final List<AndersoniCatalogItem<T>> result = new ArrayList<>();
+    for (final Map.Entry<Comparable<?>, List<AndersoniCatalogItem<T>>> entry
         : sorted.entrySet()) {
       if (entry.getKey().toString().contains(substring)) {
         result.addAll(entry.getValue());
@@ -501,7 +845,47 @@ public final class Snapshot<T> {
     if (result.isEmpty()) {
       return Collections.emptyList();
     }
-    return Collections.unmodifiableList(result);
+    return extractItems(result);
+  }
+
+  /**
+   * Searches the sorted index for items whose String keys contain the
+   * given substring and returns the specified view projection.
+   *
+   * @param indexName the name of the sorted index to search, never null
+   * @param substring the substring to match, never null or empty
+   * @param viewType  the view type to project results into, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> searchContains(final String indexName,
+      final String substring, final Class<V> viewType) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(substring, "substring must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    if (substring.isEmpty()) {
+      return Collections.emptyList();
+    }
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
+        requireSortedIndex(indexName);
+    final List<AndersoniCatalogItem<T>> result = new ArrayList<>();
+    for (final Map.Entry<Comparable<?>, List<AndersoniCatalogItem<T>>> entry
+        : sorted.entrySet()) {
+      if (entry.getKey().toString().contains(substring)) {
+        result.addAll(entry.getValue());
+      }
+    }
+    if (result.isEmpty()) {
+      return Collections.emptyList();
+    }
+    return extractViews(result, viewType);
   }
 
   // -----------------------------------------------------------------------
@@ -518,9 +902,9 @@ public final class Snapshot<T> {
    *
    * @throws UnsupportedIndexOperationException if the index is not sorted
    */
-  private NavigableMap<Comparable<?>, List<T>> requireSortedIndex(
-      final String indexName) {
-    final NavigableMap<Comparable<?>, List<T>> sorted =
+  private NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>
+      requireSortedIndex(final String indexName) {
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sorted =
         sortedIndices.get(indexName);
     if (sorted == null) {
       throw new UnsupportedIndexOperationException(
@@ -541,9 +925,9 @@ public final class Snapshot<T> {
    * @throws UnsupportedIndexOperationException if the index does not
    *         support text queries
    */
-  private NavigableMap<String, List<T>> requireReversedKeyIndex(
-      final String indexName) {
-    final NavigableMap<String, List<T>> reversed =
+  private NavigableMap<String, List<AndersoniCatalogItem<T>>>
+      requireReversedKeyIndex(final String indexName) {
+    final NavigableMap<String, List<AndersoniCatalogItem<T>>> reversed =
         reversedKeyIndices.get(indexName);
     if (reversed == null) {
       throw new UnsupportedIndexOperationException(
@@ -554,21 +938,44 @@ public final class Snapshot<T> {
   }
 
   /**
-   * Flattens the values of a map into a single unmodifiable list.
+   * Flattens the values of a map into a single list and extracts items.
    *
    * @param subMap the map whose values to flatten, never null
    *
    * @return an unmodifiable list of all items, never null
    */
-  private List<T> flattenValues(final Map<?, List<T>> subMap) {
+  private List<T> flattenAndExtractItems(
+      final Map<?, List<AndersoniCatalogItem<T>>> subMap) {
     if (subMap.isEmpty()) {
       return Collections.emptyList();
     }
-    final List<T> result = new ArrayList<>();
-    for (final List<T> list : subMap.values()) {
-      result.addAll(list);
+    final List<AndersoniCatalogItem<T>> flattened = new ArrayList<>();
+    for (final List<AndersoniCatalogItem<T>> list : subMap.values()) {
+      flattened.addAll(list);
     }
-    return Collections.unmodifiableList(result);
+    return extractItems(flattened);
+  }
+
+  /**
+   * Flattens the values of a map into a single list and extracts views.
+   *
+   * @param subMap   the map whose values to flatten, never null
+   * @param viewType the view type to extract, never null
+   * @param <V>      the view type
+   *
+   * @return an unmodifiable list of all views, never null
+   */
+  private <V> List<V> flattenAndExtractViews(
+      final Map<?, List<AndersoniCatalogItem<T>>> subMap,
+      final Class<V> viewType) {
+    if (subMap.isEmpty()) {
+      return Collections.emptyList();
+    }
+    final List<AndersoniCatalogItem<T>> flattened = new ArrayList<>();
+    for (final List<AndersoniCatalogItem<T>> list : subMap.values()) {
+      flattened.addAll(list);
+    }
+    return extractViews(flattened, viewType);
   }
 
   /**
@@ -589,6 +996,138 @@ public final class Snapshot<T> {
   }
 
   // -----------------------------------------------------------------------
+  // View/item extraction helpers
+  // -----------------------------------------------------------------------
+
+  /**
+   * Extracts the view of the given type from each catalog item.
+   *
+   * @param results  the catalog items to extract views from, never null
+   * @param viewType the view type class, never null
+   * @param <V>      the view type
+   *
+   * @return an unmodifiable list of views, never null
+   *
+   * @throws IllegalArgumentException if the view type is not registered
+   */
+  private <V> List<V> extractViews(
+      final List<AndersoniCatalogItem<T>> results,
+      final Class<V> viewType) {
+    if (results.isEmpty()) {
+      return Collections.emptyList();
+    }
+    final List<V> views = new ArrayList<>(results.size());
+    for (final AndersoniCatalogItem<T> entry : results) {
+      views.add(entry.view(viewType));
+    }
+    return Collections.unmodifiableList(views);
+  }
+
+  /**
+   * Extracts the domain items from each catalog item.
+   *
+   * @param results the catalog items to extract from, never null
+   *
+   * @return an unmodifiable list of items, never null
+   */
+  private static <T> List<T> extractItems(
+      final List<AndersoniCatalogItem<T>> results) {
+    if (results.isEmpty()) {
+      return Collections.emptyList();
+    }
+    final List<T> extracted = new ArrayList<>(results.size());
+    for (final AndersoniCatalogItem<T> entry : results) {
+      extracted.add(entry.item());
+    }
+    return Collections.unmodifiableList(extracted);
+  }
+
+  // -----------------------------------------------------------------------
+  // Conversion helpers (T -> AndersoniCatalogItem<T>)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Converts indices from T-based to AndersoniCatalogItem-based using
+   * an identity map.
+   */
+  private static <T> Map<String, Map<Object,
+      List<AndersoniCatalogItem<T>>>> convertIndices(
+          final Map<String, Map<Object, List<T>>> indices,
+          final IdentityHashMap<T, AndersoniCatalogItem<T>> wrapperMap) {
+
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> result = new HashMap<>();
+    for (final Map.Entry<String, Map<Object, List<T>>> entry : indices.entrySet()) {
+      final Map<Object, List<AndersoniCatalogItem<T>>> innerResult = new HashMap<>();
+      for (final Map.Entry<Object, List<T>> innerEntry : entry.getValue().entrySet()) {
+        final List<AndersoniCatalogItem<T>> wrapped = new ArrayList<>();
+        for (final T item : innerEntry.getValue()) {
+          wrapped.add(wrapperMap.get(item));
+        }
+        innerResult.put(innerEntry.getKey(), wrapped);
+      }
+      result.put(entry.getKey(), innerResult);
+    }
+    return result;
+  }
+
+  /**
+   * Converts sorted indices from T-based to AndersoniCatalogItem-based
+   * using an identity map.
+   */
+  private static <T> Map<String, NavigableMap<Comparable<?>,
+      List<AndersoniCatalogItem<T>>>> convertSortedIndices(
+          final Map<String, NavigableMap<Comparable<?>, List<T>>> sortedIndices,
+          final IdentityHashMap<T, AndersoniCatalogItem<T>> wrapperMap) {
+
+    if (sortedIndices.isEmpty()) {
+      return Collections.emptyMap();
+    }
+    final Map<String, NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>> result =
+        new HashMap<>();
+    for (final Map.Entry<String, NavigableMap<Comparable<?>, List<T>>> entry
+        : sortedIndices.entrySet()) {
+      final TreeMap<Comparable<?>, List<AndersoniCatalogItem<T>>> innerResult = new TreeMap<>();
+      for (final Map.Entry<Comparable<?>, List<T>> innerEntry : entry.getValue().entrySet()) {
+        final List<AndersoniCatalogItem<T>> wrapped = new ArrayList<>();
+        for (final T item : innerEntry.getValue()) {
+          wrapped.add(wrapperMap.get(item));
+        }
+        innerResult.put(innerEntry.getKey(), wrapped);
+      }
+      result.put(entry.getKey(), innerResult);
+    }
+    return result;
+  }
+
+  /**
+   * Converts reversed-key indices from T-based to AndersoniCatalogItem-based
+   * using an identity map.
+   */
+  private static <T> Map<String, NavigableMap<String,
+      List<AndersoniCatalogItem<T>>>> convertReversedKeyIndices(
+          final Map<String, NavigableMap<String, List<T>>> reversedKeyIndices,
+          final IdentityHashMap<T, AndersoniCatalogItem<T>> wrapperMap) {
+
+    if (reversedKeyIndices.isEmpty()) {
+      return Collections.emptyMap();
+    }
+    final Map<String, NavigableMap<String, List<AndersoniCatalogItem<T>>>> result = new HashMap<>();
+    for (final Map.Entry<String, NavigableMap<String, List<T>>> entry
+        : reversedKeyIndices.entrySet()) {
+      final TreeMap<String, List<AndersoniCatalogItem<T>>> innerResult = new TreeMap<>();
+      for (final Map.Entry<String, List<T>> innerEntry : entry.getValue().entrySet()) {
+        final List<AndersoniCatalogItem<T>> wrapped = new ArrayList<>();
+        for (final T item : innerEntry.getValue()) {
+          wrapped.add(wrapperMap.get(item));
+        }
+        innerResult.put(innerEntry.getKey(), wrapped);
+      }
+      result.put(entry.getKey(), innerResult);
+    }
+    return result;
+  }
+
+  // -----------------------------------------------------------------------
   // Defensive copy helpers
   // -----------------------------------------------------------------------
 
@@ -603,17 +1142,19 @@ public final class Snapshot<T> {
    *
    * @return an unmodifiable copy of the indices, never null
    */
-  private static <T> Map<String, Map<Object, List<T>>> copyIndices(
-      final Map<String, Map<Object, List<T>>> indices) {
+  private static <T> Map<String, Map<Object,
+      List<AndersoniCatalogItem<T>>>> copyIndices(
+          final Map<String, Map<Object,
+              List<AndersoniCatalogItem<T>>>> indices) {
 
-    final Map<String, Map<Object, List<T>>> outerCopy = new HashMap<>();
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> outerCopy = new HashMap<>();
 
-    for (final Map.Entry<String, Map<Object, List<T>>> entry
-        : indices.entrySet()) {
+    for (final Map.Entry<String, Map<Object,
+        List<AndersoniCatalogItem<T>>>> entry : indices.entrySet()) {
 
-      final Map<Object, List<T>> innerCopy = new HashMap<>();
+      final Map<Object, List<AndersoniCatalogItem<T>>> innerCopy = new HashMap<>();
 
-      for (final Map.Entry<Object, List<T>> innerEntry
+      for (final Map.Entry<Object, List<AndersoniCatalogItem<T>>> innerEntry
           : entry.getValue().entrySet()) {
         innerCopy.put(innerEntry.getKey(),
             Collections.unmodifiableList(List.copyOf(innerEntry.getValue())));
@@ -637,25 +1178,26 @@ public final class Snapshot<T> {
    *
    * @return an unmodifiable copy of the sorted indices, never null
    */
-  private static <T> Map<String, NavigableMap<Comparable<?>, List<T>>>
-      copySortedIndices(
-          final Map<String, NavigableMap<Comparable<?>, List<T>>>
-              sortedIndices) {
+  private static <T> Map<String, NavigableMap<Comparable<?>,
+      List<AndersoniCatalogItem<T>>>> copySortedIndices(
+          final Map<String, NavigableMap<Comparable<?>,
+              List<AndersoniCatalogItem<T>>>> sortedIndices) {
 
     if (sortedIndices.isEmpty()) {
       return Collections.emptyMap();
     }
 
-    final Map<String, NavigableMap<Comparable<?>, List<T>>> outerCopy =
-        new HashMap<>();
+    final Map<String, NavigableMap<Comparable<?>,
+        List<AndersoniCatalogItem<T>>>> outerCopy = new HashMap<>();
 
-    for (final Map.Entry<String, NavigableMap<Comparable<?>, List<T>>> entry
-        : sortedIndices.entrySet()) {
+    for (final Map.Entry<String, NavigableMap<Comparable<?>,
+        List<AndersoniCatalogItem<T>>>> entry : sortedIndices.entrySet()) {
 
-      final TreeMap<Comparable<?>, List<T>> innerCopy = new TreeMap<>();
+      final TreeMap<Comparable<?>, List<AndersoniCatalogItem<T>>> innerCopy = new TreeMap<>();
 
-      for (final Map.Entry<Comparable<?>, List<T>> innerEntry
-          : entry.getValue().entrySet()) {
+      for (final Map.Entry<Comparable<?>,
+          List<AndersoniCatalogItem<T>>> innerEntry
+              : entry.getValue().entrySet()) {
         innerCopy.put(innerEntry.getKey(),
             Collections.unmodifiableList(List.copyOf(innerEntry.getValue())));
       }
@@ -680,25 +1222,27 @@ public final class Snapshot<T> {
    *
    * @return an unmodifiable copy of the reversed-key indices, never null
    */
-  private static <T> Map<String, NavigableMap<String, List<T>>>
-      copyReversedKeyIndices(
-          final Map<String, NavigableMap<String, List<T>>>
-              reversedKeyIndices) {
+  private static <T> Map<String, NavigableMap<String,
+      List<AndersoniCatalogItem<T>>>> copyReversedKeyIndices(
+          final Map<String, NavigableMap<String,
+              List<AndersoniCatalogItem<T>>>> reversedKeyIndices) {
 
     if (reversedKeyIndices.isEmpty()) {
       return Collections.emptyMap();
     }
 
-    final Map<String, NavigableMap<String, List<T>>> outerCopy =
-        new HashMap<>();
+    final Map<String, NavigableMap<String,
+        List<AndersoniCatalogItem<T>>>> outerCopy = new HashMap<>();
 
-    for (final Map.Entry<String, NavigableMap<String, List<T>>> entry
-        : reversedKeyIndices.entrySet()) {
+    for (final Map.Entry<String, NavigableMap<String,
+        List<AndersoniCatalogItem<T>>>> entry
+            : reversedKeyIndices.entrySet()) {
 
-      final TreeMap<String, List<T>> innerCopy = new TreeMap<>();
+      final TreeMap<String, List<AndersoniCatalogItem<T>>> innerCopy = new TreeMap<>();
 
-      for (final Map.Entry<String, List<T>> innerEntry
-          : entry.getValue().entrySet()) {
+      for (final Map.Entry<String,
+          List<AndersoniCatalogItem<T>>> innerEntry
+              : entry.getValue().entrySet()) {
         innerCopy.put(innerEntry.getKey(),
             Collections.unmodifiableList(List.copyOf(innerEntry.getValue())));
       }
@@ -754,19 +1298,20 @@ public final class Snapshot<T> {
       return Collections.emptyList();
     }
     final List<IndexInfo> result = new ArrayList<>();
-    for (final Map.Entry<String, Map<Object, List<T>>> entry
-        : indices.entrySet()) {
+    for (final Map.Entry<String, Map<Object,
+        List<AndersoniCatalogItem<T>>>> entry : indices.entrySet()) {
       result.add(computeIndexInfo(entry.getKey(), entry.getValue()));
     }
     return Collections.unmodifiableList(result);
   }
 
   private static <T> IndexInfo computeIndexInfo(final String indexName,
-      final Map<Object, List<T>> index) {
+      final Map<Object, List<AndersoniCatalogItem<T>>> index) {
     final int uniqueKeys = index.size();
     int totalEntries = 0;
     long keySizeSum = 0;
-    for (final Map.Entry<Object, List<T>> entry : index.entrySet()) {
+    for (final Map.Entry<Object, List<AndersoniCatalogItem<T>>> entry
+        : index.entrySet()) {
       totalEntries += entry.getValue().size();
       keySizeSum += estimateKeySize(entry.getKey());
     }
