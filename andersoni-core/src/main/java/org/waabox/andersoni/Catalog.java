@@ -91,9 +91,6 @@ public final class Catalog<T> {
   /** The view definitions, never null. */
   private final List<ViewDefinition<T, ?>> viewDefinitions;
 
-  /** The registered view types for O(1) lookup, never null. */
-  private final Set<Class<?>> registeredViewTypes;
-
   /** The data loader, null if using static data. */
   private final DataLoader<T> dataLoader;
 
@@ -149,11 +146,6 @@ public final class Catalog<T> {
         new ArrayList<>(graphIndexDefinitions));
     this.viewDefinitions = Collections.unmodifiableList(
         new ArrayList<>(viewDefinitions));
-    final Set<Class<?>> viewTypeSet = new HashSet<>();
-    for (final ViewDefinition<T, ?> viewDef : viewDefinitions) {
-      viewTypeSet.add(viewDef.viewType());
-    }
-    this.registeredViewTypes = Collections.unmodifiableSet(viewTypeSet);
     this.serializer = serializer;
     this.refreshInterval = refreshInterval;
     this.current = new AtomicReference<>(Snapshot.empty());
@@ -299,7 +291,12 @@ public final class Catalog<T> {
    * @author waabox(waabox[at]gmail[dot]com)
    */
   boolean hasView(final Class<?> type) {
-    return registeredViewTypes.contains(type);
+    for (final ViewDefinition<T, ?> viewDef : viewDefinitions) {
+      if (viewDef.viewType().equals(type)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
