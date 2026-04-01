@@ -38,7 +38,7 @@ Maven groupId: `io.github.waabox`
 Root Java package: `org.waabox.andersoni`
 
 ```
-org.waabox.andersoni                    # Core: Andersoni, Catalog, Snapshot, IndexDefinition
+org.waabox.andersoni                    # Core: Andersoni, Catalog, Snapshot, IndexDefinition, ViewDefinition
 org.waabox.andersoni.sync               # SyncStrategy, RefreshEvent
 org.waabox.andersoni.sync.kafka         # Raw Kafka sync (no Spring)
 org.waabox.andersoni.sync.kafka.spring  # Spring Kafka sync with auto-configuration
@@ -79,7 +79,8 @@ org.waabox.andersoni.example            # Example app
 
 - **Immutable Snapshot Pattern**: data in `AtomicReference<Snapshot<T>>`, readers never blocked
 - **Strategy Pattern**: pluggable `SyncStrategy`, `LeaderElectionStrategy`, `SnapshotStore`
-- **Builder/Fluent DSL**: `Catalog.of(T).named("x").loadWith(loader).index("y").by(fn).build()`
+- **Builder/Fluent DSL**: `Catalog.of(T).named("x").loadWith(loader).index("y").by(fn).view(V.class, mapper).build()`
+- **Catalog Views**: pre-computed projections of `T` into smaller typed objects `V`, materialized at snapshot build time via `AndersoniCatalogItem<T>` (internal wrapper, never exposed). Query any index with a view class to get `List<V>` instead of `List<T>`
 - **Retry with backoff**: `RetryPolicy` for bootstrap and refresh failures
 
 ## CI/CD

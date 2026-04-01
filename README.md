@@ -38,7 +38,7 @@
   <img src="./assets/logo-tr.png" width="300"/>
 </p>
 
-**Nanosecond-latency, lock-free reads.** In-memory indexed cache for Java 21 with a fluent DSL — regular, sorted, multi-key, and graph-based indexes, compound queries, immutable snapshots, pluggable cross-node sync, and built-in observability.
+**Nanosecond-latency, lock-free reads.** In-memory indexed cache for Java 21 with a fluent DSL — regular, sorted, multi-key, and graph-based indexes, compound queries, pre-computed views (projections), immutable snapshots, pluggable cross-node sync, and built-in observability.
 
 > **[Read the full documentation on the Wiki](https://github.com/waabox/andersoni/wiki)** — getting started, core concepts, catalog DSL, Spring Boot integration, sync strategies, snapshot persistence, leader election, observability, DevOps & Kubernetes, deployment guide, and FAQ.
 
@@ -226,6 +226,58 @@ andersoni.graphQuery("publications", Publication.class)      // graph
     .execute();
 ```
 
+## Catalog Views (Projections)
+
+Views let you define pre-computed projections of your domain objects. Instead of always getting the full object `T` from a query, you can request a smaller typed view `V` — without any runtime transformation.
+
+Views are materialized at snapshot build time and stored alongside each item. Querying with a view class is zero-overhead: the projection is already computed.
+
+### Defining Views
+
+```java
+record EventSummary(String id, String name) {}
+record EventCard(String id, String name, String imageUrl) {}
+
+Catalog<Event> catalog = Catalog.of(Event.class)
+    .named("events")
+    .loadWith(() -> repository.findAll())
+    .index("by-venue").by(Event::venue, Venue::name)
+    .indexSorted("by-date").by(Event::eventDate, EventDate::value)
+    .view(EventSummary.class, e -> new EventSummary(e.id(), e.name()))
+    .view(EventCard.class, e -> new EventCard(e.id(), e.name(), e.imageUrl()))
+    .build();
+```
+
+### Querying with Views
+
+Pass the view class as the last parameter to any query operation:
+
+```java
+// Direct search
+List<EventSummary> summaries = andersoni.search("events", "by-venue", "Maracana", EventSummary.class);
+
+// Range queries
+List<EventSummary> upcoming = andersoni.query("events", "by-date")
+    .between(startDate, endDate, EventSummary.class);
+
+// Text pattern queries
+List<EventSummary> matching = andersoni.query("events", "by-name")
+    .startsWith("Champions", EventSummary.class);
+
+// Compound queries
+List<EventCard> cards = andersoni.compound("events")
+    .where("by-venue").equalTo("Maracana")
+    .and("by-sport").equalTo("Football")
+    .execute(EventCard.class);
+
+// Graph queries
+List<EventSummary> results = andersoni.graphQuery("events", Event.class)
+    .where("country").eq("AR")
+    .execute(EventSummary.class);
+```
+
+Without a view class, all queries return the full object `T` as before — fully backward compatible.
+
 ## How It Compares
 
 Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.
@@ -307,6 +359,11 @@ andersoni.start();
 
 // Simple index lookup
 List<Event> events = andersoni.search("events", "by-venue", "Wembley");
+
+// View projection — get a smaller object without runtime transformation
+record EventSummary(String id, String name) {}
+// (register with .view(EventSummary.class, e -> new EventSummary(e.id(), e.name())) in catalog DSL)
+List<EventSummary> summaries = andersoni.search("events", "by-venue", "Wembley", EventSummary.class);
 
 // Graph query: all events in AR
 andersoni.graphQuery("events", Event.class)
