@@ -258,18 +258,17 @@ public final class Andersoni {
    * Searches a catalog by name and delegates to the specified index,
    * returning a typed list for caller convenience.
    *
-   * <p>This is a convenience overload that performs an unchecked cast
-   * on the result of {@link #search(String, String, Object)}. The caller
-   * is responsible for providing the correct type — the type that was
-   * used when creating the catalog via {@link Catalog#of(Class)}.
+   * <p>If {@code type} is a registered view on the catalog, this method
+   * returns view instances produced by the view mapping function. Otherwise,
+   * it returns the catalog's item type cast to {@code T}.
    *
    * @param catalogName  the name of the catalog to search, never null
    * @param indexName    the name of the index within the catalog, never null
    * @param key          the key to look up, never null
-   * @param type         the expected element type, never null
+   * @param type         the expected element type or a registered view type, never null
    * @param <T>          the expected element type
    *
-   * @return an unmodifiable list of matching items, never null
+   * @return an unmodifiable list of matching items or views, never null
    *
    * @throws IllegalArgumentException      if no catalog with the given name
    *                                       is registered
@@ -277,11 +276,20 @@ public final class Andersoni {
    *
    * @author waabox(waabox[at]gmail[dot]com)
    */
-  @SuppressWarnings("unchecked")
   public <T> List<T> search(final String catalogName, final String indexName,
       final Object key, final Class<T> type) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
     Objects.requireNonNull(type, "type must not be null");
-    return (List<T>) search(catalogName, indexName, key);
+
+    final Catalog<?> catalog = requireCatalog(catalogName);
+
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+
+    return catalog.searchWithType(indexName, key, type);
   }
 
   /**
