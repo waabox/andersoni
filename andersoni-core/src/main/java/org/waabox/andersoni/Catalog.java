@@ -88,6 +88,9 @@ public final class Catalog<T> {
   /** The graph index definitions for this catalog. */
   private final List<GraphIndexDefinition<T>> graphIndexDefinitions;
 
+  /** The view definitions, never null. */
+  private final List<ViewDefinition<T, ?>> viewDefinitions;
+
   /** The data loader, null if using static data. */
   private final DataLoader<T> dataLoader;
 
@@ -127,6 +130,7 @@ public final class Catalog<T> {
       final List<SortedIndexDefinition<T>> sortedIndexDefinitions,
       final List<MultiKeyIndexDefinition<T>> multiKeyIndexDefinitions,
       final List<GraphIndexDefinition<T>> graphIndexDefinitions,
+      final List<ViewDefinition<T, ?>> viewDefinitions,
       final SnapshotSerializer<T> serializer,
       final Duration refreshInterval) {
     this.name = name;
@@ -140,6 +144,8 @@ public final class Catalog<T> {
         new ArrayList<>(multiKeyIndexDefinitions));
     this.graphIndexDefinitions = Collections.unmodifiableList(
         new ArrayList<>(graphIndexDefinitions));
+    this.viewDefinitions = Collections.unmodifiableList(
+        new ArrayList<>(viewDefinitions));
     this.serializer = serializer;
     this.refreshInterval = refreshInterval;
     this.current = new AtomicReference<>(Snapshot.empty());
@@ -257,6 +263,65 @@ public final class Catalog<T> {
   }
 
   /**
+   * Searches the specified index and returns views of the matching items.
+   *
+   * @param indexName the name of the index to search, never null
+   * @param key       the key to look up, never null
+   * @param viewType  the view type to return, never null
+   * @param <V>       the view type
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> search(final String indexName, final Object key,
+      final Class<V> viewType) {
+    return current.get().search(indexName, key, viewType);
+  }
+
+  /**
+   * Checks if the given type is a registered view.
+   *
+   * @param type the type to check, never null
+   *
+   * @return true if the type is a registered view, false otherwise
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  boolean hasView(final Class<?> type) {
+    for (final ViewDefinition<T, ?> viewDef : viewDefinitions) {
+      if (viewDef.viewType().equals(type)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Searches with type-aware dispatch: if type is a registered view,
+   * returns views; otherwise returns items cast to the given type.
+   *
+   * @param indexName the name of the index to search, never null
+   * @param key       the key to look up, never null
+   * @param type      the type to return, never null
+   * @param <V>       the return type
+   *
+   * @return an unmodifiable list of matching results, never null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  <V> List<V> searchWithType(final String indexName, final Object key,
+      final Class<V> type) {
+    if (hasView(type)) {
+      return current.get().search(indexName, key, type);
+    }
+    return (List<V>) current.get().search(indexName, key);
+  }
+
+  /**
    * Creates a fluent query on the specified index within the current
    * snapshot.
    *
@@ -358,6 +423,17 @@ public final class Catalog<T> {
   }
 
   /**
+   * Returns the view definitions registered for this catalog.
+   *
+   * @return unmodifiable list of view definitions, never null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public List<ViewDefinition<T, ?>> viewDefinitions() {
+    return viewDefinitions;
+  }
+
+  /**
    * Returns statistics about this catalog, including per-index memory
    * estimation based on the current snapshot.
    *
@@ -383,46 +459,63 @@ public final class Catalog<T> {
    * @param data the data to build the snapshot from, never null
    */
   private void buildAndSwapSnapshot(final List<T> data) {
+    // Wrap items with views.
+    final List<AndersoniCatalogItem<T>> wrappedItems =
+        new ArrayList<>(data.size());
+    for (final T datum : data) {
+      final Map<Class<?>, Object> views = new HashMap<>();
+      for (final ViewDefinition<T, ?> viewDef : viewDefinitions) {
+        views.put(viewDef.viewType(), viewDef.mapper().apply(datum));
+      }
+      wrappedItems.add(AndersoniCatalogItem.of(datum, views));
+    }
+
     // Build regular indices.
-    final Map<String, Map<Object, List<T>>> indices = new HashMap<>();
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> indices =
+        new HashMap<>();
     for (final IndexDefinition<T> indexDef : indexDefinitions) {
-      indices.put(indexDef.name(), indexDef.buildIndex(data));
+      indices.put(indexDef.name(),
+          indexDef.buildIndexFromItems(wrappedItems));
     }
 
     // Build multi-key indices.
-    for (final MultiKeyIndexDefinition<T> multiDef : multiKeyIndexDefinitions) {
-      indices.put(multiDef.name(), multiDef.buildIndex(data));
+    for (final MultiKeyIndexDefinition<T> multiDef
+        : multiKeyIndexDefinitions) {
+      indices.put(multiDef.name(),
+          multiDef.buildIndexFromItems(wrappedItems));
     }
 
     // Build graph indices.
-    for (final GraphIndexDefinition<T> graphDef : graphIndexDefinitions) {
-      indices.put(graphDef.name(), graphDef.buildIndex(data));
+    for (final GraphIndexDefinition<T> graphDef
+        : graphIndexDefinitions) {
+      indices.put(graphDef.name(),
+          graphDef.buildIndexFromItems(wrappedItems));
     }
 
     // Build sorted indices.
-    final Map<String, NavigableMap<Comparable<?>, List<T>>> sortedIndices =
-        new HashMap<>();
-    final Map<String, NavigableMap<String, List<T>>> reversedKeyIndices =
-        new HashMap<>();
+    final Map<String, NavigableMap<Comparable<?>,
+        List<AndersoniCatalogItem<T>>>> sortedIndices = new HashMap<>();
+    final Map<String, NavigableMap<String,
+        List<AndersoniCatalogItem<T>>>> reversedKeyIndices = new HashMap<>();
 
-    for (final SortedIndexDefinition<T> sortedDef : sortedIndexDefinitions) {
-      final SortedIndexDefinition.SortedIndexResult<T> result =
-          sortedDef.buildIndex(data);
-      // Add hash index to regular indices (for equalTo via search()).
+    for (final SortedIndexDefinition<T> sortedDef
+        : sortedIndexDefinitions) {
+      final SortedIndexDefinition.SortedIndexResult<
+          AndersoniCatalogItem<T>> result =
+          sortedDef.buildIndexFromItems(wrappedItems);
       indices.put(sortedDef.name(), result.hashIndex());
-      // Add sorted index.
       sortedIndices.put(sortedDef.name(), result.sortedIndex());
-      // Add reversed key index if String keys.
       if (result.hasStringKeys() && result.reversedKeyIndex() != null) {
-        reversedKeyIndices.put(sortedDef.name(), result.reversedKeyIndex());
+        reversedKeyIndices.put(sortedDef.name(),
+            result.reversedKeyIndex());
       }
     }
 
     final long version = versionCounter.incrementAndGet();
     final String hash = computeHash(data);
 
-    final Snapshot<T> snapshot = Snapshot.of(data, indices,
-        sortedIndices, reversedKeyIndices, version, hash);
+    final Snapshot<T> snapshot = Snapshot.ofWithItems(wrappedItems,
+        indices, sortedIndices, reversedKeyIndices, version, hash);
     current.set(snapshot);
   }
 
@@ -599,6 +692,12 @@ public final class Catalog<T> {
     /** The accumulated graph index definitions. */
     private final List<GraphIndexDefinition<T>> graphIndexDefinitions;
 
+    /** The accumulated view definitions. */
+    private final List<ViewDefinition<T, ?>> viewDefinitions;
+
+    /** The set of registered view types for duplicate detection. */
+    private final Set<Class<?>> viewTypes;
+
     /** The set of registered index names for duplicate detection (shared
      *  between regular, sorted, multi-key, and graph indexes). */
     private final Set<String> indexNames;
@@ -620,6 +719,8 @@ public final class Catalog<T> {
       this.sortedIndexDefinitions = new ArrayList<>();
       this.multiKeyIndexDefinitions = new ArrayList<>();
       this.graphIndexDefinitions = new ArrayList<>();
+      this.viewDefinitions = new ArrayList<>();
+      this.viewTypes = new HashSet<>();
       this.indexNames = new HashSet<>();
     }
 
@@ -755,6 +856,32 @@ public final class Catalog<T> {
     }
 
     /**
+     * Registers a view (projection) of the catalog's domain objects.
+     *
+     * @param viewType the view type class, never null
+     * @param mapper   the mapping function from T to V, never null
+     * @param <V>      the view type
+     *
+     * @return this builder step for chaining, never null
+     *
+     * @throws NullPointerException     if viewType or mapper is null
+     * @throws IllegalArgumentException if viewType is already registered
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public <V> BuildStep<T> view(final Class<V> viewType,
+        final Function<T, V> mapper) {
+      Objects.requireNonNull(viewType, "viewType must not be null");
+      Objects.requireNonNull(mapper, "mapper must not be null");
+      if (!viewTypes.add(viewType)) {
+        throw new IllegalArgumentException(
+            "Duplicate view type: " + viewType.getSimpleName());
+      }
+      viewDefinitions.add(ViewDefinition.of(viewType, mapper));
+      return this;
+    }
+
+    /**
      * Builds the Catalog with all the accumulated configuration.
      *
      * @return a new Catalog instance, never null
@@ -774,7 +901,7 @@ public final class Catalog<T> {
       return new Catalog<>(name, dataLoader, initialData,
           indexDefinitions, sortedIndexDefinitions,
           multiKeyIndexDefinitions, graphIndexDefinitions,
-          serializer, refreshInterval);
+          viewDefinitions, serializer, refreshInterval);
     }
 
     /**

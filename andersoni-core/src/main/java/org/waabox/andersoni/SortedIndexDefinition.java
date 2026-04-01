@@ -157,6 +157,68 @@ public final class SortedIndexDefinition<T> {
   }
 
   /**
+   * Builds the sorted index from catalog items, using the item's domain
+   * object for key extraction but storing the full wrapper.
+   *
+   * @param items the catalog items to index, never null
+   *
+   * @return a {@link SortedIndexResult} containing the built indexes,
+   *         never null
+   */
+  @SuppressWarnings("unchecked")
+  SortedIndexResult<AndersoniCatalogItem<T>> buildIndexFromItems(
+      final List<AndersoniCatalogItem<T>> items) {
+    if (items.isEmpty()) {
+      return SortedIndexResult.empty();
+    }
+
+    final Map<Object, List<AndersoniCatalogItem<T>>> hashIndex =
+        new HashMap<>();
+    final TreeMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sortedIndex =
+        new TreeMap<>();
+    TreeMap<String, List<AndersoniCatalogItem<T>>> reversedKeyIndex = null;
+
+    boolean stringKeysDetected = false;
+    boolean keyTypeResolved = false;
+
+    for (final AndersoniCatalogItem<T> entry : items) {
+      final Object key = keyExtractor.apply(entry.item());
+
+      List<AndersoniCatalogItem<T>> bucket = hashIndex.get(key);
+      if (bucket == null) {
+        bucket = new ArrayList<>();
+        hashIndex.put(key, bucket);
+      }
+      bucket.add(entry);
+
+      if (key != null) {
+        if (!keyTypeResolved) {
+          stringKeysDetected = key instanceof String;
+          if (stringKeysDetected) {
+            reversedKeyIndex = new TreeMap<>();
+          }
+          keyTypeResolved = true;
+        }
+
+        if (!sortedIndex.containsKey((Comparable<?>) key)) {
+          sortedIndex.put((Comparable<?>) key, bucket);
+        }
+
+        if (stringKeysDetected) {
+          final String reversed = new StringBuilder((String) key)
+              .reverse().toString();
+          if (!reversedKeyIndex.containsKey(reversed)) {
+            reversedKeyIndex.put(reversed, bucket);
+          }
+        }
+      }
+    }
+
+    return SortedIndexResult.of(
+        hashIndex, sortedIndex, reversedKeyIndex, stringKeysDetected);
+  }
+
+  /**
    * Returns the name of this index.
    *
    * @return the index name, never null

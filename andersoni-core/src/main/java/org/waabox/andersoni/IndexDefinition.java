@@ -106,6 +106,40 @@ public final class IndexDefinition<T> {
   }
 
   /**
+   * Builds an index from catalog items, using the item's domain object
+   * for key extraction but storing the full wrapper.
+   *
+   * @param items the catalog items to index, never null
+   *
+   * @return the index mapping keys to lists of catalog items, never null
+   */
+  Map<Object, List<AndersoniCatalogItem<T>>> buildIndexFromItems(
+      final List<AndersoniCatalogItem<T>> items) {
+    if (items.isEmpty()) {
+      return Collections.emptyMap();
+    }
+
+    final Map<Object, List<AndersoniCatalogItem<T>>> index = new HashMap<>();
+
+    for (final AndersoniCatalogItem<T> entry : items) {
+      final Object key = keyExtractor.apply(entry.item());
+      if (key != null) {
+        index.computeIfAbsent(key, k -> new ArrayList<>()).add(entry);
+      }
+    }
+
+    final Map<Object, List<AndersoniCatalogItem<T>>> unmodifiable =
+        new HashMap<>();
+    for (final Map.Entry<Object, List<AndersoniCatalogItem<T>>> e
+        : index.entrySet()) {
+      unmodifiable.put(e.getKey(),
+          Collections.unmodifiableList(e.getValue()));
+    }
+
+    return Collections.unmodifiableMap(unmodifiable);
+  }
+
+  /**
    * Returns the name of this index.
    *
    * @return the index name, never null
