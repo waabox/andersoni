@@ -8,7 +8,11 @@
   <parent>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni</artifactId>
+
     <version>1.7.2</version>
+
+    <version>1.8.0</version>
+
   </parent>
 
   <artifactId>andersoni-json-serializer</artifactId>
