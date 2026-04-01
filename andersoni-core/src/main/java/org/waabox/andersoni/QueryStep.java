@@ -230,4 +230,239 @@ public final class QueryStep<T> {
   public List<T> contains(final String substring) {
     return snapshot.searchContains(indexName, substring);
   }
+
+  /**
+   * Searches for items whose indexed key equals the given value and maps
+   * the results to the specified view type.
+   *
+   * <p>This operation works on any index type (both regular and sorted).
+   * It validates that the index exists before performing the lookup,
+   * throwing {@link IndexNotFoundException} if the index was never
+   * registered. A view mapper for {@code viewType} must have been registered
+   * on the catalog.
+   *
+   * @param <V>      the view type
+   * @param key      the key to look up, never null
+   * @param viewType the class of the view to map results to, never null
+   *
+   * @return an unmodifiable list of mapped view instances, never null
+   *
+   * @throws IndexNotFoundException if the index does not exist in the
+   *         snapshot
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> equalTo(final Object key, final Class<V> viewType) {
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    if (!snapshot.hasIndex(indexName)) {
+      throw new IndexNotFoundException(indexName, catalogName);
+    }
+    return snapshot.search(indexName, key, viewType);
+  }
+
+  /**
+   * Searches for items whose indexed key falls within the inclusive range
+   * [{@code from}, {@code to}] and maps the results to the specified view
+   * type.
+   *
+   * <p>Requires a sorted index. If the index is not sorted, the snapshot
+   * will throw {@link UnsupportedIndexOperationException}.
+   *
+   * @param <V>      the view type
+   * @param from     the inclusive lower bound, never null
+   * @param to       the inclusive upper bound, never null
+   * @param viewType the class of the view to map results to, never null
+   *
+   * @return an unmodifiable list of mapped view instances, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> between(final Comparable<?> from,
+      final Comparable<?> to, final Class<V> viewType) {
+    Objects.requireNonNull(from, "from must not be null");
+    Objects.requireNonNull(to, "to must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    return snapshot.searchBetween(indexName, from, to, viewType);
+  }
+
+  /**
+   * Searches for items whose indexed key is strictly greater than the
+   * given value and maps the results to the specified view type.
+   *
+   * <p>Requires a sorted index. If the index is not sorted, the snapshot
+   * will throw {@link UnsupportedIndexOperationException}.
+   *
+   * @param <V>      the view type
+   * @param key      the exclusive lower bound, never null
+   * @param viewType the class of the view to map results to, never null
+   *
+   * @return an unmodifiable list of mapped view instances, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> greaterThan(final Comparable<?> key,
+      final Class<V> viewType) {
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    return snapshot.searchGreaterThan(indexName, key, viewType);
+  }
+
+  /**
+   * Searches for items whose indexed key is greater than or equal to the
+   * given value and maps the results to the specified view type.
+   *
+   * <p>Requires a sorted index. If the index is not sorted, the snapshot
+   * will throw {@link UnsupportedIndexOperationException}.
+   *
+   * @param <V>      the view type
+   * @param key      the inclusive lower bound, never null
+   * @param viewType the class of the view to map results to, never null
+   *
+   * @return an unmodifiable list of mapped view instances, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> greaterOrEqual(final Comparable<?> key,
+      final Class<V> viewType) {
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    return snapshot.searchGreaterOrEqual(indexName, key, viewType);
+  }
+
+  /**
+   * Searches for items whose indexed key is strictly less than the given
+   * value and maps the results to the specified view type.
+   *
+   * <p>Requires a sorted index. If the index is not sorted, the snapshot
+   * will throw {@link UnsupportedIndexOperationException}.
+   *
+   * @param <V>      the view type
+   * @param key      the exclusive upper bound, never null
+   * @param viewType the class of the view to map results to, never null
+   *
+   * @return an unmodifiable list of mapped view instances, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> lessThan(final Comparable<?> key,
+      final Class<V> viewType) {
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    return snapshot.searchLessThan(indexName, key, viewType);
+  }
+
+  /**
+   * Searches for items whose indexed key is less than or equal to the
+   * given value and maps the results to the specified view type.
+   *
+   * <p>Requires a sorted index. If the index is not sorted, the snapshot
+   * will throw {@link UnsupportedIndexOperationException}.
+   *
+   * @param <V>      the view type
+   * @param key      the inclusive upper bound, never null
+   * @param viewType the class of the view to map results to, never null
+   *
+   * @return an unmodifiable list of mapped view instances, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> lessOrEqual(final Comparable<?> key,
+      final Class<V> viewType) {
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    return snapshot.searchLessOrEqual(indexName, key, viewType);
+  }
+
+  /**
+   * Searches for items whose String key starts with the given prefix and
+   * maps the results to the specified view type.
+   *
+   * <p>Requires a sorted index with String keys. If the index is not
+   * sorted, the snapshot will throw
+   * {@link UnsupportedIndexOperationException}.
+   *
+   * @param <V>      the view type
+   * @param prefix   the prefix to match, never null
+   * @param viewType the class of the view to map results to, never null
+   *
+   * @return an unmodifiable list of mapped view instances, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> startsWith(final String prefix,
+      final Class<V> viewType) {
+    Objects.requireNonNull(prefix, "prefix must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    return snapshot.searchStartsWith(indexName, prefix, viewType);
+  }
+
+  /**
+   * Searches for items whose String key ends with the given suffix and
+   * maps the results to the specified view type.
+   *
+   * <p>Requires a sorted index with String keys and a corresponding
+   * reversed-key index. If the index does not support text queries,
+   * the snapshot will throw {@link UnsupportedIndexOperationException}.
+   *
+   * @param <V>      the view type
+   * @param suffix   the suffix to match, never null
+   * @param viewType the class of the view to map results to, never null
+   *
+   * @return an unmodifiable list of mapped view instances, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support text queries
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> endsWith(final String suffix,
+      final Class<V> viewType) {
+    Objects.requireNonNull(suffix, "suffix must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    return snapshot.searchEndsWith(indexName, suffix, viewType);
+  }
+
+  /**
+   * Searches for items whose String key contains the given substring and
+   * maps the results to the specified view type.
+   *
+   * <p>Requires a sorted index. If the index is not sorted, the snapshot
+   * will throw {@link UnsupportedIndexOperationException}.
+   *
+   * @param <V>       the view type
+   * @param substring the substring to match, never null
+   * @param viewType  the class of the view to map results to, never null
+   *
+   * @return an unmodifiable list of mapped view instances, never null
+   *
+   * @throws UnsupportedIndexOperationException if the index does not
+   *         support range queries
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> contains(final String substring,
+      final Class<V> viewType) {
+    Objects.requireNonNull(substring, "substring must not be null");
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    return snapshot.searchContains(indexName, substring, viewType);
+  }
 }
