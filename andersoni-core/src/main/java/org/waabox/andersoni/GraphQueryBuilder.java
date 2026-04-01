@@ -134,6 +134,51 @@ public final class GraphQueryBuilder<T> {
   }
 
   /**
+   * Executes the graph query and returns results projected into the given
+   * view type.
+   *
+   * <p>Uses the same query planning logic as {@link #execute()}, then
+   * delegates to the snapshot's view-aware search overload to extract the
+   * pre-computed view projection for each matching item.
+   *
+   * @param <V>      the view type
+   * @param viewType the class of the view projection, never null
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws NullPointerException          if viewType is null
+   * @throws UnsupportedOperationException if one or more conditions are not
+   *         covered by any available hotpath
+   * @throws IllegalArgumentException      if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> execute(final Class<V> viewType) {
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    if (conditions.isEmpty()) {
+      return Collections.emptyList();
+    }
+
+    final QueryPlanner.Plan<T> plan = QueryPlanner.plan(graphIndexes, conditions);
+
+    if (plan == null) {
+      return Collections.emptyList();
+    }
+
+    if (!plan.postFilterConditions().isEmpty()) {
+      final String uncovered = plan.postFilterConditions().stream()
+          .map(GraphQueryCondition::fieldName)
+          .collect(Collectors.joining(", "));
+      throw new UnsupportedOperationException(
+          "Graph query has conditions not covered by any hotpath: ["
+              + uncovered + "]. Define a graph index that covers all"
+              + " query fields, or use compound() for uncovered fields.");
+    }
+
+    return snapshot.search(plan.graphIndexName(), plan.key(), viewType);
+  }
+
+  /**
    * Registers a condition into the accumulated condition map, keyed by field name.
    *
    * <p>Called internally by {@link GraphQueryConditionStep} after an operation

@@ -128,6 +128,46 @@ public final class CompoundQuery<T> {
   }
 
   /**
+   * Executes the compound query and returns the results projected into the
+   * given view type.
+   *
+   * <p>Internally delegates to {@link #execute()} to obtain the matched
+   * domain objects, then resolves the pre-computed view for each result
+   * from the snapshot's catalog items. Identity comparison is used for
+   * the lookup so that no additional equality contract is required on T.
+   *
+   * <p>The returned list preserves the order produced by {@link #execute()}.
+   *
+   * @param <V>      the view type
+   * @param viewType the class of the view projection, never null
+   *
+   * @return an unmodifiable list of matching views, never null
+   *
+   * @throws IllegalStateException    if no conditions have been added
+   * @throws IndexNotFoundException   if a condition references an unknown index
+   * @throws IllegalArgumentException if the view type is not registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public <V> List<V> execute(final Class<V> viewType) {
+    Objects.requireNonNull(viewType, "viewType must not be null");
+    final List<T> result = execute();
+    if (result.isEmpty()) {
+      return Collections.emptyList();
+    }
+    final IdentityHashMap<T, AndersoniCatalogItem<T>> lookup =
+        new IdentityHashMap<>(snapshot.items().size());
+    for (final AndersoniCatalogItem<T> entry : snapshot.items()) {
+      lookup.put(entry.item(), entry);
+    }
+    final List<V> views = new ArrayList<>(result.size());
+    for (final T item : result) {
+      views.add(lookup.get(item).view(viewType));
+    }
+    return Collections.unmodifiableList(views);
+  }
+
+  /**
    * Evaluates a single condition against the bound snapshot.
    *
    * @param condition the condition to evaluate, never null
