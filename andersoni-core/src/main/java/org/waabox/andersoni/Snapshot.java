@@ -19,11 +19,18 @@ import java.util.TreeMap;
  * They are designed to be held via {@link java.util.concurrent.atomic
  * .AtomicReference} for lock-free reads in concurrent environments.
  *
+ * <p>Each data item is wrapped in an {@link AndersoniCatalogItem}, which
+ * carries the domain object together with all pre-computed view projections
+ * registered on the catalog. Views are materialized once at build time and
+ * retrieved without additional allocation at query time via
+ * {@link #search(String, Object, Class)} and the equivalent range-query
+ * overloads.
+ *
  * <p>All collections returned by this class are unmodifiable and will throw
  * {@link UnsupportedOperationException} on mutation attempts.
  *
- * <p>Instances are created through the static factory methods {@link #of}
- * and {@link #empty()}.
+ * <p>Instances are created through the static factory methods {@link #of},
+ * {@link #ofWithItems}, and {@link #empty()}.
  *
  * @param <T> the type of data items held in this snapshot
  *

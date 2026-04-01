@@ -30,6 +30,12 @@ import org.waabox.andersoni.snapshot.SnapshotSerializer;
  * One load operation populates all indices simultaneously, and the resulting
  * snapshot is atomically swapped for concurrent readers.
  *
+ * <p>Views are pre-computed projections of the domain object {@code T} into
+ * smaller typed objects {@code V}. They are registered via
+ * {@link BuildStep#view(Class, java.util.function.Function)} and materialized
+ * into each {@link AndersoniCatalogItem} at snapshot build time, so that
+ * view retrieval is allocation-free at query time.
+ *
  * <p>Instances are created through the fluent builder starting with
  * {@link #of(Class)}.
  *
@@ -42,6 +48,7 @@ import org.waabox.andersoni.snapshot.SnapshotSerializer;
  *     .refreshEvery(Duration.ofMinutes(5))
  *     .index("by-venue").by(Event::getVenue, Venue::getName)
  *     .index("by-sport").by(Event::getSport, Sport::getName)
+ *     .view(EventSummary.class, EventSummary::from)
  *     .build();
  * }</pre>
  *
@@ -119,6 +126,9 @@ public final class Catalog<T> {
    * @param multiKeyIndexDefinitions  the multi-key index definitions,
    *                                  never null
    * @param graphIndexDefinitions     the graph index definitions, never null
+   * @param viewDefinitions           the view (projection) definitions to
+   *                                  materialize at snapshot build time,
+   *                                  never null
    * @param serializer                the optional serializer, may be null
    * @param refreshInterval           the optional refresh interval, may be
    *                                  null
