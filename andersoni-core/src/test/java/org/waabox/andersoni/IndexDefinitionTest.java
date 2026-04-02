@@ -2,9 +2,11 @@ package org.waabox.andersoni;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -174,5 +176,42 @@ class IndexDefinitionTest {
     assertThrows(UnsupportedOperationException.class, () ->
         events.add(e1)
     );
+  }
+
+  @Test
+  void whenAccumulating_givenSingleItem_shouldAddToIndex() {
+    final IndexDefinition<Event> indexDef =
+        IndexDefinition.<Event>named("byVenue")
+            .by(Event::venue, Venue::name);
+
+    final Event event = new Event("1", new Sport("Football"),
+        new Venue("Maracana"));
+    final AndersoniCatalogItem<Event> item =
+        AndersoniCatalogItem.of(event, Map.of());
+
+    final Map<Object, List<AndersoniCatalogItem<Event>>> index =
+        new HashMap<>();
+    indexDef.accumulate(item, index);
+
+    assertEquals(1, index.size());
+    assertEquals(1, index.get("Maracana").size());
+    assertSame(item, index.get("Maracana").get(0));
+  }
+
+  @Test
+  void whenAccumulating_givenNullKey_shouldSkipItem() {
+    final IndexDefinition<Event> indexDef =
+        IndexDefinition.<Event>named("byVenue")
+            .by(Event::venue, Venue::name);
+
+    final Event event = new Event("1", new Sport("Football"), null);
+    final AndersoniCatalogItem<Event> item =
+        AndersoniCatalogItem.of(event, Map.of());
+
+    final Map<Object, List<AndersoniCatalogItem<Event>>> index =
+        new HashMap<>();
+    indexDef.accumulate(item, index);
+
+    assertTrue(index.isEmpty());
   }
 }
