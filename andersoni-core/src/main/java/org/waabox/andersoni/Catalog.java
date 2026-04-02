@@ -67,6 +67,22 @@ import org.waabox.andersoni.snapshot.SnapshotSerializer;
  */
 public final class Catalog<T> {
 
+  /**
+   * A build hook paired with its execution priority.
+   *
+   * <p>Lower priority values execute first. Implements {@link Comparable}
+   * to support natural ordering by priority.
+   *
+   * @param <T> the domain object type
+   */
+  record PrioritizedHook<T>(SnapshotBuildHook<T> hook, int priority)
+      implements Comparable<PrioritizedHook<T>> {
+    @Override
+    public int compareTo(final PrioritizedHook<T> other) {
+      return Integer.compare(priority, other.priority);
+    }
+  }
+
   /** The hex characters used for hash string conversion. */
   private static final char[] HEX_CHARS = "0123456789abcdef".toCharArray();
 
@@ -97,6 +113,9 @@ public final class Catalog<T> {
 
   /** The view definitions, never null. */
   private final List<ViewDefinition<T, ?>> viewDefinitions;
+
+  /** The build hooks sorted by priority, never null. */
+  private final List<PrioritizedHook<T>> hooks;
 
   /** The data loader, null if using static data. */
   private final DataLoader<T> dataLoader;
@@ -129,6 +148,8 @@ public final class Catalog<T> {
    * @param viewDefinitions           the view (projection) definitions to
    *                                  materialize at snapshot build time,
    *                                  never null
+   * @param hooks                     the build hooks sorted by priority,
+   *                                  never null
    * @param serializer                the optional serializer, may be null
    * @param refreshInterval           the optional refresh interval, may be
    *                                  null
@@ -141,6 +162,7 @@ public final class Catalog<T> {
       final List<MultiKeyIndexDefinition<T>> multiKeyIndexDefinitions,
       final List<GraphIndexDefinition<T>> graphIndexDefinitions,
       final List<ViewDefinition<T, ?>> viewDefinitions,
+      final List<PrioritizedHook<T>> hooks,
       final SnapshotSerializer<T> serializer,
       final Duration refreshInterval) {
     this.name = name;
@@ -156,6 +178,8 @@ public final class Catalog<T> {
         new ArrayList<>(graphIndexDefinitions));
     this.viewDefinitions = Collections.unmodifiableList(
         new ArrayList<>(viewDefinitions));
+    this.hooks = Collections.unmodifiableList(
+        new ArrayList<>(hooks));
     this.serializer = serializer;
     this.refreshInterval = refreshInterval;
     this.current = new AtomicReference<>(Snapshot.empty());
@@ -708,6 +732,9 @@ public final class Catalog<T> {
     /** The accumulated view definitions. */
     private final List<ViewDefinition<T, ?>> viewDefinitions;
 
+    /** The accumulated build hooks. */
+    private final List<PrioritizedHook<T>> hooks = new ArrayList<>();
+
     /** The set of registered view types for duplicate detection. */
     private final Set<Class<?>> viewTypes;
 
@@ -895,6 +922,36 @@ public final class Catalog<T> {
     }
 
     /**
+     * Registers a build hook with the given priority.
+     *
+     * @param hook     the hook to register, never null
+     * @param priority the execution priority (lower executes first)
+     * @return this builder step for chaining, never null
+     * @throws NullPointerException if hook is null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public BuildStep<T> hook(final SnapshotBuildHook<T> hook,
+        final int priority) {
+      Objects.requireNonNull(hook, "hook must not be null");
+      hooks.add(new PrioritizedHook<>(hook, priority));
+      return this;
+    }
+
+    /**
+     * Registers a build hook with default priority (100).
+     *
+     * @param hook the hook to register, never null
+     * @return this builder step for chaining, never null
+     * @throws NullPointerException if hook is null
+     *
+     * @author waabox(waabox[at]gmail[dot]com)
+     */
+    public BuildStep<T> hook(final SnapshotBuildHook<T> hook) {
+      return hook(hook, 100);
+    }
+
+    /**
      * Builds the Catalog with all the accumulated configuration.
      *
      * @return a new Catalog instance, never null
@@ -911,10 +968,12 @@ public final class Catalog<T> {
         throw new IllegalStateException(
             "At least one index definition is required");
       }
+      final List<PrioritizedHook<T>> sortedHooks = new ArrayList<>(hooks);
+      Collections.sort(sortedHooks);
       return new Catalog<>(name, dataLoader, initialData,
           indexDefinitions, sortedIndexDefinitions,
           multiKeyIndexDefinitions, graphIndexDefinitions,
-          viewDefinitions, serializer, refreshInterval);
+          viewDefinitions, sortedHooks, serializer, refreshInterval);
     }
 
     /**
