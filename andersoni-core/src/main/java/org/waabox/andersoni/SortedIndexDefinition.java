@@ -219,6 +219,57 @@ public final class SortedIndexDefinition<T> {
   }
 
   /**
+   * Accumulates a single catalog item into the hash, sorted, and
+   * reversed-key index maps.
+   *
+   * @param item             the catalog item to index, never null
+   * @param hashIndex        the mutable hash index map, never null
+   * @param sortedIndex      the mutable sorted index map, never null
+   * @param reversedKeyIndex the mutable reversed-key index map, never null
+   * @param isStringKeys     whether keys are Strings
+   */
+  @SuppressWarnings("unchecked")
+  void accumulate(final AndersoniCatalogItem<T> item,
+      final Map<Object, List<AndersoniCatalogItem<T>>> hashIndex,
+      final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> sortedIndex,
+      final NavigableMap<String, List<AndersoniCatalogItem<T>>> reversedKeyIndex,
+      final boolean isStringKeys) {
+
+    final Object key = keyExtractor.apply(item.item());
+
+    List<AndersoniCatalogItem<T>> bucket = hashIndex.get(key);
+    if (bucket == null) {
+      bucket = new ArrayList<>();
+      hashIndex.put(key, bucket);
+    }
+    bucket.add(item);
+
+    if (key != null) {
+      if (!sortedIndex.containsKey((Comparable<?>) key)) {
+        sortedIndex.put((Comparable<?>) key, bucket);
+      }
+
+      if (isStringKeys) {
+        final String reversed = new StringBuilder((String) key)
+            .reverse().toString();
+        if (!reversedKeyIndex.containsKey(reversed)) {
+          reversedKeyIndex.put(reversed, bucket);
+        }
+      }
+    }
+  }
+
+  /**
+   * Extracts the index key from the given domain object.
+   *
+   * @param item the domain object, never null
+   * @return the extracted key, may be null
+   */
+  Object extractKey(final T item) {
+    return keyExtractor.apply(item);
+  }
+
+  /**
    * Returns the name of this index.
    *
    * @return the index name, never null

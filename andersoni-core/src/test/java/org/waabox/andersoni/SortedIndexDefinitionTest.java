@@ -9,9 +9,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.TreeMap;
 
 import org.junit.jupiter.api.Test;
 
@@ -243,5 +245,65 @@ class SortedIndexDefinitionTest {
 
     assertThrows(NullPointerException.class, () ->
         index.buildIndex(null));
+  }
+
+  @Test
+  void whenAccumulating_givenStringKeys_shouldPopulateAllThreeMaps() {
+    final SortedIndexDefinition<Event> indexDef =
+        SortedIndexDefinition.<Event>named("by-venue")
+            .by(Event::venue, Venue::name);
+
+    final Event event = new Event("1", new EventDate(null),
+        new Venue("Wembley"));
+    final AndersoniCatalogItem<Event> item =
+        AndersoniCatalogItem.of(event, Map.of());
+
+    final Map<Object, List<AndersoniCatalogItem<Event>>> hashIndex =
+        new HashMap<>();
+    final TreeMap<Comparable<?>, List<AndersoniCatalogItem<Event>>> sortedIndex =
+        new TreeMap<>();
+    final TreeMap<String, List<AndersoniCatalogItem<Event>>> reversedKeyIndex =
+        new TreeMap<>();
+
+    indexDef.accumulate(item, hashIndex, sortedIndex, reversedKeyIndex, true);
+
+    assertEquals(1, hashIndex.size());
+    assertSame(item, hashIndex.get("Wembley").get(0));
+
+    assertEquals(1, sortedIndex.size());
+    assertSame(hashIndex.get("Wembley"), sortedIndex.get("Wembley"));
+
+    final String reversed = new StringBuilder("Wembley").reverse().toString();
+    assertEquals(1, reversedKeyIndex.size());
+    assertSame(hashIndex.get("Wembley"), reversedKeyIndex.get(reversed));
+  }
+
+  @Test
+  void whenAccumulating_givenNonStringKeys_shouldPopulateHashAndSortedOnly() {
+    final SortedIndexDefinition<Event> indexDef =
+        SortedIndexDefinition.<Event>named("by-date")
+            .by(Event::eventDate, EventDate::value);
+
+    final LocalDate jan1 = LocalDate.of(2025, 1, 1);
+    final Event event = new Event("1", new EventDate(jan1), new Venue("A"));
+    final AndersoniCatalogItem<Event> item =
+        AndersoniCatalogItem.of(event, Map.of());
+
+    final Map<Object, List<AndersoniCatalogItem<Event>>> hashIndex =
+        new HashMap<>();
+    final TreeMap<Comparable<?>, List<AndersoniCatalogItem<Event>>> sortedIndex =
+        new TreeMap<>();
+    final TreeMap<String, List<AndersoniCatalogItem<Event>>> reversedKeyIndex =
+        new TreeMap<>();
+
+    indexDef.accumulate(item, hashIndex, sortedIndex, reversedKeyIndex, false);
+
+    assertEquals(1, hashIndex.size());
+    assertSame(item, hashIndex.get(jan1).get(0));
+
+    assertEquals(1, sortedIndex.size());
+    assertSame(hashIndex.get(jan1), sortedIndex.get(jan1));
+
+    assertTrue(reversedKeyIndex.isEmpty());
   }
 }
