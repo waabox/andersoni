@@ -153,6 +153,26 @@ public final class MultiKeyIndexDefinition<T> {
   }
 
   /**
+   * Accumulates a single catalog item into the given index map under
+   * all keys returned by the multi-key extractor.
+   *
+   * @param item  the catalog item to index, never null
+   * @param index the mutable index map to accumulate into, never null
+   */
+  void accumulate(final AndersoniCatalogItem<T> item,
+      final Map<Object, List<AndersoniCatalogItem<T>>> index) {
+    final List<?> keys = keysExtractor.apply(item.item());
+    if (keys == null || keys.isEmpty()) {
+      return;
+    }
+    for (final Object key : keys) {
+      if (key != null) {
+        index.computeIfAbsent(key, k -> new ArrayList<>()).add(item);
+      }
+    }
+  }
+
+  /**
    * Returns the name of this index.
    *
    * @return the index name, never null

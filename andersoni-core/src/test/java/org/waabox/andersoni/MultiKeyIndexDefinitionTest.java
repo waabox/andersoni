@@ -1,9 +1,11 @@
 package org.waabox.andersoni;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -93,5 +95,67 @@ class MultiKeyIndexDefinitionTest {
         MultiKeyIndexDefinition.<Publication>named("test")
             .by(pub -> pub.category().ancestorIds());
     assertThrows(NullPointerException.class, () -> index.buildIndex(null));
+  }
+
+  @Test
+  void whenAccumulating_givenMultipleKeys_shouldAddToAllBuckets() {
+    final MultiKeyIndexDefinition<Publication> indexDef =
+        MultiKeyIndexDefinition.<Publication>named("by-category")
+            .by(pub -> pub.category().ancestorIds());
+
+    final Category football = new Category("cat-2", "Football",
+        List.of("cat-1", "cat-2"));
+    final Publication pub = new Publication("pub-1", football);
+    final AndersoniCatalogItem<Publication> item =
+        AndersoniCatalogItem.of(pub, Map.of());
+
+    final Map<Object, List<AndersoniCatalogItem<Publication>>> index =
+        new HashMap<>();
+    indexDef.accumulate(item, index);
+
+    assertEquals(2, index.size());
+    assertEquals(1, index.get("cat-1").size());
+    assertSame(item, index.get("cat-1").get(0));
+    assertEquals(1, index.get("cat-2").size());
+    assertSame(item, index.get("cat-2").get(0));
+  }
+
+  @Test
+  void whenAccumulating_givenEmptyKeyList_shouldSkipItem() {
+    final MultiKeyIndexDefinition<Publication> indexDef =
+        MultiKeyIndexDefinition.<Publication>named("by-category")
+            .by(pub -> pub.category().ancestorIds());
+
+    final Category empty = new Category("cat-1", "Empty", List.of());
+    final Publication pub = new Publication("pub-1", empty);
+    final AndersoniCatalogItem<Publication> item =
+        AndersoniCatalogItem.of(pub, Map.of());
+
+    final Map<Object, List<AndersoniCatalogItem<Publication>>> index =
+        new HashMap<>();
+    indexDef.accumulate(item, index);
+
+    assertTrue(index.isEmpty());
+  }
+
+  @Test
+  void whenAccumulating_givenNullKeyInList_shouldSkipNullKey() {
+    final MultiKeyIndexDefinition<Publication> indexDef =
+        MultiKeyIndexDefinition.<Publication>named("by-category")
+            .by(pub -> pub.category().ancestorIds());
+
+    final Category withNull = new Category("cat-1", "WithNull",
+        java.util.Arrays.asList("cat-1", null, "cat-2"));
+    final Publication pub = new Publication("pub-1", withNull);
+    final AndersoniCatalogItem<Publication> item =
+        AndersoniCatalogItem.of(pub, Map.of());
+
+    final Map<Object, List<AndersoniCatalogItem<Publication>>> index =
+        new HashMap<>();
+    indexDef.accumulate(item, index);
+
+    assertEquals(2, index.size());
+    assertTrue(index.containsKey("cat-1"));
+    assertTrue(index.containsKey("cat-2"));
   }
 }
