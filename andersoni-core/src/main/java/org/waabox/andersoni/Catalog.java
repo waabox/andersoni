@@ -14,6 +14,7 @@ import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -496,55 +497,113 @@ public final class Catalog<T> {
    * @param data the data to build the snapshot from, never null
    */
   private void buildAndSwapSnapshot(final List<T> data) {
-    // Wrap items with views.
     final List<AndersoniCatalogItem<T>> wrappedItems =
         new ArrayList<>(data.size());
+
+    // Initialize mutable index accumulators.
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> indexAccumulators = new HashMap<>();
+    for (final IndexDefinition<T> indexDef : indexDefinitions) {
+      indexAccumulators.put(indexDef.name(), new HashMap<>());
+    }
+    for (final MultiKeyIndexDefinition<T> multiDef : multiKeyIndexDefinitions) {
+      indexAccumulators.put(multiDef.name(), new HashMap<>());
+    }
+
+    // Graph accumulators use Set for dedup.
+    final Map<String, Map<Object, Set<AndersoniCatalogItem<T>>>> graphAccumulators = new HashMap<>();
+    for (final GraphIndexDefinition<T> graphDef : graphIndexDefinitions) {
+      graphAccumulators.put(graphDef.name(), new HashMap<>());
+    }
+
+    // Sorted index accumulators.
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> sortedHashAccumulators = new HashMap<>();
+    final Map<String, NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>> sortedMapAccumulators =
+        new HashMap<>();
+    final Map<String, NavigableMap<String, List<AndersoniCatalogItem<T>>>> reversedKeyAccumulators =
+        new HashMap<>();
+    final Map<String, boolean[]> sortedStringKeyFlags = new HashMap<>();
+
+    for (final SortedIndexDefinition<T> sortedDef : sortedIndexDefinitions) {
+      sortedHashAccumulators.put(sortedDef.name(), new HashMap<>());
+      sortedMapAccumulators.put(sortedDef.name(), new TreeMap<>());
+      reversedKeyAccumulators.put(sortedDef.name(), new TreeMap<>());
+      sortedStringKeyFlags.put(sortedDef.name(), new boolean[]{false});
+    }
+
+    // Single loop.
     for (final T datum : data) {
+
+      // 1. Compute views and create wrapper.
       final Map<Class<?>, Object> views = new HashMap<>();
       for (final ViewDefinition<T, ?> viewDef : viewDefinitions) {
         views.put(viewDef.viewType(), viewDef.mapper().apply(datum));
       }
-      wrappedItems.add(AndersoniCatalogItem.of(datum, views));
+      final AndersoniCatalogItem<T> wrappedItem = AndersoniCatalogItem.of(datum, views);
+      wrappedItems.add(wrappedItem);
+
+      // 2. Index across all index types.
+      for (final IndexDefinition<T> indexDef : indexDefinitions) {
+        indexDef.accumulate(wrappedItem, indexAccumulators.get(indexDef.name()));
+      }
+      for (final MultiKeyIndexDefinition<T> multiDef : multiKeyIndexDefinitions) {
+        multiDef.accumulate(wrappedItem, indexAccumulators.get(multiDef.name()));
+      }
+      for (final GraphIndexDefinition<T> graphDef : graphIndexDefinitions) {
+        graphDef.accumulate(wrappedItem, graphAccumulators.get(graphDef.name()));
+      }
+      for (final SortedIndexDefinition<T> sortedDef : sortedIndexDefinitions) {
+        final String sName = sortedDef.name();
+        // Detect string keys on first non-null key.
+        final boolean[] flag = sortedStringKeyFlags.get(sName);
+        if (!flag[0]) {
+          final Object key = sortedDef.extractKey(datum);
+          if (key instanceof String) {
+            flag[0] = true;
+          }
+        }
+        sortedDef.accumulate(wrappedItem,
+            sortedHashAccumulators.get(sName),
+            sortedMapAccumulators.get(sName),
+            reversedKeyAccumulators.get(sName),
+            flag[0]);
+      }
+
+      // 3. Execute hooks in priority order.
+      T processed = datum;
+      for (final PrioritizedHook<T> prioritizedHook : hooks) {
+        processed = prioritizedHook.hook().process(processed);
+      }
     }
 
-    // Build regular indices.
-    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> indices =
+    // Finalize: make all maps unmodifiable.
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> finalIndices = new HashMap<>();
+
+    for (final Map.Entry<String, Map<Object, List<AndersoniCatalogItem<T>>>> entry
+        : indexAccumulators.entrySet()) {
+      finalIndices.put(entry.getKey(), freezeIndex(entry.getValue()));
+    }
+
+    for (final Map.Entry<String, Map<Object, Set<AndersoniCatalogItem<T>>>> entry
+        : graphAccumulators.entrySet()) {
+      final Map<Object, List<AndersoniCatalogItem<T>>> converted = new HashMap<>();
+      for (final Map.Entry<Object, Set<AndersoniCatalogItem<T>>> e : entry.getValue().entrySet()) {
+        converted.put(e.getKey(), Collections.unmodifiableList(new ArrayList<>(e.getValue())));
+      }
+      finalIndices.put(entry.getKey(), Collections.unmodifiableMap(converted));
+    }
+
+    final Map<String, NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>> finalSortedIndices =
         new HashMap<>();
-    for (final IndexDefinition<T> indexDef : indexDefinitions) {
-      indices.put(indexDef.name(),
-          indexDef.buildIndexFromItems(wrappedItems));
-    }
+    final Map<String, NavigableMap<String, List<AndersoniCatalogItem<T>>>> finalReversedKeyIndices =
+        new HashMap<>();
 
-    // Build multi-key indices.
-    for (final MultiKeyIndexDefinition<T> multiDef
-        : multiKeyIndexDefinitions) {
-      indices.put(multiDef.name(),
-          multiDef.buildIndexFromItems(wrappedItems));
-    }
-
-    // Build graph indices.
-    for (final GraphIndexDefinition<T> graphDef
-        : graphIndexDefinitions) {
-      indices.put(graphDef.name(),
-          graphDef.buildIndexFromItems(wrappedItems));
-    }
-
-    // Build sorted indices.
-    final Map<String, NavigableMap<Comparable<?>,
-        List<AndersoniCatalogItem<T>>>> sortedIndices = new HashMap<>();
-    final Map<String, NavigableMap<String,
-        List<AndersoniCatalogItem<T>>>> reversedKeyIndices = new HashMap<>();
-
-    for (final SortedIndexDefinition<T> sortedDef
-        : sortedIndexDefinitions) {
-      final SortedIndexDefinition.SortedIndexResult<
-          AndersoniCatalogItem<T>> result =
-          sortedDef.buildIndexFromItems(wrappedItems);
-      indices.put(sortedDef.name(), result.hashIndex());
-      sortedIndices.put(sortedDef.name(), result.sortedIndex());
-      if (result.hasStringKeys() && result.reversedKeyIndex() != null) {
-        reversedKeyIndices.put(sortedDef.name(),
-            result.reversedKeyIndex());
+    for (final SortedIndexDefinition<T> sortedDef : sortedIndexDefinitions) {
+      final String sName = sortedDef.name();
+      finalIndices.put(sName, freezeIndex(sortedHashAccumulators.get(sName)));
+      finalSortedIndices.put(sName, Collections.unmodifiableNavigableMap(sortedMapAccumulators.get(sName)));
+      if (sortedStringKeyFlags.get(sName)[0]) {
+        finalReversedKeyIndices.put(sName,
+            Collections.unmodifiableNavigableMap(reversedKeyAccumulators.get(sName)));
       }
     }
 
@@ -552,8 +611,26 @@ public final class Catalog<T> {
     final String hash = computeHash(data);
 
     final Snapshot<T> snapshot = Snapshot.ofWithItems(wrappedItems,
-        indices, sortedIndices, reversedKeyIndices, version, hash);
+        finalIndices, finalSortedIndices, finalReversedKeyIndices, version, hash);
     current.set(snapshot);
+  }
+
+  /**
+   * Makes all lists in the given index map unmodifiable and returns an
+   * unmodifiable map.
+   *
+   * @param mutableIndex the mutable index map, never null
+   * @param <T>          the element type
+   *
+   * @return an unmodifiable frozen copy, never null
+   */
+  private static <T> Map<Object, List<T>> freezeIndex(
+      final Map<Object, List<T>> mutableIndex) {
+    final Map<Object, List<T>> frozen = new HashMap<>();
+    for (final Map.Entry<Object, List<T>> entry : mutableIndex.entrySet()) {
+      frozen.put(entry.getKey(), Collections.unmodifiableList(entry.getValue()));
+    }
+    return Collections.unmodifiableMap(frozen);
   }
 
   /**
