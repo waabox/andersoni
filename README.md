@@ -278,6 +278,32 @@ List<EventSummary> results = andersoni.graphQuery("events", Event.class)
 
 Without a view class, all queries return the full object `T` as before — fully backward compatible.
 
+## Build Hooks
+
+> **Since 1.9.0**
+
+Register per-item hooks that execute during snapshot build — for metrics, validation, logging, or any custom side-effect. Hooks are ordered by priority (lower executes first, default 100).
+
+```java
+Catalog<Event> catalog = Catalog.of(Event.class)
+    .named("events")
+    .loadWith(() -> repository.findAll())
+    .index("by-venue").by(Event::venue, Venue::name)
+    .hook(item -> { metrics.count("indexed"); return item; }, 10)
+    .hook(item -> { validate(item); return item; }, 20)
+    .hook(item -> { log.debug("Built: {}", item); return item; })  // default priority 100
+    .build();
+```
+
+Hooks execute after indexation and view computation for each item. The `SnapshotBuildHook<T>` interface is a `@FunctionalInterface`:
+
+```java
+@FunctionalInterface
+public interface SnapshotBuildHook<T> {
+    T process(T item);
+}
+```
+
 ## How It Compares
 
 Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.

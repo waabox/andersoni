@@ -81,6 +81,7 @@ org.waabox.andersoni.example            # Example app
 - **Strategy Pattern**: pluggable `SyncStrategy`, `LeaderElectionStrategy`, `SnapshotStore`
 - **Builder/Fluent DSL**: `Catalog.of(T).named("x").loadWith(loader).index("y").by(fn).view(V.class, mapper).build()`
 - **Catalog Views**: pre-computed projections of `T` into smaller typed objects `V`, materialized at snapshot build time via `AndersoniCatalogItem<T>` (internal wrapper, never exposed). Query any index with a view class to get `List<V>` instead of `List<T>`
+- **Build Hooks**: `SnapshotBuildHook<T>` — per-item hooks during snapshot build with priority ordering. Single-loop build: views → indexation → hooks in one pass
 - **Retry with backoff**: `RetryPolicy` for bootstrap and refresh failures
 
 ## CI/CD
