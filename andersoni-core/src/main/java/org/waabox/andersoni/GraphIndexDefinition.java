@@ -231,6 +231,47 @@ public final class GraphIndexDefinition<T> {
   }
 
   /**
+   * Accumulates a single catalog item into the given graph index
+   * accumulator by evaluating all hotpaths and traversals.
+   *
+   * @param item        the catalog item to index, never null
+   * @param accumulator the mutable accumulator map, never null
+   */
+  void accumulate(final AndersoniCatalogItem<T> item,
+      final Map<Object, Set<AndersoniCatalogItem<T>>> accumulator) {
+    final T domainItem = item.item();
+    final Set<CompositeKey> allKeys = new LinkedHashSet<>();
+    for (final Hotpath hotpath : hotpaths) {
+      final List<Set<?>> traversalValues = new ArrayList<>();
+      boolean hasNullTraversal = false;
+      for (final String fieldName : hotpath.fieldNames()) {
+        final Traversal<T> traversal = traversals.get(fieldName);
+        final Set<?> values = traversal.evaluate(domainItem);
+        if (values.isEmpty()) {
+          hasNullTraversal = true;
+          break;
+        }
+        traversalValues.add(values);
+      }
+      if (hasNullTraversal && traversalValues.isEmpty()) {
+        continue;
+      }
+      for (int prefixLen = 1; prefixLen <= traversalValues.size(); prefixLen++) {
+        final List<Set<?>> prefixValues = traversalValues.subList(0, prefixLen);
+        generateCartesianKeys(prefixValues, allKeys);
+      }
+    }
+    if (allKeys.size() > maxKeysPerItem) {
+      throw new IndexKeyLimitExceededException(name, domainItem.toString(),
+          allKeys.size(), maxKeysPerItem);
+    }
+    for (final CompositeKey key : allKeys) {
+      accumulator.computeIfAbsent(key,
+          k -> Collections.newSetFromMap(new IdentityHashMap<>())).add(item);
+    }
+  }
+
+  /**
    * Generates the cartesian product of the given value sets and adds each
    * combination as a {@link CompositeKey} to the target set.
    *

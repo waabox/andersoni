@@ -4,8 +4,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -173,5 +175,28 @@ class GraphIndexDefinitionTest {
   void whenGettingName_shouldReturnConfiguredName() {
     final GraphIndexDefinition<Publication> def = buildStandardIndex();
     assertEquals("by-country-category", def.name());
+  }
+
+  @Test
+  void whenAccumulating_givenSingleItem_shouldGenerateExpectedCompositeKeys() {
+    final GraphIndexDefinition<Publication> def = buildStandardIndex();
+
+    final Publication pub = new Publication("deportes/futbol",
+        List.of(new Event(new Country("AR"))));
+    final AndersoniCatalogItem<Publication> item =
+        AndersoniCatalogItem.of(pub, Map.of());
+
+    final Map<Object, Set<AndersoniCatalogItem<Publication>>> accumulator =
+        new HashMap<>();
+    def.accumulate(item, accumulator);
+
+    assertTrue(accumulator.containsKey(CompositeKey.of("AR")));
+    assertTrue(accumulator.containsKey(CompositeKey.of("AR", "deportes")));
+    assertTrue(accumulator.containsKey(CompositeKey.of("AR", "deportes/futbol")));
+    assertEquals(3, accumulator.size());
+
+    assertTrue(accumulator.get(CompositeKey.of("AR")).contains(item));
+    assertTrue(accumulator.get(CompositeKey.of("AR", "deportes")).contains(item));
+    assertTrue(accumulator.get(CompositeKey.of("AR", "deportes/futbol")).contains(item));
   }
 }
