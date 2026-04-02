@@ -171,66 +171,6 @@ public final class GraphIndexDefinition<T> {
   }
 
   /**
-   * Builds an index from catalog items, using the item's domain object
-   * for key extraction but storing the full wrapper.
-   *
-   * @param items the catalog items to index, never null
-   *
-   * @return the index mapping keys to lists of catalog items, never null
-   */
-  Map<Object, List<AndersoniCatalogItem<T>>> buildIndexFromItems(
-      final List<AndersoniCatalogItem<T>> items) {
-    if (items.isEmpty()) {
-      return Collections.emptyMap();
-    }
-    final Map<CompositeKey, Set<AndersoniCatalogItem<T>>> keyToItems =
-        new HashMap<>();
-    for (final AndersoniCatalogItem<T> entry : items) {
-      final T item = entry.item();
-      final Set<CompositeKey> allKeys = new LinkedHashSet<>();
-      for (final Hotpath hotpath : hotpaths) {
-        final List<Set<?>> traversalValues = new ArrayList<>();
-        boolean hasNullTraversal = false;
-        for (final String fieldName : hotpath.fieldNames()) {
-          final Traversal<T> traversal = traversals.get(fieldName);
-          final Set<?> values = traversal.evaluate(item);
-          if (values.isEmpty()) {
-            hasNullTraversal = true;
-            break;
-          }
-          traversalValues.add(values);
-        }
-        if (hasNullTraversal && traversalValues.isEmpty()) {
-          continue;
-        }
-        for (int prefixLen = 1; prefixLen <= traversalValues.size();
-            prefixLen++) {
-          final List<Set<?>> prefixValues =
-              traversalValues.subList(0, prefixLen);
-          generateCartesianKeys(prefixValues, allKeys);
-        }
-      }
-      if (allKeys.size() > maxKeysPerItem) {
-        throw new IndexKeyLimitExceededException(name, item.toString(),
-            allKeys.size(), maxKeysPerItem);
-      }
-      for (final CompositeKey key : allKeys) {
-        keyToItems.computeIfAbsent(key,
-            k -> Collections.newSetFromMap(new IdentityHashMap<>()))
-            .add(entry);
-      }
-    }
-    final Map<Object, List<AndersoniCatalogItem<T>>> result =
-        new HashMap<>();
-    for (final Map.Entry<CompositeKey, Set<AndersoniCatalogItem<T>>> e
-        : keyToItems.entrySet()) {
-      result.put(e.getKey(),
-          Collections.unmodifiableList(new ArrayList<>(e.getValue())));
-    }
-    return Collections.unmodifiableMap(result);
-  }
-
-  /**
    * Accumulates a single catalog item into the given graph index
    * accumulator by evaluating all hotpaths and traversals.
    *
