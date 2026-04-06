@@ -4,6 +4,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,6 +61,9 @@ public final class K8sLeaseLeaderElection implements LeaderElectionStrategy {
   /** The current leader status, volatile for cross-thread visibility. */
   private volatile boolean leader = false;
 
+  /** Latch that signals the first election round has completed. */
+  private final CountDownLatch firstElectionLatch = new CountDownLatch(1);
+
   /** The background thread running the leader elector. */
   private volatile Thread electionThread;
 
@@ -73,15 +78,23 @@ public final class K8sLeaseLeaderElection implements LeaderElectionStrategy {
   }
 
   /**
-   * Starts the leader election process.
+   * Starts the leader election process and blocks until the first
+   * election round resolves.
    *
    * <p>Creates an in-cluster Kubernetes API client, configures a
    * {@link LeaseLock} with the parameters from the config, and launches
    * a {@link LeaderElector} in a daemon thread. The elector will
    * continuously attempt to acquire or renew the lease.
    *
+   * <p>After launching the thread, this method waits up to
+   * {@link K8sLeaseConfig#renewalInterval()} for the first leader to be
+   * identified. This guarantees that {@link #isLeader()} returns a
+   * meaningful result before the caller proceeds with bootstrap logic.
+   * If the election does not resolve within the timeout, the node
+   * proceeds as a follower.
+   *
    * @throws AndersoniException if the Kubernetes API client cannot be
-   *                             initialized
+   *                             initialized or the thread is interrupted
    */
   @Override
   public void start() {
@@ -124,8 +137,25 @@ public final class K8sLeaseLeaderElection implements LeaderElectionStrategy {
       thread.start();
       electionThread = thread;
 
-      log.info("K8s leader election thread started");
+      log.info("K8s leader election thread started, waiting for first"
+          + " election result...");
 
+      final boolean resolved = firstElectionLatch.await(
+          config.renewalInterval().toMillis(), TimeUnit.MILLISECONDS);
+
+      if (resolved) {
+        log.info("K8s leader election resolved: isLeader={}",
+            leader);
+      } else {
+        log.warn("K8s leader election did not resolve within {},"
+            + " proceeding as follower",
+            config.renewalInterval());
+      }
+
+    } catch (final InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw new AndersoniException(
+          "Interrupted while waiting for K8s leader election", ie);
     } catch (final Exception e) {
       throw new AndersoniException(
           "Failed to start K8s leader election", e);
@@ -199,10 +229,14 @@ public final class K8sLeaseLeaderElection implements LeaderElectionStrategy {
   /**
    * Called when a new leader is elected.
    *
+   * <p>Signals the {@link #firstElectionLatch} so that {@link #start()}
+   * unblocks once the initial election round is resolved.
+   *
    * @param leaderIdentity the identity of the new leader
    */
   private void onNewLeader(final String leaderIdentity) {
     log.info("New leader elected: '{}'", leaderIdentity);
+    firstElectionLatch.countDown();
   }
 
   /**

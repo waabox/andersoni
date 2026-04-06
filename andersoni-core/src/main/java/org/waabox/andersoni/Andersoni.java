@@ -703,6 +703,13 @@ public final class Andersoni {
    * the leader enough time to complete its own bootstrap and upload the
    * snapshot before the follower gives up.
    *
+   * <p>If all snapshot store attempts are exhausted, falls back to the
+   * DataLoader as a last resort. This prevents permanent catalog
+   * unavailability when the snapshot store contains a corrupt or
+   * incompatible snapshot and the leader has not recovered in time. On
+   * success, the follower saves the snapshot to the store so subsequent
+   * restarts recover without hitting the database again.
+   *
    * @param name    the catalog name, never null
    * @param catalog the catalog to bootstrap, never null
    */
@@ -741,12 +748,39 @@ public final class Andersoni {
       if (attempt < maxAttempts) {
         sleepOrAbort(name, backoff);
       } else {
-        log.error("Catalog '{}': all {} follower snapshot store attempts "
-            + "exhausted. Marking as FAILED.", name, maxAttempts);
-        failedCatalogs.add(name);
-        metrics.refreshFailed(name,
-            new RuntimeException("Follower bootstrap exhausted for " + name));
+        log.warn("Catalog '{}': all {} follower snapshot store attempts "
+            + "exhausted. Falling back to DataLoader as last resort.",
+            name, maxAttempts);
+        tryDataLoaderAsFallback(name, catalog);
       }
+    }
+  }
+
+  /**
+   * Last-resort fallback for followers that exhausted all snapshot store
+   * retries.
+   *
+   * <p>Attempts a single DataLoader call. On success, saves the snapshot
+   * to the store so subsequent restarts (and other followers) can recover
+   * without hitting the database again.
+   *
+   * @param name    the catalog name, never null
+   * @param catalog the catalog to bootstrap, never null
+   */
+  private void tryDataLoaderAsFallback(final String name,
+      final Catalog<?> catalog) {
+    try {
+      catalog.bootstrap();
+      saveSnapshotIfPossible(catalog);
+      metrics.snapshotLoaded(name, "followerDataLoaderFallback");
+      reportIndexSizes(catalog);
+      log.info("Catalog '{}': follower DataLoader fallback succeeded,"
+          + " snapshot saved for future restarts.", name);
+    } catch (final Exception e) {
+      log.error("Catalog '{}': follower DataLoader fallback also failed."
+          + " Marking as FAILED.", name, e);
+      failedCatalogs.add(name);
+      metrics.refreshFailed(name, e);
     }
   }
 

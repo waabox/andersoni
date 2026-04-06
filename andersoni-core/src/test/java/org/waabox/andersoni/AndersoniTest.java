@@ -11,6 +11,7 @@ import static org.easymock.EasyMock.expectLastCall;
 import static org.easymock.EasyMock.newCapture;
 import static org.easymock.EasyMock.replay;
 import static org.easymock.EasyMock.verify;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -727,7 +728,7 @@ class AndersoniTest {
 
   @SuppressWarnings("unchecked")
   @Test
-  void whenBootstrap_givenFollowerWaiting_shouldLogWarningEvery10Attempts() {
+  void whenBootstrap_givenFollowerWaiting_shouldFallbackToDataLoader() {
     final SnapshotSerializer<Event> serializer =
         createMock(SnapshotSerializer.class);
     final SnapshotStore snapshotStore = createMock(SnapshotStore.class);
@@ -743,8 +744,15 @@ class AndersoniTest {
     expect(snapshotStore.load("events"))
         .andReturn(Optional.empty()).anyTimes();
 
-    // Expect failure metric when all attempts exhausted.
-    metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
+    // After exhausting S3, DataLoader fallback succeeds and saves snapshot.
+    expect(serializer.serialize(anyObject(List.class)))
+        .andReturn(new byte[0]).atLeastOnce();
+    snapshotStore.save(eq("events"), anyObject(SerializedSnapshot.class));
+    expectLastCall().atLeastOnce();
+    metrics.snapshotLoaded("events", "followerDataLoaderFallback");
+    expectLastCall().once();
+
+    metrics.indexSizeReported(eq("events"), eq("by-sport"), anyLong());
     expectLastCall().once();
 
     metrics.start(anyObject(Collection.class), eq("node-2"));
@@ -761,6 +769,65 @@ class AndersoniTest {
     final Catalog<Event> catalog = Catalog.of(Event.class)
         .named("events")
         .loadWith(() -> List.of())
+        .serializer(serializer)
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .snapshotStore(snapshotStore)
+        .leaderElection(leaderElection)
+        .retryPolicy(RetryPolicy.of(3, Duration.ofMillis(1)))
+        .metrics(metrics)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    // Catalog should be available via DataLoader fallback.
+    assertDoesNotThrow(
+        () -> andersoni.search("events", "by-sport", "Football"));
+
+    andersoni.stop();
+
+    verify(serializer, snapshotStore, leaderElection, metrics);
+  }
+
+  @Test
+  void whenBootstrap_givenFollowerDataLoaderFallbackFails_shouldMarkAsFailed() {
+    final SnapshotSerializer<Event> serializer =
+        createMock(SnapshotSerializer.class);
+    final SnapshotStore snapshotStore = createMock(SnapshotStore.class);
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
+
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader()).andReturn(false).anyTimes();
+
+    // S3 always returns empty: exhaust all 30 attempts.
+    expect(snapshotStore.load("events"))
+        .andReturn(Optional.empty()).anyTimes();
+
+    // DataLoader fallback also fails -> catalog marked as FAILED.
+    metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
+    expectLastCall().once();
+
+    metrics.start(anyObject(Collection.class), eq("node-2"));
+    expectLastCall().once();
+
+    metrics.stop();
+    expectLastCall().once();
+
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(serializer, snapshotStore, leaderElection, metrics);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> { throw new RuntimeException("DB unavailable"); })
         .serializer(serializer)
         .index("by-sport").by(Event::sport, Sport::name)
         .build();
