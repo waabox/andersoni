@@ -1495,6 +1495,57 @@ class AndersoniTest {
         () -> andersoni.refresh("events"));
   }
 
+  @Test
+  void whenRefreshAndSync_givenNotLeader_shouldSkipRefresh() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final int[] loadCount = {0};
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          loadCount[0]++;
+          return List.of(e1);
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader())
+        .andReturn(true)   // bootstrap
+        .andReturn(false); // refreshAndSync call
+
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(leaderElection);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .leaderElection(leaderElection)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final int loadCountAfterBootstrap = loadCount[0];
+
+    andersoni.refreshAndSync("events");
+
+    assertEquals(loadCountAfterBootstrap, loadCount[0],
+        "DataLoader should not have been called when not leader");
+
+    andersoni.stop();
+
+    verify(leaderElection);
+  }
+
   // --- info() tests ---
 
   @Test

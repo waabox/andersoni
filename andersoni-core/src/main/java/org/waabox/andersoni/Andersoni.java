@@ -453,26 +453,34 @@ public final class Andersoni {
    * Refreshes a catalog locally and synchronizes the refresh event across
    * nodes.
    *
+   * <p>If a {@link LeaderElectionStrategy} is configured, this method only
+   * executes when the current node is the leader. If this node is not the
+   * leader, the call is silently ignored. This prevents follower nodes from
+   * triggering unnecessary refreshes and avoids concurrent refresh storms
+   * in multi-node deployments.
+   *
    * <p>If a sync strategy is present, a {@link RefreshEvent} is published
    * after the local refresh. If a snapshot store is present and the catalog
    * has a serializer, the refreshed data is serialized and saved to the
    * snapshot store before publishing the event.
    *
-   * <p><strong>Note:</strong> This method does NOT require leader status.
-   * Any node can call it at any time, which means concurrent refreshes
-   * across the cluster are possible. Callers are responsible for
-   * coordinating access if exclusive refresh semantics are required.
-   *
    * @param catalogName the name of the catalog to refresh, never null
    *
    * @throws IllegalArgumentException if no catalog with the given name
    *                                  is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
    */
   public void refreshAndSync(final String catalogName) {
     Objects.requireNonNull(catalogName, "catalogName must not be null");
     if (stopped.get()) {
       throw new IllegalStateException(
           "Cannot refresh after stop() has been called");
+    }
+    if (!leaderElection.isLeader()) {
+      log.debug("Skipping refreshAndSync for catalog '{}': not leader",
+          catalogName);
+      return;
     }
     final Catalog<?> catalog = requireCatalog(catalogName);
 
@@ -987,14 +995,12 @@ public final class Andersoni {
         final Duration interval = intervalOpt.get();
         final ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(
             () -> {
-              if (leaderElection.isLeader()) {
-                try {
-                  refreshAndSync(name);
-                } catch (final Exception e) {
-                  log.error("Scheduled refresh failed for catalog '{}': {}",
-                      name, e.getMessage(), e);
-                  metrics.refreshFailed(name, e);
-                }
+              try {
+                refreshAndSync(name);
+              } catch (final Exception e) {
+                log.error("Scheduled refresh failed for catalog '{}': {}",
+                    name, e.getMessage(), e);
+                metrics.refreshFailed(name, e);
               }
             },
             interval.toMillis(),
