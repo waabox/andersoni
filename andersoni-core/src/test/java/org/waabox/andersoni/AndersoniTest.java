@@ -76,6 +76,37 @@ class AndersoniTest {
   }
 
   @Test
+  void whenBuilding_givenDebounceWindow_shouldAcceptIt() {
+    final Andersoni andersoni = Andersoni.builder()
+        .debounceWindow(Duration.ofMillis(100))
+        .build();
+
+    assertNotNull(andersoni);
+    andersoni.stop();
+  }
+
+  @Test
+  void whenBuilding_givenNegativeDebounceWindow_shouldThrow() {
+    assertThrows(IllegalArgumentException.class, () ->
+        Andersoni.builder().debounceWindow(Duration.ofMillis(-1)));
+  }
+
+  @Test
+  void whenBuilding_givenNegativeDebounceMaxWait_shouldThrow() {
+    assertThrows(IllegalArgumentException.class, () ->
+        Andersoni.builder().debounceMaxWait(Duration.ofMillis(-1)));
+  }
+
+  @Test
+  void whenBuilding_givenMaxWaitLessThanWindow_shouldThrow() {
+    assertThrows(IllegalArgumentException.class, () ->
+        Andersoni.builder()
+            .debounceWindow(Duration.ofMillis(100))
+            .debounceMaxWait(Duration.ofMillis(50))
+            .build());
+  }
+
+  @Test
   void whenRegistering_givenCatalog_shouldMakeItSearchable() {
     final Sport football = new Sport("Football");
     final Venue maracana = new Venue("Maracana");
