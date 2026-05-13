@@ -84,11 +84,8 @@ public final class Andersoni {
   /** The metrics reporter. */
   private final AndersoniMetrics metrics;
 
-  /** The debouncer window for refresh-event coalescing. */
-  private final Duration debounceWindow;
-
-  /** The debouncer max-wait for refresh-event coalescing. */
-  private final Duration debounceMaxWait;
+  /** The debounce policy for refresh-event coalescing. */
+  private final DebouncePolicy debouncePolicy;
 
   /** The registered catalogs, keyed by catalog name. */
   private final Map<String, Catalog<?>> catalogsByName;
@@ -123,8 +120,7 @@ public final class Andersoni {
    * @param snapshotStore    the optional snapshot store, may be null
    * @param retryPolicy      the retry policy, never null
    * @param metrics          the metrics reporter, never null
-   * @param debounceWindow   the refresh-event debounce window, never null
-   * @param debounceMaxWait  the refresh-event debounce max-wait, never null
+   * @param debouncePolicy   the refresh-event debounce policy, never null
    */
   private Andersoni(final String nodeId,
       final SyncStrategy syncStrategy,
@@ -132,16 +128,14 @@ public final class Andersoni {
       final SnapshotStore snapshotStore,
       final RetryPolicy retryPolicy,
       final AndersoniMetrics metrics,
-      final Duration debounceWindow,
-      final Duration debounceMaxWait) {
+      final DebouncePolicy debouncePolicy) {
     this.nodeId = nodeId;
     this.syncStrategy = syncStrategy;
     this.leaderElection = leaderElection;
     this.snapshotStore = snapshotStore;
     this.retryPolicy = retryPolicy;
     this.metrics = metrics;
-    this.debounceWindow = debounceWindow;
-    this.debounceMaxWait = debounceMaxWait;
+    this.debouncePolicy = debouncePolicy;
     this.catalogsByName = new ConcurrentHashMap<>();
     this.failedCatalogs = ConcurrentHashMap.newKeySet();
     this.scheduledFutures = new ConcurrentHashMap<>();
@@ -234,7 +228,8 @@ public final class Andersoni {
     bootstrapAllCatalogs();
     asyncRefreshDispatcher = new AsyncRefreshDispatcher(
         catalogsByName.keySet());
-    refreshDebouncer = new RefreshDebouncer(debounceWindow, debounceMaxWait);
+    refreshDebouncer = new RefreshDebouncer(
+        debouncePolicy.window(), debouncePolicy.maxWait());
     wireSyncListener();
     schedulePeriodicRefreshes();
     metrics.start(
@@ -1236,11 +1231,8 @@ public final class Andersoni {
     /** The optional metrics reporter. */
     private AndersoniMetrics metrics;
 
-    /** The optional debouncer window. */
-    private Duration debounceWindow;
-
-    /** The optional debouncer max-wait. */
-    private Duration debounceMaxWait;
+    /** The optional debounce policy. */
+    private DebouncePolicy debouncePolicy;
 
     /** Creates a new builder with default settings. */
     private Builder() {
@@ -1360,66 +1352,28 @@ public final class Andersoni {
     }
 
     /**
-     * Sets the debounce window for cross-node refresh-event coalescing.
+     * Sets the debounce policy for cross-node refresh-event coalescing.
      *
-     * <p>When set to a non-zero value, refresh events received via the sync
-     * strategy are coalesced per catalog: the first event in a quiet period
-     * schedules a single refresh after this window, and any further events
-     * arriving within the window are absorbed. This protects the catalog
-     * from rebuilding repeatedly when many changes are broadcast in a
-     * short time.
-     *
-     * <p>If not set, defaults to {@link Duration#ZERO}, which disables the
-     * debouncer entirely (events are dispatched immediately, preserving
-     * pre-debouncer behavior).
-     *
-     * @param theWindow the debounce window, never null and not negative
-     *
-     * @return this builder for chaining, never null
-     *
-     * @throws NullPointerException     if theWindow is null
-     * @throws IllegalArgumentException if theWindow is negative
-     */
-    public Builder debounceWindow(final Duration theWindow) {
-      Objects.requireNonNull(theWindow, "debounceWindow must not be null");
-      if (theWindow.isNegative()) {
-        throw new IllegalArgumentException(
-            "debounceWindow must not be negative");
-      }
-      this.debounceWindow = theWindow;
-      return this;
-    }
-
-    /**
-     * Sets the maximum delay between the first event in a burst and the
-     * coalesced refresh actually firing.
-     *
-     * <p>When events keep arriving faster than the {@linkplain
-     * #debounceWindow(Duration) debounce window} can elapse, the timer
-     * would otherwise be pushed out indefinitely. This cap forces the
-     * refresh to fire once {@code maxWait} has elapsed since the first
-     * event in the current burst, bounding refresh latency under sustained
+     * <p>When set to a policy with a non-zero window, refresh events
+     * received via the sync strategy are coalesced per catalog: the first
+     * event in a quiet period schedules a single refresh after the policy's
+     * window, subsequent events within the window push the timer out, and
+     * the policy's {@code maxWait} caps total delay under sustained
      * traffic.
      *
-     * <p>Must be greater than or equal to the debounce window. If not set,
-     * defaults to the value of {@code debounceWindow} (which yields
-     * fixed-window-throttle semantics: fire exactly one refresh per window
-     * regardless of how many events arrive).
+     * <p>If not set, defaults to {@link DebouncePolicy#passThrough()},
+     * which disables debouncing entirely (events are dispatched
+     * immediately, preserving pre-debouncer behavior).
      *
-     * @param theMaxWait the max wait duration, never null and not negative
+     * @param thePolicy the debounce policy, never null
      *
      * @return this builder for chaining, never null
      *
-     * @throws NullPointerException     if theMaxWait is null
-     * @throws IllegalArgumentException if theMaxWait is negative
+     * @throws NullPointerException if thePolicy is null
      */
-    public Builder debounceMaxWait(final Duration theMaxWait) {
-      Objects.requireNonNull(theMaxWait, "debounceMaxWait must not be null");
-      if (theMaxWait.isNegative()) {
-        throw new IllegalArgumentException(
-            "debounceMaxWait must not be negative");
-      }
-      this.debounceMaxWait = theMaxWait;
+    public Builder debouncePolicy(final DebouncePolicy thePolicy) {
+      Objects.requireNonNull(thePolicy, "debouncePolicy must not be null");
+      this.debouncePolicy = thePolicy;
       return this;
     }
 
@@ -1439,15 +1393,8 @@ public final class Andersoni {
           ? retryPolicy : RetryPolicy.defaultPolicy();
       final AndersoniMetrics resolvedMetrics = metrics != null
           ? metrics : new NoopAndersoniMetrics();
-      final Duration resolvedWindow = debounceWindow != null
-          ? debounceWindow : Duration.ZERO;
-      final Duration resolvedMaxWait = debounceMaxWait != null
-          ? debounceMaxWait : resolvedWindow;
-      if (!resolvedWindow.isZero()
-          && resolvedMaxWait.compareTo(resolvedWindow) < 0) {
-        throw new IllegalArgumentException(
-            "debounceMaxWait must be >= debounceWindow");
-      }
+      final DebouncePolicy resolvedDebounce = debouncePolicy != null
+          ? debouncePolicy : DebouncePolicy.passThrough();
 
       return new Andersoni(
           resolvedNodeId,
@@ -1456,8 +1403,7 @@ public final class Andersoni {
           snapshotStore,
           resolvedRetry,
           resolvedMetrics,
-          resolvedWindow,
-          resolvedMaxWait);
+          resolvedDebounce);
     }
   }
 }

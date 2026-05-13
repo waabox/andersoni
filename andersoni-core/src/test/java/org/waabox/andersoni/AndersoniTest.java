@@ -76,9 +76,9 @@ class AndersoniTest {
   }
 
   @Test
-  void whenBuilding_givenDebounceWindow_shouldAcceptIt() {
+  void whenBuilding_givenDebouncePolicy_shouldAcceptIt() {
     final Andersoni andersoni = Andersoni.builder()
-        .debounceWindow(Duration.ofMillis(100))
+        .debouncePolicy(DebouncePolicy.of(Duration.ofMillis(100)))
         .build();
 
     assertNotNull(andersoni);
@@ -86,24 +86,9 @@ class AndersoniTest {
   }
 
   @Test
-  void whenBuilding_givenNegativeDebounceWindow_shouldThrow() {
-    assertThrows(IllegalArgumentException.class, () ->
-        Andersoni.builder().debounceWindow(Duration.ofMillis(-1)));
-  }
-
-  @Test
-  void whenBuilding_givenNegativeDebounceMaxWait_shouldThrow() {
-    assertThrows(IllegalArgumentException.class, () ->
-        Andersoni.builder().debounceMaxWait(Duration.ofMillis(-1)));
-  }
-
-  @Test
-  void whenBuilding_givenMaxWaitLessThanWindow_shouldThrow() {
-    assertThrows(IllegalArgumentException.class, () ->
-        Andersoni.builder()
-            .debounceWindow(Duration.ofMillis(100))
-            .debounceMaxWait(Duration.ofMillis(50))
-            .build());
+  void whenBuilding_givenNullDebouncePolicy_shouldThrow() {
+    assertThrows(NullPointerException.class, () ->
+        Andersoni.builder().debouncePolicy(null));
   }
 
   @Test

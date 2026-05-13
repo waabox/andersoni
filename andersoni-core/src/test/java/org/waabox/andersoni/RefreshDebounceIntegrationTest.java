@@ -53,8 +53,7 @@ class RefreshDebounceIntegrationTest {
     final Andersoni andersoni = Andersoni.builder()
         .nodeId("local")
         .syncStrategy(sync)
-        .debounceWindow(Duration.ofMillis(150))
-        .debounceMaxWait(Duration.ofMillis(150))
+        .debouncePolicy(DebouncePolicy.of(Duration.ofMillis(150)))
         .build();
     andersoni.register(catalog);
     andersoni.start();
@@ -94,8 +93,8 @@ class RefreshDebounceIntegrationTest {
     final Andersoni andersoni = Andersoni.builder()
         .nodeId("local")
         .syncStrategy(sync)
-        .debounceWindow(Duration.ofMillis(80))
-        .debounceMaxWait(Duration.ofMillis(250))
+        .debouncePolicy(DebouncePolicy.of(
+            Duration.ofMillis(80), Duration.ofMillis(250)))
         .build();
     andersoni.register(catalog);
     andersoni.start();
@@ -267,8 +266,7 @@ class RefreshDebounceIntegrationTest {
     final Andersoni andersoni = Andersoni.builder()
         .nodeId("local")
         .syncStrategy(sync)
-        .debounceWindow(Duration.ofMillis(120))
-        .debounceMaxWait(Duration.ofMillis(120))
+        .debouncePolicy(DebouncePolicy.of(Duration.ofMillis(120)))
         .build();
     andersoni.register(catA);
     andersoni.register(catB);
