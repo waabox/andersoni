@@ -26,6 +26,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.waabox.andersoni.sync.RefreshEvent;
 import org.waabox.andersoni.sync.RefreshEventCodec;
+import org.waabox.andersoni.sync.SyncMessageCodec;
 
 /** Unit tests for {@link SpringKafkaSyncStrategy}.
  *
@@ -100,7 +101,7 @@ class SpringKafkaSyncStrategyTest {
     final RefreshEvent event = new RefreshEvent(
         "events", "node-1", 1L, "hash", timestamp);
 
-    final String expectedJson = RefreshEventCodec.serialize(event);
+    final String expectedJson = SyncMessageCodec.serialize(event);
 
     final RecordMetadata metadata = new RecordMetadata(
         new TopicPartition("test-topic", 0), 0L, 0, 0L, 0, 0);
@@ -145,7 +146,7 @@ class SpringKafkaSyncStrategyTest {
     final Instant timestamp = Instant.parse("2024-01-01T00:00:00Z");
     final RefreshEvent event = new RefreshEvent(
         "events", "node-uuid-1", 1L, "abc123", timestamp);
-    final String json = RefreshEventCodec.serialize(event);
+    final String json = SyncMessageCodec.serialize(event);
 
     final ConsumerRecord<String, String> record =
         new ConsumerRecord<>("test-topic", 0, 0L, "events", json);
@@ -197,7 +198,7 @@ class SpringKafkaSyncStrategyTest {
     final Instant timestamp = Instant.parse("2024-01-01T00:00:00Z");
     final RefreshEvent event = new RefreshEvent(
         "events", "node-uuid-1", 1L, "abc123", timestamp);
-    final String json = RefreshEventCodec.serialize(event);
+    final String json = SyncMessageCodec.serialize(event);
 
     final ConsumerRecord<String, String> record =
         new ConsumerRecord<>("test-topic", 0, 0L, "events", json);
