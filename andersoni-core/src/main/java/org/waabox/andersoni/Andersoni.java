@@ -572,6 +572,58 @@ public final class Andersoni {
   }
 
   /**
+   * Replaces a single item in the named catalog. Delegates to
+   * {@link Catalog#replace(String, Object, Object)} without coordinating
+   * across the cluster.
+   *
+   * <p>This is the local-only entry point — analogous to
+   * {@link #refresh(String)} vs. {@link #refreshAndSync(String)}. It does
+   * not check leadership and does not publish a sync event. It is intended
+   * for tests, single-node usage, and as the receive-side of an inbound
+   * patch event (Wave 2).
+   *
+   * @param catalogName the catalog to patch, never null
+   * @param indexName   the index to use for the lookup, never null
+   * @param key         the lookup key, never null
+   * @param newItem     the replacement item, never null
+   *
+   * @return {@code true} if a single item was found and replaced,
+   *         {@code false} if the lookup returned no items
+   *
+   * @throws NullPointerException         if any argument is null
+   * @throws IllegalStateException        if Andersoni has been stopped
+   * @throws IllegalArgumentException     if no catalog with the given name
+   *                                      is registered
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   * @throws IndexNotFoundException       if the named index is not declared
+   *                                      on the catalog
+   * @throws AmbiguousReplaceException    if the lookup returned more than
+   *                                      one item
+   */
+  @SuppressWarnings("unchecked")
+  public boolean replace(final String catalogName, final String indexName,
+      final Object key, final Object newItem) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException(
+          "Cannot replace after stop() has been called");
+    }
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
+    final boolean replaced = typedCatalog.replace(indexName, key, newItem);
+    if (replaced) {
+      reportIndexSizes(catalog);
+    }
+    return replaced;
+  }
+
+  /**
    * Stops the Andersoni lifecycle.
    *
    * <p>This method cancels all scheduled refresh tasks, stops the sync

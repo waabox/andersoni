@@ -376,6 +376,37 @@ public final class Snapshot<T> {
     return items;
   }
 
+  /**
+   * Returns the internal indices map for surgical patching by Catalog.
+   *
+   * @return the unmodifiable indices map, never null
+   */
+  Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> indicesMap() {
+    return indices;
+  }
+
+  /**
+   * Returns the internal sorted indices map for surgical patching by
+   * Catalog.
+   *
+   * @return the unmodifiable sorted indices map, never null
+   */
+  Map<String, NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>>
+      sortedIndicesMap() {
+    return sortedIndices;
+  }
+
+  /**
+   * Returns the internal reversed-key indices map for surgical patching
+   * by Catalog.
+   *
+   * @return the unmodifiable reversed-key indices map, never null
+   */
+  Map<String, NavigableMap<String, List<AndersoniCatalogItem<T>>>>
+      reversedKeyIndicesMap() {
+    return reversedKeyIndices;
+  }
+
   // -----------------------------------------------------------------------
   // Index existence checks
   // -----------------------------------------------------------------------
