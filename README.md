@@ -304,6 +304,46 @@ public interface SnapshotBuildHook<T> {
 }
 ```
 
+## Snapshot Patches
+
+> **Since 1.10.0**
+
+Replace a single item in a catalog without re-loading the dataset. The snapshot is rebuilt copy-on-write — only the index buckets whose keys change for the patched item are recomputed; everything else is shared by reference with the previous snapshot.
+
+```java
+// local-only: replace within this node
+boolean replaced = catalog.replace("by-id", eventId, updatedEvent);
+
+// cluster-wide: leader replaces locally and broadcasts a PatchEvent
+boolean replaced = andersoni.replaceAndSync("events", "by-id", eventId, updatedEvent);
+```
+
+The lookup must resolve to **exactly one item**:
+
+- `0` matches → `false` (no-op).
+- `1` match → swap, returns `true`.
+- `>1` matches → `AmbiguousReplaceException`. Pick a uniquely-keyed index (typically id-based) for the replace handle.
+
+`replaceAndSync` only runs on the leader; on followers it returns `false`. After the local replace, the leader saves the full snapshot to the snapshot store and publishes a `PatchEvent` carrying the serialized old item, the serialized new item, and version/hash preconditions captured atomically under the catalog's refresh lock.
+
+**Follower dispatch** uses version-keyed precedence:
+
+| Local state vs event | Action |
+|---|---|
+| `event.toVersion ≤ localVersion` | Discard (stale or already applied). |
+| `event.fromVersion == localVersion && event.fromHash == localHash` | Apply the patch surgically. |
+| otherwise | Fall back to a full reload via the snapshot store (or the data loader as last resort). |
+
+This means stale-patch storms collapse to **at most one full reload** per out-of-sync window. The async refresh dispatcher coalesces concurrent events, and the leader saves the latest snapshot before publishing so the fallback path always finds something useful.
+
+**Transport support:**
+
+- ✅ `andersoni-sync-kafka` and `andersoni-spring-sync-kafka` — patch events flow over the same topic, type-discriminated in the JSON envelope.
+- ✅ `andersoni-sync-http` — patch events POST to the same endpoint as refresh events.
+- ❌ `andersoni-sync-db` — the polling table is keyed by catalog with one row per catalog, so it has no per-event log to deliver patches over. Followers on this transport learn about leader-side patches at the next polling interval via the updated hash.
+
+The catalog must have a `SnapshotSerializer` configured — cross-node patches cannot be built without one.
+
 ## How It Compares
 
 Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.

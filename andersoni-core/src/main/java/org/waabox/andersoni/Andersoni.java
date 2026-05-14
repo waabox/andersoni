@@ -31,6 +31,7 @@ import org.waabox.andersoni.metrics.NoopAndersoniMetrics;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.snapshot.SnapshotStore;
+import org.waabox.andersoni.sync.PatchEvent;
 import org.waabox.andersoni.sync.RefreshEvent;
 import org.waabox.andersoni.sync.SyncStrategy;
 
@@ -600,6 +601,126 @@ public final class Andersoni {
    * @throws AmbiguousReplaceException    if the lookup returned more than
    *                                      one item
    */
+  /**
+   * Replaces a single item in the named catalog and broadcasts the
+   * resulting patch to other nodes via the configured sync strategy.
+   *
+   * <p>Mirrors {@link #refreshAndSync(String)} for the patch path. Steps:
+   * <ol>
+   *   <li>If a {@link LeaderElectionStrategy} is configured and this node
+   *       is not the leader, the call is a no-op and returns
+   *       {@code false}.</li>
+   *   <li>Replaces the item locally via
+   *       {@link Catalog#replace(String, Object, Object)}. If the lookup
+   *       finds zero items, returns {@code false} without publishing.</li>
+   *   <li>Saves the resulting snapshot to the {@link
+   *       org.waabox.andersoni.snapshot.SnapshotStore} so followers that
+   *       fall back to a full reload pick up the latest state.</li>
+   *   <li>Builds a {@link PatchEvent} containing the from/to version and
+   *       hash, the index name, and the serialized old and new items,
+   *       then publishes it via {@code syncStrategy.publishPatch}.</li>
+   * </ol>
+   *
+   * <p>The catalog must have a {@code SnapshotSerializer} configured —
+   * cross-node patch events cannot be built otherwise. An
+   * {@link IllegalStateException} is thrown if it isn't.
+   *
+   * <p>If the configured sync strategy reports
+   * {@link SyncStrategy#supportsPatches() supportsPatches()} as
+   * {@code false}, the local replace still happens and the snapshot is
+   * still saved to S3, but no patch event is published. Followers will
+   * converge via the next periodic refresh's S3 snapshot.
+   *
+   * @param catalogName the catalog to patch, never null
+   * @param indexName   the index used for the lookup, never null
+   * @param key         the lookup key, never null
+   * @param newItem     the replacement item, never null
+   *
+   * @return {@code true} if a single item was found and replaced,
+   *         {@code false} if no item matched, this node is not the
+   *         leader, or Andersoni has been stopped
+   *
+   * @throws NullPointerException        if any argument is null
+   * @throws IllegalArgumentException    if no catalog with the given name
+   *                                     is registered
+   * @throws IllegalStateException       if the catalog has no serializer
+   *                                     configured, or Andersoni has been
+   *                                     stopped (when applicable)
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   * @throws IndexNotFoundException      if the named index is not declared
+   *                                     on the catalog
+   * @throws AmbiguousReplaceException   if the lookup returned more than
+   *                                     one item
+   */
+  @SuppressWarnings("unchecked")
+  public boolean replaceAndSync(final String catalogName,
+      final String indexName, final Object key, final Object newItem) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException(
+          "Cannot replace after stop() has been called");
+    }
+    if (!leaderElection.isLeader()) {
+      log.debug("Skipping replaceAndSync for catalog '{}': not leader",
+          catalogName);
+      return false;
+    }
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    final SnapshotSerializer<Object> serializer = catalog.serializer()
+        .map(s -> (SnapshotSerializer<Object>) s)
+        .orElseThrow(() -> new IllegalStateException(
+            "Catalog '" + catalogName + "' has no SnapshotSerializer; "
+                + "cross-node patches require one"));
+
+    final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
+    final Optional<Catalog.ReplaceOutcome<Object>> outcomeOpt =
+        typedCatalog.replaceAndCapture(indexName, key, newItem);
+    if (outcomeOpt.isEmpty()) {
+      return false;
+    }
+    final Catalog.ReplaceOutcome<Object> outcome = outcomeOpt.get();
+
+    reportIndexSizes(catalog);
+    saveSnapshotIfPossible(catalog);
+
+    if (syncStrategy == null || !syncStrategy.supportsPatches()) {
+      log.debug("Sync strategy does not support patches; skipping publish "
+          + "for catalog '{}'. Followers will converge via the next "
+          + "periodic refresh.", catalogName);
+      return true;
+    }
+
+    final byte[] oldItemBytes = serializer.serialize(
+        List.of(outcome.oldItem()));
+    final byte[] newItemBytes = serializer.serialize(List.of(newItem));
+    final PatchEvent event = new PatchEvent(
+        catalogName,
+        nodeId,
+        outcome.fromVersion(),
+        outcome.toVersion(),
+        outcome.fromHash(),
+        outcome.toHash(),
+        indexName,
+        oldItemBytes,
+        newItemBytes,
+        Instant.now());
+    try {
+      syncStrategy.publishPatch(event);
+      metrics.syncPublished(catalogName);
+    } catch (final Exception e) {
+      log.error("Failed to publish patch event for catalog '{}': {}",
+          catalogName, e.getMessage(), e);
+      metrics.syncPublishFailed(catalogName, e);
+    }
+    return true;
+  }
+
   @SuppressWarnings("unchecked")
   public boolean replace(final String catalogName, final String indexName,
       final Object key, final Object newItem) {
@@ -1049,7 +1170,140 @@ public final class Andersoni {
           () -> refreshFromEvent(event.catalogName(), catalog));
     });
 
+    if (syncStrategy.supportsPatches()) {
+      syncStrategy.subscribePatch(this::handlePatch);
+    }
+
     syncStrategy.start();
+  }
+
+  /**
+   * Routes an inbound {@link PatchEvent} to the surgical-apply path, the
+   * full-reload fallback, or discards it as stale according to the
+   * version-keyed precedence rules:
+   * <ol>
+   *   <li>If {@code event.toVersion() <= localVersion} the patch is stale
+   *       (already applied or superseded) and is dropped.</li>
+   *   <li>If {@code event.fromVersion()} and {@code event.fromHash()}
+   *       match the local snapshot, the patch is applied surgically.</li>
+   *   <li>Otherwise (gap or hash mismatch) the follower falls back to a
+   *       full reload via {@link #refreshFromEvent}, which prefers the
+   *       snapshot store over the data loader.</li>
+   * </ol>
+   *
+   * <p>Dispatching through {@link AsyncRefreshDispatcher} means concurrent
+   * patch events on the same catalog are coalesced — if a refresh or
+   * surgical apply is already in flight, the new event is dropped because
+   * by the time the in-flight work finishes the catalog will have moved
+   * forward and a stale-version check will catch it.
+   *
+   * @param event the inbound patch event, never null
+   */
+  @SuppressWarnings("unchecked")
+  private void handlePatch(final PatchEvent event) {
+    if (nodeId.equals(event.sourceNodeId())) {
+      log.debug("Ignoring patch event from self for catalog '{}'",
+          event.catalogName());
+      return;
+    }
+
+    final Catalog<?> catalog = catalogsByName.get(event.catalogName());
+    if (catalog == null) {
+      log.warn("Received patch event for unknown catalog '{}'",
+          event.catalogName());
+      return;
+    }
+
+    final Snapshot<?> snapshot = catalog.currentSnapshot();
+    if (event.toVersion() <= snapshot.version()) {
+      log.debug("Discarding stale patch for catalog '{}': toVersion={} "
+          + "<= localVersion={}", event.catalogName(),
+          event.toVersion(), snapshot.version());
+      metrics.patchDiscarded(event.catalogName());
+      return;
+    }
+
+    metrics.syncReceived(event.catalogName());
+
+    if (event.fromVersion() == snapshot.version()
+        && event.fromHash().equals(snapshot.hash())) {
+      asyncRefreshDispatcher.dispatch(event.catalogName(),
+          () -> applyPatchLocally(event,
+              (Catalog<Object>) catalog));
+      return;
+    }
+
+    log.debug("Patch precondition mismatch for catalog '{}'"
+        + " (local v{}/{} vs event from v{}/{}); falling back"
+        + " to full reload", event.catalogName(),
+        snapshot.version(), snapshot.hash(),
+        event.fromVersion(), event.fromHash());
+    metrics.patchFellBack(event.catalogName());
+    asyncRefreshDispatcher.dispatch(event.catalogName(),
+        () -> refreshFromEvent(event.catalogName(), catalog));
+  }
+
+  /**
+   * Applies a patch event surgically on the local snapshot. Verifies the
+   * bucket precondition atomically inside the catalog's refresh lock and
+   * falls back to {@link #refreshFromEvent} if the local state has
+   * drifted between the dispatch check and the actual swap.
+   *
+   * @param event   the patch event, never null
+   * @param catalog the local catalog, never null
+   */
+  private void applyPatchLocally(final PatchEvent event,
+      final Catalog<Object> catalog) {
+    try {
+      final SnapshotSerializer<Object> serializer =
+          catalog.serializer()
+              .map(s -> {
+                @SuppressWarnings("unchecked")
+                final SnapshotSerializer<Object> cast =
+                    (SnapshotSerializer<Object>) s;
+                return cast;
+              })
+              .orElse(null);
+      if (serializer == null) {
+        log.warn("Catalog '{}' has no serializer; cannot apply patch."
+            + " Falling back to full reload.", event.catalogName());
+        refreshFromEvent(event.catalogName(), catalog);
+        return;
+      }
+
+      final Object oldItem = serializer.deserialize(
+          event.serializedOldItem()).get(0);
+      final Object newItem = serializer.deserialize(
+          event.serializedNewItem()).get(0);
+      final Object key = catalog.extractKeyFor(event.indexName(), oldItem);
+      if (key == null) {
+        log.warn("Patch oldItem for catalog '{}' has no key under index"
+            + " '{}'; falling back to full reload.",
+            event.catalogName(), event.indexName());
+        refreshFromEvent(event.catalogName(), catalog);
+        return;
+      }
+
+      final Optional<Catalog.ReplaceOutcome<Object>> outcome =
+          catalog.replaceWithPrecondition(event.indexName(), key,
+              oldItem, newItem);
+      if (outcome.isEmpty()) {
+        log.debug("Patch precondition failed at apply time for catalog"
+            + " '{}'; falling back to full reload.",
+            event.catalogName());
+        refreshFromEvent(event.catalogName(), catalog);
+        return;
+      }
+      log.info("Applied patch surgically for catalog '{}': v{} -> v{}",
+          event.catalogName(), event.fromVersion(), event.toVersion());
+      metrics.patchApplied(event.catalogName());
+      reportIndexSizes(catalog);
+    } catch (final Exception e) {
+      log.error("Failed to apply patch surgically for catalog '{}': {}."
+          + " Falling back to full reload.",
+          event.catalogName(), e.getMessage(), e);
+      refreshFromEvent(event.catalogName(), catalog);
+    }
   }
 
   /**

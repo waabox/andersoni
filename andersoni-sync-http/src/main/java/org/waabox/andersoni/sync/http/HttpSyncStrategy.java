@@ -19,9 +19,12 @@ import org.slf4j.LoggerFactory;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
+import org.waabox.andersoni.sync.PatchEvent;
+import org.waabox.andersoni.sync.PatchListener;
 import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
 import org.waabox.andersoni.sync.RefreshListener;
+import org.waabox.andersoni.sync.SyncMessage;
+import org.waabox.andersoni.sync.SyncMessageCodec;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /**
@@ -80,6 +83,10 @@ public final class HttpSyncStrategy implements SyncStrategy {
   /** Whether this strategy is started and not yet stopped. */
   private final AtomicBoolean running = new AtomicBoolean(false);
 
+  /** The list of registered patch listeners. */
+  private final List<PatchListener> patchListeners =
+      new CopyOnWriteArrayList<>();
+
   /** The HTTP server for receiving incoming events. */
   private volatile HttpServer server;
 
@@ -103,9 +110,43 @@ public final class HttpSyncStrategy implements SyncStrategy {
       throw new IllegalStateException(
           "HttpSyncStrategy is not running; call start() before publish()");
     }
+    broadcast(event);
+  }
 
-    final String json = RefreshEventCodec.serialize(event);
+  /** {@inheritDoc} */
+  @Override
+  public void publishPatch(final PatchEvent event) {
+    Objects.requireNonNull(event, "event cannot be null");
+    broadcast(event);
+  }
 
+  /** {@inheritDoc} */
+  @Override
+  public boolean supportsPatches() {
+    return true;
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void subscribe(final RefreshListener listener) {
+    Objects.requireNonNull(listener, "listener cannot be null");
+    listeners.add(listener);
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void subscribePatch(final PatchListener listener) {
+    Objects.requireNonNull(listener, "listener cannot be null");
+    patchListeners.add(listener);
+  }
+
+  /** Serializes a {@link SyncMessage} and POSTs it to every configured
+   * peer.
+   *
+   * @param message the message to broadcast, never null
+   */
+  private void broadcast(final SyncMessage message) {
+    final String json = SyncMessageCodec.serialize(message);
     for (final String peerUrl : config.peerUrls()) {
       final String url = peerUrl + config.path();
       final HttpRequest request = HttpRequest.newBuilder()
@@ -113,7 +154,6 @@ public final class HttpSyncStrategy implements SyncStrategy {
           .header("Content-Type", "application/json")
           .POST(HttpRequest.BodyPublishers.ofString(json))
           .build();
-
       client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
           .thenAccept(response -> {
             if (response.statusCode() != HTTP_OK) {
@@ -122,17 +162,10 @@ public final class HttpSyncStrategy implements SyncStrategy {
             }
           })
           .exceptionally(ex -> {
-            LOG.warn("Failed to publish refresh event to {}", url, ex);
+            LOG.warn("Failed to publish sync message to {}", url, ex);
             return null;
           });
     }
-  }
-
-  /** {@inheritDoc} */
-  @Override
-  public void subscribe(final RefreshListener listener) {
-    Objects.requireNonNull(listener, "listener cannot be null");
-    listeners.add(listener);
   }
 
   /** {@inheritDoc} */
@@ -206,19 +239,30 @@ public final class HttpSyncStrategy implements SyncStrategy {
         return;
       }
       final String body = new String(bytes, StandardCharsets.UTF_8);
-      final RefreshEvent event = RefreshEventCodec.deserialize(body);
+      final SyncMessage message = SyncMessageCodec.deserialize(body);
 
-      for (final RefreshListener listener : listeners) {
-        try {
-          listener.onRefresh(event);
-        } catch (final Exception e) {
-          LOG.warn("Listener threw exception for event: {}", event, e);
+      if (message instanceof RefreshEvent refresh) {
+        for (final RefreshListener listener : listeners) {
+          try {
+            listener.onRefresh(refresh);
+          } catch (final Exception e) {
+            LOG.warn("Listener threw exception for event: {}", refresh, e);
+          }
+        }
+      } else if (message instanceof PatchEvent patch) {
+        for (final PatchListener listener : patchListeners) {
+          try {
+            listener.onPatch(patch);
+          } catch (final Exception e) {
+            LOG.warn("Patch listener threw exception for event: {}",
+                patch, e);
+          }
         }
       }
 
       sendResponse(exchange, HTTP_OK, "OK");
     } catch (final Exception e) {
-      LOG.error("Failed to handle refresh event", e);
+      LOG.error("Failed to handle sync message", e);
       sendResponse(exchange, HTTP_INTERNAL_ERROR, "Internal Server Error");
     }
   }

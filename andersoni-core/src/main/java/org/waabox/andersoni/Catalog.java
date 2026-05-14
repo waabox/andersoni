@@ -324,6 +324,34 @@ public final class Catalog<T> {
    */
   public boolean replace(final String indexName, final Object key,
       final T newItem) {
+    return replaceAndCapture(indexName, key, newItem).isPresent();
+  }
+
+  /**
+   * Performs the same patch as {@link #replace(String, Object, T)} but
+   * additionally returns metadata about the operation — the replaced
+   * item and the from/to snapshot version/hash pair. Used by
+   * {@code Andersoni.replaceAndSync} to build cross-node patch events
+   * with a consistent precondition snapshot.
+   *
+   * <p>Returns an empty optional when the lookup found no items (a no-op
+   * leaves the snapshot untouched). Throws
+   * {@link AmbiguousReplaceException} on a multi-element bucket exactly
+   * like {@link #replace}.
+   *
+   * @param indexName the index name, never null
+   * @param key       the lookup key, never null
+   * @param newItem   the replacement item, never null
+   *
+   * @return an outcome describing the replaced item plus the snapshot
+   *         metadata, or empty when the lookup found nothing
+   *
+   * @throws NullPointerException        if any argument is null
+   * @throws IndexNotFoundException      if the index is not declared
+   * @throws AmbiguousReplaceException   on a multi-element bucket
+   */
+  Optional<ReplaceOutcome<T>> replaceAndCapture(final String indexName,
+      final Object key, final T newItem) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
     Objects.requireNonNull(newItem, "newItem must not be null");
@@ -337,18 +365,21 @@ public final class Catalog<T> {
   }
 
   /**
-   * Performs the surgical snapshot patch under the refresh lock. See
-   * {@link #replace(String, Object, T)} for the contract.
+   * Performs the surgical snapshot patch under the refresh lock and
+   * returns the outcome. See {@link #replace(String, Object, T)} for the
+   * contract.
    *
    * @param indexName the index name, never null
    * @param key       the lookup key, never null
    * @param newItem   the replacement item, never null
    *
-   * @return whether a replacement was made
+   * @return the outcome on success, empty on no-match
    */
-  private boolean doReplace(final String indexName, final Object key,
-      final T newItem) {
+  private Optional<ReplaceOutcome<T>> doReplace(final String indexName,
+      final Object key, final T newItem) {
     final Snapshot<T> snapshot = current.get();
+    final long fromVersion = snapshot.version();
+    final String fromHash = snapshot.hash();
 
     final Map<Object, List<AndersoniCatalogItem<T>>> bucketMap =
         snapshot.indicesMap().get(indexName);
@@ -358,7 +389,7 @@ public final class Catalog<T> {
 
     final List<AndersoniCatalogItem<T>> bucket = bucketMap.get(key);
     if (bucket == null || bucket.isEmpty()) {
-      return false;
+      return Optional.empty();
     }
     if (bucket.size() > 1) {
       throw new AmbiguousReplaceException(name, indexName, key,
@@ -408,7 +439,128 @@ public final class Catalog<T> {
     final Snapshot<T> newSnapshot = Snapshot.ofWithItems(newItemsList,
         newIndices, newSorted, newReversed, newVersion, newHash);
     current.set(newSnapshot);
-    return true;
+    return Optional.of(new ReplaceOutcome<>(oldItem, fromVersion, fromHash,
+        newVersion, newHash));
+  }
+
+  /**
+   * Replaces a single item only if the local bucket at
+   * {@code (indexName, key)} matches the supplied precondition — exactly
+   * one item, equal to {@code expectedOldItem} via {@code .equals()}.
+   *
+   * <p>Used by the follower-side patch dispatch in {@code Andersoni} to
+   * apply a {@link org.waabox.andersoni.sync.PatchEvent} surgically when
+   * the local snapshot matches the leader's pre-patch state. When the
+   * precondition fails, the caller falls back to a full reload from the
+   * snapshot store rather than silently replacing the wrong item.
+   *
+   * <p>Atomically performs the precondition check and the swap under the
+   * same refresh lock so there is no race window with concurrent writes.
+   *
+   * @param indexName        the index used for the lookup, never null
+   * @param key              the lookup key, never null
+   * @param expectedOldItem  the item the follower expects to find at
+   *                         that key, never null
+   * @param newItem          the replacement item, never null
+   *
+   * @return the outcome on success, empty when the precondition failed
+   *         or no item was found
+   *
+   * @throws NullPointerException        if any argument is null
+   * @throws IndexNotFoundException      if the index is not declared
+   */
+  Optional<ReplaceOutcome<T>> replaceWithPrecondition(
+      final String indexName, final Object key,
+      final T expectedOldItem, final T newItem) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(expectedOldItem,
+        "expectedOldItem must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+
+    refreshLock.lock();
+    try {
+      final Snapshot<T> snapshot = current.get();
+      final Map<Object, List<AndersoniCatalogItem<T>>> bucketMap =
+          snapshot.indicesMap().get(indexName);
+      if (bucketMap == null) {
+        throw new IndexNotFoundException(indexName, name);
+      }
+      final List<AndersoniCatalogItem<T>> bucket = bucketMap.get(key);
+      if (bucket == null || bucket.size() != 1) {
+        return Optional.empty();
+      }
+      if (!expectedOldItem.equals(bucket.get(0).item())) {
+        return Optional.empty();
+      }
+      return doReplace(indexName, key, newItem);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Extracts a lookup key for {@code item} under the named index, picking
+   * any one of the keys for multi-keyed indexes. Returns {@code null} if
+   * the item would not be indexed at all (extractor returned null or an
+   * empty key set).
+   *
+   * <p>Used by the follower-side patch dispatch to re-derive the bucket
+   * key from a deserialized {@code oldItem} without having to ship the
+   * key separately on the wire.
+   *
+   * @param indexName the index name, never null
+   * @param item      the domain object, never null
+   *
+   * @return a key under which {@code item} would be indexed in
+   *         {@code indexName}, or null if it would not be indexed
+   *
+   * @throws IndexNotFoundException if no index with that name exists
+   */
+  Object extractKeyFor(final String indexName, final T item) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+    for (final IndexDefinition<T> def : indexDefinitions) {
+      if (def.name().equals(indexName)) {
+        return def.extractKey(item);
+      }
+    }
+    for (final SortedIndexDefinition<T> def : sortedIndexDefinitions) {
+      if (def.name().equals(indexName)) {
+        return def.extractKey(item);
+      }
+    }
+    for (final MultiKeyIndexDefinition<T> def : multiKeyIndexDefinitions) {
+      if (def.name().equals(indexName)) {
+        final Set<Object> keys = def.extractKeys(item);
+        return keys.isEmpty() ? null : keys.iterator().next();
+      }
+    }
+    for (final GraphIndexDefinition<T> def : graphIndexDefinitions) {
+      if (def.name().equals(indexName)) {
+        final Set<Object> keys = def.extractKeys(item);
+        return keys.isEmpty() ? null : keys.iterator().next();
+      }
+    }
+    throw new IndexNotFoundException(indexName, name);
+  }
+
+  /**
+   * Metadata captured during a successful
+   * {@link #replaceAndCapture(String, Object, T)} so callers can build
+   * cross-node patch events with a consistent precondition snapshot.
+   *
+   * @param oldItem      the item that was replaced, never null
+   * @param fromVersion  the snapshot version before the replacement
+   * @param fromHash     the snapshot hash before the replacement,
+   *                     never null
+   * @param toVersion    the snapshot version after the replacement
+   * @param toHash       the snapshot hash after the replacement,
+   *                     never null
+   * @param <T>          the catalog item type
+   */
+  record ReplaceOutcome<T>(T oldItem, long fromVersion, String fromHash,
+      long toVersion, String toHash) {
   }
 
   /**

@@ -186,6 +186,7 @@ class AndersoniTest {
         .build();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
 
     // Expect subscribe to be called on start.
     syncStrategy.subscribe(anyObject(RefreshListener.class));
@@ -248,6 +249,7 @@ class AndersoniTest {
     final Capture<RefreshListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     syncStrategy.subscribe(capture(listenerCapture));
     expectLastCall().once();
     syncStrategy.start();
@@ -314,6 +316,7 @@ class AndersoniTest {
     final Capture<RefreshListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     syncStrategy.subscribe(capture(listenerCapture));
     expectLastCall().once();
     syncStrategy.start();
@@ -384,6 +387,7 @@ class AndersoniTest {
     final Capture<RefreshListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     syncStrategy.subscribe(capture(listenerCapture));
     expectLastCall().once();
     syncStrategy.start();
@@ -437,6 +441,7 @@ class AndersoniTest {
   @Test
   void whenStopping_shouldStopSyncAndLeader() {
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     final LeaderElectionStrategy leaderElection =
         createMock(LeaderElectionStrategy.class);
 
@@ -915,6 +920,7 @@ class AndersoniTest {
     final Capture<RefreshListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     syncStrategy.subscribe(capture(listenerCapture));
     expectLastCall().once();
     syncStrategy.start();
@@ -962,6 +968,7 @@ class AndersoniTest {
     final Capture<RefreshListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     syncStrategy.subscribe(capture(listenerCapture));
     expectLastCall().once();
     syncStrategy.start();
@@ -1042,6 +1049,7 @@ class AndersoniTest {
     final Capture<RefreshListener> listenerCapture = newCapture();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
 
     syncStrategy.subscribe(capture(listenerCapture));
@@ -1272,6 +1280,7 @@ class AndersoniTest {
         .build();
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
 
     syncStrategy.subscribe(anyObject(RefreshListener.class));
     expectLastCall().andAnswer(() -> {
