@@ -21,9 +21,12 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.waabox.andersoni.sync.PatchEvent;
+import org.waabox.andersoni.sync.PatchListener;
 import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
 import org.waabox.andersoni.sync.RefreshListener;
+import org.waabox.andersoni.sync.SyncMessage;
+import org.waabox.andersoni.sync.SyncMessageCodec;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /** Kafka-based implementation of {@link SyncStrategy} that broadcasts
@@ -72,8 +75,12 @@ public final class KafkaSyncStrategy implements SyncStrategy {
   /** The Kafka configuration, never null. */
   private final KafkaSyncConfig config;
 
-  /** The registered listeners, never null. Thread-safe. */
+  /** The registered refresh listeners, never null. Thread-safe. */
   private final List<RefreshListener> listeners = new CopyOnWriteArrayList<>();
+
+  /** The registered patch listeners, never null. Thread-safe. */
+  private final List<PatchListener> patchListeners =
+      new CopyOnWriteArrayList<>();
 
   /** Flag indicating whether the poll loop is running. */
   private final AtomicBoolean running = new AtomicBoolean(false);
@@ -106,20 +113,25 @@ public final class KafkaSyncStrategy implements SyncStrategy {
           + "Call start() first.");
     }
 
-    final String json = RefreshEventCodec.serialize(event);
-    final ProducerRecord<String, String> record = new ProducerRecord<>(
-        config.topic(), event.catalogName(), json);
+    sendMessage(event);
+  }
 
-    producer.send(record, (metadata, exception) -> {
-      if (exception != null) {
-        log.error("Failed to publish refresh event for catalog '{}': {}",
-            event.catalogName(), exception.getMessage(), exception);
-      } else {
-        log.debug("Published refresh event for catalog '{}' to partition {} "
-            + "offset {}", event.catalogName(), metadata.partition(),
-            metadata.offset());
-      }
-    });
+  /** {@inheritDoc} */
+  @Override
+  public void publishPatch(final PatchEvent event) {
+    Objects.requireNonNull(event, "event must not be null");
+    if (!running.get()) {
+      throw new IllegalStateException(
+          "Cannot publish patch: KafkaSyncStrategy is not running. "
+          + "Call start() first.");
+    }
+    sendMessage(event);
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public boolean supportsPatches() {
+    return true;
   }
 
   /** {@inheritDoc} */
@@ -127,6 +139,35 @@ public final class KafkaSyncStrategy implements SyncStrategy {
   public void subscribe(final RefreshListener listener) {
     Objects.requireNonNull(listener, "listener must not be null");
     listeners.add(listener);
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void subscribePatch(final PatchListener listener) {
+    Objects.requireNonNull(listener, "listener must not be null");
+    patchListeners.add(listener);
+  }
+
+  /** Serializes a {@link SyncMessage} and sends it on the configured
+   * topic, using the catalog name as the partition key.
+   *
+   * @param message the message to broadcast, never null
+   */
+  private void sendMessage(final SyncMessage message) {
+    final String json = SyncMessageCodec.serialize(message);
+    final ProducerRecord<String, String> record = new ProducerRecord<>(
+        config.topic(), message.catalogName(), json);
+
+    producer.send(record, (metadata, exception) -> {
+      if (exception != null) {
+        log.error("Failed to publish sync message for catalog '{}': {}",
+            message.catalogName(), exception.getMessage(), exception);
+      } else {
+        log.debug("Published sync message for catalog '{}' to partition {}"
+            + " offset {}", message.catalogName(), metadata.partition(),
+            metadata.offset());
+      }
+    });
   }
 
   /** {@inheritDoc} */
@@ -227,6 +268,24 @@ public final class KafkaSyncStrategy implements SyncStrategy {
     }
   }
 
+  /** Notifies all registered patch listeners.
+   *
+   * <p>Package-private for testability.
+   *
+   * @param event the patch event to dispatch, never null
+   */
+  void notifyPatchListeners(final PatchEvent event) {
+    for (final PatchListener listener : patchListeners) {
+      try {
+        listener.onPatch(event);
+      } catch (final Exception e) {
+        log.error("Patch listener threw exception while processing event "
+            + "for catalog '{}': {}", event.catalogName(),
+            e.getMessage(), e);
+      }
+    }
+  }
+
   /** The main consumer poll loop. Runs in a daemon thread until
    * {@link #stop()} is called.
    */
@@ -238,11 +297,15 @@ public final class KafkaSyncStrategy implements SyncStrategy {
               consumer.poll(POLL_TIMEOUT);
           for (final ConsumerRecord<String, String> record : records) {
             try {
-              final RefreshEvent event = RefreshEventCodec.deserialize(
+              final SyncMessage message = SyncMessageCodec.deserialize(
                   record.value());
-              notifyListeners(event);
+              if (message instanceof RefreshEvent refresh) {
+                notifyListeners(refresh);
+              } else if (message instanceof PatchEvent patch) {
+                notifyPatchListeners(patch);
+              }
             } catch (final Exception e) {
-              log.error("Failed to deserialize refresh event from partition {} "
+              log.error("Failed to deserialize sync message from partition {} "
                   + "offset {}: {}", record.partition(), record.offset(),
                   e.getMessage(), e);
             }
@@ -250,10 +313,6 @@ public final class KafkaSyncStrategy implements SyncStrategy {
         } catch (final WakeupException e) {
           throw e;
         } catch (final Exception e) {
-          // Any other poll error (broker outage, rebalance failure, etc.)
-          // must NOT kill the consumer thread, or the node would silently
-          // stop receiving sync events while still appearing alive. Log,
-          // back off briefly, and keep polling.
           log.error("Kafka poll failed for topic '{}', backing off {}ms: {}",
               config.topic(), POLL_ERROR_BACKOFF.toMillis(), e.getMessage(), e);
           if (!sleepBackoff()) {

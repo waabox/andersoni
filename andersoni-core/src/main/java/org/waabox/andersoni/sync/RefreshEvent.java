@@ -48,7 +48,7 @@ public record RefreshEvent(
     String hash,
     Instant timestamp,
     RefreshKind kind
-) {
+) implements SyncMessage {
 
   /**
    * Canonical constructor validating mandatory fields.

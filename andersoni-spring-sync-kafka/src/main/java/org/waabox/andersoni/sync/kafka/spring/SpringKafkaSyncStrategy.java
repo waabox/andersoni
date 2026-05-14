@@ -9,9 +9,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.waabox.andersoni.sync.PatchEvent;
+import org.waabox.andersoni.sync.PatchListener;
 import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
 import org.waabox.andersoni.sync.RefreshListener;
+import org.waabox.andersoni.sync.SyncMessage;
+import org.waabox.andersoni.sync.SyncMessageCodec;
 import org.waabox.andersoni.sync.SyncStrategy;
 
 /** Spring Kafka-based implementation of {@link SyncStrategy} that broadcasts
@@ -40,8 +43,12 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
   /** The Kafka topic for sync events, never null. */
   private final String topic;
 
-  /** The registered listeners, never null. Thread-safe. */
+  /** The registered refresh listeners, never null. Thread-safe. */
   private final List<RefreshListener> listeners = new CopyOnWriteArrayList<>();
+
+  /** The registered patch listeners, never null. Thread-safe. */
+  private final List<PatchListener> patchListeners =
+      new CopyOnWriteArrayList<>();
 
   /** Creates a new SpringKafkaSyncStrategy.
    *
@@ -62,22 +69,20 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
   @Override
   public void publish(final RefreshEvent event) {
     Objects.requireNonNull(event, "event must not be null");
+    sendMessage(event);
+  }
 
-    final String json = RefreshEventCodec.serialize(event);
+  /** {@inheritDoc} */
+  @Override
+  public void publishPatch(final PatchEvent event) {
+    Objects.requireNonNull(event, "event must not be null");
+    sendMessage(event);
+  }
 
-    kafkaTemplate.send(topic, event.catalogName(), json)
-        .whenComplete((result, exception) -> {
-          if (exception != null) {
-            log.error("Failed to publish refresh event for catalog '{}': {}",
-                event.catalogName(), exception.getMessage(), exception);
-          } else {
-            log.debug("Published refresh event for catalog '{}' to "
-                + "partition {} offset {}",
-                event.catalogName(),
-                result.getRecordMetadata().partition(),
-                result.getRecordMetadata().offset());
-          }
-        });
+  /** {@inheritDoc} */
+  @Override
+  public boolean supportsPatches() {
+    return true;
   }
 
   /** {@inheritDoc} */
@@ -85,6 +90,35 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
   public void subscribe(final RefreshListener listener) {
     Objects.requireNonNull(listener, "listener must not be null");
     listeners.add(listener);
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void subscribePatch(final PatchListener listener) {
+    Objects.requireNonNull(listener, "listener must not be null");
+    patchListeners.add(listener);
+  }
+
+  /** Serializes and sends a {@link SyncMessage} via the Spring Kafka
+   * template, partitioning by catalog name.
+   *
+   * @param message the message to broadcast, never null
+   */
+  private void sendMessage(final SyncMessage message) {
+    final String json = SyncMessageCodec.serialize(message);
+    kafkaTemplate.send(topic, message.catalogName(), json)
+        .whenComplete((result, exception) -> {
+          if (exception != null) {
+            log.error("Failed to publish sync message for catalog '{}': {}",
+                message.catalogName(), exception.getMessage(), exception);
+          } else {
+            log.debug("Published sync message for catalog '{}' to "
+                + "partition {} offset {}",
+                message.catalogName(),
+                result.getRecordMetadata().partition(),
+                result.getRecordMetadata().offset());
+          }
+        });
   }
 
   /** No-op: Spring manages the Kafka listener container lifecycle.
@@ -122,19 +156,48 @@ public final class SpringKafkaSyncStrategy implements SyncStrategy {
       containerFactory = "andersoniKafkaListenerContainerFactory")
   public void onMessage(final ConsumerRecord<String, String> record) {
     try {
-      final RefreshEvent event = RefreshEventCodec.deserialize(record.value());
-      for (final RefreshListener listener : listeners) {
-        try {
-          listener.onRefresh(event);
-        } catch (final Exception e) {
-          log.error("Listener threw exception while processing event for "
-              + "catalog '{}': {}", event.catalogName(), e.getMessage(), e);
-        }
+      final SyncMessage message = SyncMessageCodec.deserialize(
+          record.value());
+      if (message instanceof RefreshEvent refresh) {
+        dispatchRefresh(refresh);
+      } else if (message instanceof PatchEvent patch) {
+        dispatchPatch(patch);
       }
     } catch (final Exception e) {
-      log.error("Failed to deserialize refresh event from partition {} "
+      log.error("Failed to deserialize sync message from partition {} "
           + "offset {}: {}", record.partition(), record.offset(),
           e.getMessage(), e);
+    }
+  }
+
+  /** Dispatches a refresh event to all registered listeners.
+   *
+   * @param event the refresh event, never null
+   */
+  private void dispatchRefresh(final RefreshEvent event) {
+    for (final RefreshListener listener : listeners) {
+      try {
+        listener.onRefresh(event);
+      } catch (final Exception e) {
+        log.error("Listener threw exception while processing event for "
+            + "catalog '{}': {}", event.catalogName(), e.getMessage(), e);
+      }
+    }
+  }
+
+  /** Dispatches a patch event to all registered patch listeners.
+   *
+   * @param event the patch event, never null
+   */
+  private void dispatchPatch(final PatchEvent event) {
+    for (final PatchListener listener : patchListeners) {
+      try {
+        listener.onPatch(event);
+      } catch (final Exception e) {
+        log.error("Patch listener threw exception while processing event "
+            + "for catalog '{}': {}", event.catalogName(),
+            e.getMessage(), e);
+      }
     }
   }
 
