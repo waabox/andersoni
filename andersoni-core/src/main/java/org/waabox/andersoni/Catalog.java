@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
+import org.waabox.andersoni.CatalogPatcher.PatchResult;
+import org.waabox.andersoni.CatalogPatcher.ReplaceOutcome;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 
 /**
@@ -118,6 +120,9 @@ public final class Catalog<T> {
   /** The build hooks sorted by priority, never null. */
   private final List<PrioritizedHook<T>> hooks;
 
+  /** The surgical snapshot patcher (lazy-initialized once defs are frozen). */
+  private final CatalogPatcher<T> patcher;
+
   /** The data loader, null if using static data. */
   private final DataLoader<T> dataLoader;
 
@@ -186,6 +191,10 @@ public final class Catalog<T> {
     this.current = new AtomicReference<>(Snapshot.empty());
     this.refreshLock = new ReentrantLock();
     this.versionCounter = new AtomicLong(0);
+    this.patcher = new CatalogPatcher<>(this.name,
+        this.indexDefinitions, this.sortedIndexDefinitions,
+        this.multiKeyIndexDefinitions, this.graphIndexDefinitions,
+        this.viewDefinitions, this.hooks);
   }
 
   /**
@@ -358,89 +367,10 @@ public final class Catalog<T> {
 
     refreshLock.lock();
     try {
-      return doReplace(indexName, key, newItem);
+      return applyPatch(indexName, key, newItem);
     } finally {
       refreshLock.unlock();
     }
-  }
-
-  /**
-   * Performs the surgical snapshot patch under the refresh lock and
-   * returns the outcome. See {@link #replace(String, Object, T)} for the
-   * contract.
-   *
-   * @param indexName the index name, never null
-   * @param key       the lookup key, never null
-   * @param newItem   the replacement item, never null
-   *
-   * @return the outcome on success, empty on no-match
-   */
-  private Optional<ReplaceOutcome<T>> doReplace(final String indexName,
-      final Object key, final T newItem) {
-    final Snapshot<T> snapshot = current.get();
-    final long fromVersion = snapshot.version();
-    final String fromHash = snapshot.hash();
-
-    final Map<Object, List<AndersoniCatalogItem<T>>> bucketMap =
-        snapshot.indicesMap().get(indexName);
-    if (bucketMap == null) {
-      throw new IndexNotFoundException(indexName, name);
-    }
-
-    final List<AndersoniCatalogItem<T>> bucket = bucketMap.get(key);
-    if (bucket == null || bucket.isEmpty()) {
-      return Optional.empty();
-    }
-    if (bucket.size() > 1) {
-      throw new AmbiguousReplaceException(name, indexName, key,
-          bucket.size());
-    }
-
-    final AndersoniCatalogItem<T> oldWrapped = bucket.get(0);
-    final T oldItem = oldWrapped.item();
-
-    final Map<Class<?>, Object> newViews = new HashMap<>();
-    for (final ViewDefinition<T, ?> viewDef : viewDefinitions) {
-      newViews.put(viewDef.viewType(), viewDef.mapper().apply(newItem));
-    }
-    final AndersoniCatalogItem<T> newWrapped =
-        AndersoniCatalogItem.of(newItem, newViews);
-
-    T processed = newItem;
-    for (final PrioritizedHook<T> prioritizedHook : hooks) {
-      processed = prioritizedHook.hook().process(processed);
-    }
-
-    final List<AndersoniCatalogItem<T>> oldItems = snapshot.items();
-    final List<AndersoniCatalogItem<T>> newItemsList =
-        new ArrayList<>(oldItems.size());
-    for (final AndersoniCatalogItem<T> existing : oldItems) {
-      newItemsList.add(existing == oldWrapped ? newWrapped : existing);
-    }
-
-    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>>
-        newIndices = patchIndices(snapshot, oldItem, newItem,
-        oldWrapped, newWrapped);
-
-    final Map<String, NavigableMap<Comparable<?>,
-        List<AndersoniCatalogItem<T>>>> newSorted =
-        patchSortedIndices(snapshot, oldItem, newItem,
-            oldWrapped, newWrapped);
-
-    final Map<String, NavigableMap<String,
-        List<AndersoniCatalogItem<T>>>> newReversed =
-        patchReversedIndices(snapshot, oldItem, newItem,
-            oldWrapped, newWrapped);
-
-    final List<T> newData = extractDataList(newItemsList);
-    final long newVersion = versionCounter.incrementAndGet();
-    final String newHash = computeHash(newData);
-
-    final Snapshot<T> newSnapshot = Snapshot.ofWithItems(newItemsList,
-        newIndices, newSorted, newReversed, newVersion, newHash);
-    current.set(newSnapshot);
-    return Optional.of(new ReplaceOutcome<>(oldItem, fromVersion, fromHash,
-        newVersion, newHash));
   }
 
   /**
@@ -448,26 +378,17 @@ public final class Catalog<T> {
    * {@code (indexName, key)} matches the supplied precondition — exactly
    * one item, equal to {@code expectedOldItem} via {@code .equals()}.
    *
-   * <p>Used by the follower-side patch dispatch in {@code Andersoni} to
-   * apply a {@link org.waabox.andersoni.sync.PatchEvent} surgically when
-   * the local snapshot matches the leader's pre-patch state. When the
-   * precondition fails, the caller falls back to a full reload from the
-   * snapshot store rather than silently replacing the wrong item.
+   * <p>Used by the follower-side patch dispatch to apply a
+   * {@link org.waabox.andersoni.sync.PatchEvent} surgically when the local
+   * snapshot matches the leader's pre-patch state. When the precondition
+   * fails the caller falls back to a full reload rather than silently
+   * replacing the wrong item.
    *
    * <p>Atomically performs the precondition check and the swap under the
    * same refresh lock so there is no race window with concurrent writes.
    *
-   * @param indexName        the index used for the lookup, never null
-   * @param key              the lookup key, never null
-   * @param expectedOldItem  the item the follower expects to find at
-   *                         that key, never null
-   * @param newItem          the replacement item, never null
-   *
    * @return the outcome on success, empty when the precondition failed
    *         or no item was found
-   *
-   * @throws NullPointerException        if any argument is null
-   * @throws IndexNotFoundException      if the index is not declared
    */
   Optional<ReplaceOutcome<T>> replaceWithPrecondition(
       final String indexName, final Object key,
@@ -493,464 +414,49 @@ public final class Catalog<T> {
       if (!expectedOldItem.equals(bucket.get(0).item())) {
         return Optional.empty();
       }
-      return doReplace(indexName, key, newItem);
+      return applyPatch(indexName, key, newItem);
     } finally {
       refreshLock.unlock();
     }
   }
 
   /**
-   * Extracts a lookup key for {@code item} under the named index, picking
-   * any one of the keys for multi-keyed indexes. Returns {@code null} if
-   * the item would not be indexed at all (extractor returned null or an
-   * empty key set).
-   *
-   * <p>Used by the follower-side patch dispatch to re-derive the bucket
-   * key from a deserialized {@code oldItem} without having to ship the
-   * key separately on the wire.
-   *
-   * @param indexName the index name, never null
-   * @param item      the domain object, never null
-   *
-   * @return a key under which {@code item} would be indexed in
-   *         {@code indexName}, or null if it would not be indexed
-   *
-   * @throws IndexNotFoundException if no index with that name exists
+   * Delegates to {@link CatalogPatcher#extractKeyFor}. Exposed package-
+   * private so the patch dispatch can re-derive the lookup key from a
+   * deserialized oldItem without shipping it on the wire.
    */
   Object extractKeyFor(final String indexName, final T item) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(item, "item must not be null");
-    for (final IndexDefinition<T> def : indexDefinitions) {
-      if (def.name().equals(indexName)) {
-        return def.extractKey(item);
-      }
-    }
-    for (final SortedIndexDefinition<T> def : sortedIndexDefinitions) {
-      if (def.name().equals(indexName)) {
-        return def.extractKey(item);
-      }
-    }
-    for (final MultiKeyIndexDefinition<T> def : multiKeyIndexDefinitions) {
-      if (def.name().equals(indexName)) {
-        final Set<Object> keys = def.extractKeys(item);
-        return keys.isEmpty() ? null : keys.iterator().next();
-      }
-    }
-    for (final GraphIndexDefinition<T> def : graphIndexDefinitions) {
-      if (def.name().equals(indexName)) {
-        final Set<Object> keys = def.extractKeys(item);
-        return keys.isEmpty() ? null : keys.iterator().next();
-      }
-    }
-    throw new IndexNotFoundException(indexName, name);
+    return patcher.extractKeyFor(indexName, item);
   }
 
   /**
-   * Metadata captured during a successful
-   * {@link #replaceAndCapture(String, Object, T)} so callers can build
-   * cross-node patch events with a consistent precondition snapshot.
-   *
-   * @param oldItem      the item that was replaced, never null
-   * @param fromVersion  the snapshot version before the replacement
-   * @param fromHash     the snapshot hash before the replacement,
-   *                     never null
-   * @param toVersion    the snapshot version after the replacement
-   * @param toHash       the snapshot hash after the replacement,
-   *                     never null
-   * @param <T>          the catalog item type
+   * Computes the patch via the patcher, wraps the result into a new
+   * {@link Snapshot} with a fresh version and hash, and swaps the atomic
+   * reference. Must be called while holding the refresh lock.
    */
-  record ReplaceOutcome<T>(T oldItem, long fromVersion, String fromHash,
-      long toVersion, String toHash) {
-  }
-
-  /**
-   * Extracts the domain items from each wrapped catalog item.
-   *
-   * @param wrapped the wrapped items, never null
-   *
-   * @return a list of domain items, never null
-   */
-  private List<T> extractDataList(
-      final List<AndersoniCatalogItem<T>> wrapped) {
-    final List<T> result = new ArrayList<>(wrapped.size());
-    for (final AndersoniCatalogItem<T> item : wrapped) {
-      result.add(item.item());
+  private Optional<ReplaceOutcome<T>> applyPatch(final String indexName,
+      final Object key, final T newItem) {
+    final Snapshot<T> snapshot = current.get();
+    final Optional<PatchResult<T>> patched =
+        patcher.patch(snapshot, indexName, key, newItem);
+    if (patched.isEmpty()) {
+      return Optional.empty();
     }
-    return result;
-  }
-
-  /**
-   * Computes the per-named-index key sets for {@code item}, covering all
-   * four index definition types declared on this catalog.
-   *
-   * <p>The returned map is keyed by index name. Each value is the set of
-   * keys under which {@code item} would be indexed in that index. Null
-   * keys are excluded.
-   *
-   * @param item the domain object, never null
-   *
-   * @return a map from index name to its key set, never null
-   */
-  private Map<String, Set<Object>> keysByIndexName(final T item) {
-    final Map<String, Set<Object>> result = new HashMap<>();
-    for (final IndexDefinition<T> def : indexDefinitions) {
-      final Object key = def.extractKey(item);
-      result.put(def.name(),
-          key == null ? Collections.emptySet() : Set.of(key));
+    final PatchResult<T> result = patched.get();
+    final List<T> newData = new ArrayList<>(result.newItems().size());
+    for (final AndersoniCatalogItem<T> item : result.newItems()) {
+      newData.add(item.item());
     }
-    for (final SortedIndexDefinition<T> def : sortedIndexDefinitions) {
-      final Object key = def.extractKey(item);
-      result.put(def.name(),
-          key == null ? Collections.emptySet() : Set.of(key));
-    }
-    for (final MultiKeyIndexDefinition<T> def : multiKeyIndexDefinitions) {
-      result.put(def.name(), def.extractKeys(item));
-    }
-    for (final GraphIndexDefinition<T> def : graphIndexDefinitions) {
-      result.put(def.name(), def.extractKeys(item));
-    }
-    return result;
-  }
-
-  /**
-   * Builds the patched {@code indices} map. Buckets that aren't affected
-   * by the change share references with the previous snapshot.
-   *
-   * @param snapshot   the previous snapshot, never null
-   * @param oldItem    the domain object being replaced, never null
-   * @param newItem    the replacement domain object, never null
-   * @param oldWrapped the wrapped item being replaced, never null
-   * @param newWrapped the new wrapped item, never null
-   *
-   * @return the unmodifiable patched indices map, never null
-   */
-  private Map<String, Map<Object, List<AndersoniCatalogItem<T>>>>
-      patchIndices(final Snapshot<T> snapshot, final T oldItem,
-          final T newItem, final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
-
-    final Map<String, Set<Object>> oldKeysByIndex = keysByIndexName(oldItem);
-    final Map<String, Set<Object>> newKeysByIndex = keysByIndexName(newItem);
-    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>>
-        oldIndices = snapshot.indicesMap();
-    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>>
-        result = new HashMap<>(oldIndices);
-
-    for (final String idx : oldKeysByIndex.keySet()) {
-      final Set<Object> oldKeys = oldKeysByIndex.get(idx);
-      final Set<Object> newKeys = newKeysByIndex.get(idx);
-      if (oldKeys.equals(newKeys) && oldKeys.isEmpty()) {
-        continue;
-      }
-      final Map<Object, List<AndersoniCatalogItem<T>>> rebuiltInner =
-          patchInnerMap(oldIndices.get(idx), oldKeys, newKeys,
-              oldWrapped, newWrapped);
-      result.put(idx, Collections.unmodifiableMap(rebuiltInner));
-    }
-    return Collections.unmodifiableMap(result);
-  }
-
-  /**
-   * Returns a copy of {@code inner} with the relevant buckets updated to
-   * reflect the swap of {@code oldWrapped} for {@code newWrapped}.
-   *
-   * @param inner      the original inner index map, never null
-   * @param oldKeys    keys this item was indexed under previously
-   * @param newKeys    keys this item should be indexed under after patch
-   * @param oldWrapped the wrapped item being removed, never null
-   * @param newWrapped the wrapped item being inserted, never null
-   *
-   * @return a mutable copy of inner with affected buckets rebuilt
-   */
-  private Map<Object, List<AndersoniCatalogItem<T>>> patchInnerMap(
-      final Map<Object, List<AndersoniCatalogItem<T>>> inner,
-      final Set<Object> oldKeys, final Set<Object> newKeys,
-      final AndersoniCatalogItem<T> oldWrapped,
-      final AndersoniCatalogItem<T> newWrapped) {
-
-    final Map<Object, List<AndersoniCatalogItem<T>>> rebuilt =
-        new HashMap<>(inner);
-    for (final Object key : oldKeys) {
-      if (!newKeys.contains(key)) {
-        rebuilt.put(key, removeFromBucket(rebuilt.get(key), oldWrapped));
-      }
-    }
-    for (final Object key : newKeys) {
-      if (!oldKeys.contains(key)) {
-        rebuilt.put(key, addToBucket(rebuilt.get(key), newWrapped));
-      }
-    }
-    for (final Object key : oldKeys) {
-      if (newKeys.contains(key)) {
-        rebuilt.put(key, swapInBucket(rebuilt.get(key),
-            oldWrapped, newWrapped));
-      }
-    }
-    rebuilt.entrySet().removeIf(e -> e.getValue().isEmpty());
-    return rebuilt;
-  }
-
-  /**
-   * Builds the patched {@code sortedIndices} map for sorted indexes.
-   *
-   * @param snapshot   the previous snapshot, never null
-   * @param oldItem    the domain object being replaced, never null
-   * @param newItem    the replacement domain object, never null
-   * @param oldWrapped the wrapped item being replaced, never null
-   * @param newWrapped the new wrapped item, never null
-   *
-   * @return the unmodifiable patched sorted indices map, never null
-   */
-  private Map<String, NavigableMap<Comparable<?>,
-      List<AndersoniCatalogItem<T>>>> patchSortedIndices(
-          final Snapshot<T> snapshot, final T oldItem, final T newItem,
-          final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
-
-    final Map<String, NavigableMap<Comparable<?>,
-        List<AndersoniCatalogItem<T>>>> oldSorted =
-            snapshot.sortedIndicesMap();
-    if (sortedIndexDefinitions.isEmpty() || oldSorted.isEmpty()) {
-      return oldSorted;
-    }
-
-    final Map<String, NavigableMap<Comparable<?>,
-        List<AndersoniCatalogItem<T>>>> result = new HashMap<>(oldSorted);
-    for (final SortedIndexDefinition<T> def : sortedIndexDefinitions) {
-      final Object oldKey = def.extractKey(oldItem);
-      final Object newKey = def.extractKey(newItem);
-      if (Objects.equals(oldKey, newKey) && oldKey == null) {
-        continue;
-      }
-      final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>
-          rebuilt = patchSortedInnerMap(oldSorted.get(def.name()),
-          oldKey, newKey, oldWrapped, newWrapped);
-      result.put(def.name(),
-          Collections.unmodifiableNavigableMap(rebuilt));
-    }
-    return Collections.unmodifiableMap(result);
-  }
-
-  /**
-   * Returns a copy of {@code inner} (a sorted index's NavigableMap) with
-   * the affected buckets updated. Null keys are excluded from sorted
-   * navigable maps (per the build invariant) so they don't appear here.
-   *
-   * @param inner      the original inner sorted map, never null
-   * @param oldKey     the key the item was sorted under, may be null
-   * @param newKey     the key the item should be sorted under, may be null
-   * @param oldWrapped the wrapped item being removed, never null
-   * @param newWrapped the wrapped item being inserted, never null
-   *
-   * @return a mutable sorted copy with affected buckets rebuilt
-   */
-  private NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>
-      patchSortedInnerMap(
-          final NavigableMap<Comparable<?>,
-              List<AndersoniCatalogItem<T>>> inner,
-          final Object oldKey, final Object newKey,
-          final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
-
-    final TreeMap<Comparable<?>, List<AndersoniCatalogItem<T>>> rebuilt =
-        new TreeMap<>(inner);
-    if (oldKey != null && Objects.equals(oldKey, newKey)) {
-      rebuilt.put((Comparable<?>) oldKey,
-          swapInBucket(rebuilt.get(oldKey), oldWrapped, newWrapped));
-      return rebuilt;
-    }
-    if (oldKey != null) {
-      final List<AndersoniCatalogItem<T>> bucket =
-          removeFromBucket(rebuilt.get(oldKey), oldWrapped);
-      if (bucket.isEmpty()) {
-        rebuilt.remove(oldKey);
-      } else {
-        rebuilt.put((Comparable<?>) oldKey, bucket);
-      }
-    }
-    if (newKey != null) {
-      rebuilt.put((Comparable<?>) newKey,
-          addToBucket(rebuilt.get(newKey), newWrapped));
-    }
-    return rebuilt;
-  }
-
-  /**
-   * Builds the patched {@code reversedKeyIndices} map. Only sorted
-   * indexes with String keys carry a reversed-key map.
-   *
-   * @param snapshot   the previous snapshot, never null
-   * @param oldItem    the domain object being replaced, never null
-   * @param newItem    the replacement domain object, never null
-   * @param oldWrapped the wrapped item being replaced, never null
-   * @param newWrapped the new wrapped item, never null
-   *
-   * @return the unmodifiable patched reversed-key map, never null
-   */
-  private Map<String, NavigableMap<String, List<AndersoniCatalogItem<T>>>>
-      patchReversedIndices(final Snapshot<T> snapshot, final T oldItem,
-          final T newItem, final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
-
-    final Map<String, NavigableMap<String,
-        List<AndersoniCatalogItem<T>>>> oldReversed =
-            snapshot.reversedKeyIndicesMap();
-    if (oldReversed.isEmpty()) {
-      return oldReversed;
-    }
-
-    final Map<String, NavigableMap<String,
-        List<AndersoniCatalogItem<T>>>> result = new HashMap<>(oldReversed);
-    for (final SortedIndexDefinition<T> def : sortedIndexDefinitions) {
-      if (!oldReversed.containsKey(def.name())) {
-        continue;
-      }
-      final Object oldKey = def.extractKey(oldItem);
-      final Object newKey = def.extractKey(newItem);
-      if (!(oldKey == null || oldKey instanceof String)
-          || !(newKey == null || newKey instanceof String)) {
-        continue;
-      }
-      final String oldReversedKey = oldKey == null ? null
-          : new StringBuilder((String) oldKey).reverse().toString();
-      final String newReversedKey = newKey == null ? null
-          : new StringBuilder((String) newKey).reverse().toString();
-      if (Objects.equals(oldReversedKey, newReversedKey)
-          && oldReversedKey == null) {
-        continue;
-      }
-      final NavigableMap<String, List<AndersoniCatalogItem<T>>>
-          rebuilt = patchReversedInnerMap(oldReversed.get(def.name()),
-          oldReversedKey, newReversedKey, oldWrapped, newWrapped);
-      result.put(def.name(),
-          Collections.unmodifiableNavigableMap(rebuilt));
-    }
-    return Collections.unmodifiableMap(result);
-  }
-
-  /**
-   * Returns a copy of {@code inner} (the reversed-key TreeMap) with the
-   * affected buckets updated.
-   *
-   * @param inner            the original inner reversed-key map, never null
-   * @param oldReversedKey   the prior reversed key, may be null
-   * @param newReversedKey   the new reversed key, may be null
-   * @param oldWrapped       the wrapped item being removed, never null
-   * @param newWrapped       the wrapped item being inserted, never null
-   *
-   * @return a mutable sorted copy with affected buckets rebuilt
-   */
-  private NavigableMap<String, List<AndersoniCatalogItem<T>>>
-      patchReversedInnerMap(
-          final NavigableMap<String,
-              List<AndersoniCatalogItem<T>>> inner,
-          final String oldReversedKey, final String newReversedKey,
-          final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
-
-    final TreeMap<String, List<AndersoniCatalogItem<T>>> rebuilt =
-        new TreeMap<>(inner);
-    if (oldReversedKey != null
-        && oldReversedKey.equals(newReversedKey)) {
-      rebuilt.put(oldReversedKey,
-          swapInBucket(rebuilt.get(oldReversedKey),
-              oldWrapped, newWrapped));
-      return rebuilt;
-    }
-    if (oldReversedKey != null) {
-      final List<AndersoniCatalogItem<T>> bucket =
-          removeFromBucket(rebuilt.get(oldReversedKey), oldWrapped);
-      if (bucket.isEmpty()) {
-        rebuilt.remove(oldReversedKey);
-      } else {
-        rebuilt.put(oldReversedKey, bucket);
-      }
-    }
-    if (newReversedKey != null) {
-      rebuilt.put(newReversedKey,
-          addToBucket(rebuilt.get(newReversedKey), newWrapped));
-    }
-    return rebuilt;
-  }
-
-  /**
-   * Returns an unmodifiable bucket equal to {@code bucket} minus the
-   * first occurrence of {@code item}. If the bucket becomes empty, an
-   * empty list is returned.
-   *
-   * @param bucket the existing bucket, may be null
-   * @param item   the item to remove, never null
-   *
-   * @return the rebuilt bucket, never null
-   */
-  private List<AndersoniCatalogItem<T>> removeFromBucket(
-      final List<AndersoniCatalogItem<T>> bucket,
-      final AndersoniCatalogItem<T> item) {
-    if (bucket == null || bucket.isEmpty()) {
-      return Collections.emptyList();
-    }
-    final List<AndersoniCatalogItem<T>> copy = new ArrayList<>(
-        bucket.size());
-    boolean removed = false;
-    for (final AndersoniCatalogItem<T> existing : bucket) {
-      if (!removed && existing == item) {
-        removed = true;
-        continue;
-      }
-      copy.add(existing);
-    }
-    return Collections.unmodifiableList(copy);
-  }
-
-  /**
-   * Returns an unmodifiable bucket equal to {@code bucket} with
-   * {@code item} appended.
-   *
-   * @param bucket the existing bucket, may be null
-   * @param item   the item to add, never null
-   *
-   * @return the rebuilt bucket, never null
-   */
-  private List<AndersoniCatalogItem<T>> addToBucket(
-      final List<AndersoniCatalogItem<T>> bucket,
-      final AndersoniCatalogItem<T> item) {
-    final int existingSize = bucket == null ? 0 : bucket.size();
-    final List<AndersoniCatalogItem<T>> copy =
-        new ArrayList<>(existingSize + 1);
-    if (bucket != null) {
-      copy.addAll(bucket);
-    }
-    copy.add(item);
-    return Collections.unmodifiableList(copy);
-  }
-
-  /**
-   * Returns an unmodifiable bucket equal to {@code bucket} with the first
-   * occurrence of {@code oldItem} replaced by {@code newItem}. Preserves
-   * positional order.
-   *
-   * @param bucket  the existing bucket, must contain {@code oldItem}
-   * @param oldItem the item to replace, never null
-   * @param newItem the replacement item, never null
-   *
-   * @return the rebuilt bucket, never null
-   */
-  private List<AndersoniCatalogItem<T>> swapInBucket(
-      final List<AndersoniCatalogItem<T>> bucket,
-      final AndersoniCatalogItem<T> oldItem,
-      final AndersoniCatalogItem<T> newItem) {
-    final List<AndersoniCatalogItem<T>> copy =
-        new ArrayList<>(bucket.size());
-    boolean swapped = false;
-    for (final AndersoniCatalogItem<T> existing : bucket) {
-      if (!swapped && existing == oldItem) {
-        copy.add(newItem);
-        swapped = true;
-      } else {
-        copy.add(existing);
-      }
-    }
-    return Collections.unmodifiableList(copy);
+    final long newVersion = versionCounter.incrementAndGet();
+    final String newHash = computeHash(newData);
+    final Snapshot<T> newSnapshot = Snapshot.ofWithItems(result.newItems(),
+        result.newIndices(), result.newSorted(), result.newReversed(),
+        newVersion, newHash);
+    current.set(newSnapshot);
+    return Optional.of(new ReplaceOutcome<>(result.oldItem(),
+        snapshot.version(), snapshot.hash(), newVersion, newHash));
   }
 
   /**
