@@ -3,9 +3,11 @@ package org.waabox.andersoni;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -133,6 +135,31 @@ public final class MultiKeyIndexDefinition<T> {
         index.computeIfAbsent(key, k -> new ArrayList<>()).add(item);
       }
     }
+  }
+
+  /**
+   * Extracts the set of index keys for the given domain object.
+   *
+   * <p>Null keys are filtered out and duplicates are deduplicated, so the
+   * returned set matches the buckets this item would be indexed under.
+   * Returns an empty set if the extractor returns null, an empty list, or
+   * only null values.
+   *
+   * @param item the domain object, never null
+   * @return the set of non-null keys, never null
+   */
+  Set<Object> extractKeys(final T item) {
+    final List<?> keys = keysExtractor.apply(item);
+    if (keys == null || keys.isEmpty()) {
+      return Collections.emptySet();
+    }
+    final Set<Object> result = new HashSet<>();
+    for (final Object key : keys) {
+      if (key != null) {
+        result.add(key);
+      }
+    }
+    return result;
   }
 
   /**
