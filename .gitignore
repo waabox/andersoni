@@ -30,3 +30,6 @@ Thumbs.db
 
 # Worktrees
 .worktrees/
+
+# SDKMAN (per-developer JDK pin)
+.sdkmanrc
