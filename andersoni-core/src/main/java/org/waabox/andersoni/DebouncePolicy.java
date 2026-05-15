@@ -143,4 +143,29 @@ public final class DebouncePolicy {
   public boolean isPassThrough() {
     return window.isZero();
   }
+
+  /** {@inheritDoc} */
+  @Override
+  public boolean equals(final Object other) {
+    if (this == other) {
+      return true;
+    }
+    if (!(other instanceof DebouncePolicy)) {
+      return false;
+    }
+    final DebouncePolicy that = (DebouncePolicy) other;
+    return window.equals(that.window) && maxWait.equals(that.maxWait);
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public int hashCode() {
+    return Objects.hash(window, maxWait);
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public String toString() {
+    return "DebouncePolicy[window=" + window + ", maxWait=" + maxWait + "]";
+  }
 }

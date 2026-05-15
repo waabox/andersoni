@@ -19,7 +19,7 @@ import org.slf4j.LoggerFactory;
  * of incoming refresh events into a single dispatch.
  *
  * <p><b>Per-catalog isolation.</b> Each catalog name has its own fully
- * independent timer state ({@code firstEventMillis} and the scheduled
+ * independent timer state (the burst start time and the scheduled
  * future) held in a {@link ConcurrentHashMap} and locked independently.
  * Consequences:
  * <ul>
@@ -49,8 +49,6 @@ import org.slf4j.LoggerFactory;
  * scheduler resources are used. This preserves the pre-debouncer behavior.
  *
  * <p>This class is thread-safe.
- *
- * @author waabox(waabox[at]gmail[dot]com)
  */
 final class RefreshDebouncer {
 
@@ -71,35 +69,24 @@ final class RefreshDebouncer {
   private final Map<String, CatalogState> states;
 
   /**
-   * Creates a new debouncer.
+   * Creates a new debouncer governed by the given policy.
    *
-   * @param theWindow  the minimum delay before firing, never null. If zero,
-   *                   the debouncer is a pass-through.
-   * @param theMaxWait the maximum delay before firing, never null. Must be
-   *                   greater than or equal to {@code theWindow}.
+   * <p>The policy is the single source of truth for the window/max-wait
+   * bounds and is already validated by {@link DebouncePolicy}'s factories,
+   * so this constructor performs no further range checking. A
+   * {@link DebouncePolicy#passThrough()} policy yields a no-op debouncer
+   * that runs actions synchronously on the calling thread.
    *
-   * @throws NullPointerException     if any argument is null
-   * @throws IllegalArgumentException if window is negative, maxWait is
-   *                                  negative, or maxWait is less than
-   *                                  window when window is non-zero
+   * @param policy the debounce policy, never null
+   *
+   * @throws NullPointerException if policy is null
    */
-  RefreshDebouncer(final Duration theWindow, final Duration theMaxWait) {
-    Objects.requireNonNull(theWindow, "window must not be null");
-    Objects.requireNonNull(theMaxWait, "maxWait must not be null");
-    if (theWindow.isNegative()) {
-      throw new IllegalArgumentException("window must not be negative");
-    }
-    if (theMaxWait.isNegative()) {
-      throw new IllegalArgumentException("maxWait must not be negative");
-    }
-    if (!theWindow.isZero() && theMaxWait.compareTo(theWindow) < 0) {
-      throw new IllegalArgumentException(
-          "maxWait must be greater than or equal to window");
-    }
-    this.window = theWindow;
-    this.maxWait = theMaxWait;
+  RefreshDebouncer(final DebouncePolicy policy) {
+    Objects.requireNonNull(policy, "policy must not be null");
+    this.window = policy.window();
+    this.maxWait = policy.maxWait();
     this.states = new ConcurrentHashMap<>();
-    if (theWindow.isZero()) {
+    if (policy.isPassThrough()) {
       this.scheduler = null;
     } else {
       this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -147,20 +134,21 @@ final class RefreshDebouncer {
     final CatalogState state = states.computeIfAbsent(catalogName,
         k -> new CatalogState());
     synchronized (state) {
-      final long now = System.currentTimeMillis();
-      if (state.firstEventMillis < 0) {
-        state.firstEventMillis = now;
+      final long now = System.nanoTime();
+      if (!state.inBurst) {
+        state.inBurst = true;
+        state.firstEventNanos = now;
       }
-      final long maxFireAt = state.firstEventMillis + maxWait.toMillis();
-      final long candidateFireAt = now + window.toMillis();
+      final long maxFireAt = state.firstEventNanos + maxWait.toNanos();
+      final long candidateFireAt = now + window.toNanos();
       final long actualFireAt = Math.min(candidateFireAt, maxFireAt);
-      final long delay = Math.max(0L, actualFireAt - now);
+      final long delayNanos = Math.max(0L, actualFireAt - now);
 
       if (state.scheduled != null) {
         state.scheduled.cancel(false);
       }
       state.scheduled = scheduler.schedule(() -> fire(state, action),
-          delay, TimeUnit.MILLISECONDS);
+          delayNanos, TimeUnit.NANOSECONDS);
     }
   }
 
@@ -169,7 +157,7 @@ final class RefreshDebouncer {
    */
   private void fire(final CatalogState state, final Runnable action) {
     synchronized (state) {
-      state.firstEventMillis = -1L;
+      state.inBurst = false;
       state.scheduled = null;
     }
     try {
@@ -195,11 +183,14 @@ final class RefreshDebouncer {
   /** Holds the timer state for a single catalog. */
   private static final class CatalogState {
 
+    /** Whether a burst is currently in progress for this catalog. */
+    private boolean inBurst = false;
+
     /**
-     * Wall-clock time of the first event in the current burst, or {@code -1}
-     * if no burst is currently in progress.
+     * {@link System#nanoTime()} reading of the first event in the current
+     * burst. Only meaningful while {@link #inBurst} is {@code true}.
      */
-    private long firstEventMillis = -1L;
+    private long firstEventNanos = 0L;
 
     /** The currently scheduled fire task, or {@code null} if none. */
     private ScheduledFuture<?> scheduled;

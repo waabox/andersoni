@@ -228,8 +228,7 @@ public final class Andersoni {
     bootstrapAllCatalogs();
     asyncRefreshDispatcher = new AsyncRefreshDispatcher(
         catalogsByName.keySet());
-    refreshDebouncer = new RefreshDebouncer(
-        debouncePolicy.window(), debouncePolicy.maxWait());
+    refreshDebouncer = new RefreshDebouncer(debouncePolicy);
     wireSyncListener();
     schedulePeriodicRefreshes();
     metrics.start(
@@ -1176,7 +1175,14 @@ public final class Andersoni {
             // Reset before running so any dispatch that arrives while
             // refreshTask.run() is executing is captured by the next loop.
             rerun.set(false);
-            refreshTask.run();
+            try {
+              refreshTask.run();
+            } catch (final RuntimeException e) {
+              // Swallow so a failed refresh still honors a queued rerun and
+              // reaches the late-rerun check below instead of stranding it.
+              log.error("Refresh task failed for catalog '{}': {}",
+                  catalogName, e.getMessage(), e);
+            }
           } while (rerun.compareAndSet(true, false));
         } finally {
           pending.set(false);

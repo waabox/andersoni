@@ -13,15 +13,13 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Tests for {@link RefreshDebouncer}.
- *
- * @author waabox(waabox[at]gmail[dot]com)
  */
 class RefreshDebouncerTest {
 
   @Test
   void whenWindowIsZero_givenAnySubmit_shouldRunSynchronously() {
     final RefreshDebouncer debouncer =
-        new RefreshDebouncer(Duration.ZERO, Duration.ZERO);
+        new RefreshDebouncer(DebouncePolicy.passThrough());
     final AtomicInteger count = new AtomicInteger();
 
     assertTrue(debouncer.isPassThrough());
@@ -36,7 +34,7 @@ class RefreshDebouncerTest {
   @Test
   void whenBurst_givenSmallWindow_shouldFireOnce() throws Exception {
     final RefreshDebouncer debouncer = new RefreshDebouncer(
-        Duration.ofMillis(100), Duration.ofMillis(100));
+        DebouncePolicy.of(Duration.ofMillis(100)));
     final AtomicInteger count = new AtomicInteger();
 
     assertFalse(debouncer.isPassThrough());
@@ -53,7 +51,7 @@ class RefreshDebouncerTest {
   void whenSustainedTraffic_givenMaxWaitCap_shouldFireWithinCap()
       throws Exception {
     final RefreshDebouncer debouncer = new RefreshDebouncer(
-        Duration.ofMillis(80), Duration.ofMillis(200));
+        DebouncePolicy.of(Duration.ofMillis(80), Duration.ofMillis(200)));
     final AtomicInteger count = new AtomicInteger();
 
     final long start = System.currentTimeMillis();
@@ -89,7 +87,7 @@ class RefreshDebouncerTest {
   void whenTwoCatalogs_givenIndependentBursts_shouldFirePerCatalog()
       throws Exception {
     final RefreshDebouncer debouncer = new RefreshDebouncer(
-        Duration.ofMillis(80), Duration.ofMillis(80));
+        DebouncePolicy.of(Duration.ofMillis(80)));
     final AtomicInteger countA = new AtomicInteger();
     final AtomicInteger countB = new AtomicInteger();
 
@@ -109,7 +107,7 @@ class RefreshDebouncerTest {
   void whenSecondBurstAfterFirst_givenQuietPeriod_shouldFireBoth()
       throws Exception {
     final RefreshDebouncer debouncer = new RefreshDebouncer(
-        Duration.ofMillis(60), Duration.ofMillis(60));
+        DebouncePolicy.of(Duration.ofMillis(60)));
     final AtomicInteger count = new AtomicInteger();
 
     debouncer.submit("c", count::incrementAndGet);
@@ -125,27 +123,9 @@ class RefreshDebouncerTest {
   }
 
   @Test
-  void whenConstructing_givenNegativeWindow_shouldThrow() {
-    assertThrows(IllegalArgumentException.class, () ->
-        new RefreshDebouncer(Duration.ofMillis(-1), Duration.ZERO));
-  }
-
-  @Test
-  void whenConstructing_givenNegativeMaxWait_shouldThrow() {
-    assertThrows(IllegalArgumentException.class, () ->
-        new RefreshDebouncer(Duration.ofMillis(10), Duration.ofMillis(-1)));
-  }
-
-  @Test
-  void whenConstructing_givenMaxWaitLessThanWindow_shouldThrow() {
-    assertThrows(IllegalArgumentException.class, () ->
-        new RefreshDebouncer(Duration.ofMillis(100), Duration.ofMillis(50)));
-  }
-
-  @Test
   void whenSubmit_givenNullCatalog_shouldThrow() {
     final RefreshDebouncer debouncer = new RefreshDebouncer(
-        Duration.ofMillis(10), Duration.ofMillis(10));
+        DebouncePolicy.of(Duration.ofMillis(10)));
     try {
       assertThrows(NullPointerException.class,
           () -> debouncer.submit(null, () -> {}));
@@ -157,7 +137,7 @@ class RefreshDebouncerTest {
   @Test
   void whenShutdown_givenNoSubmits_shouldNotThrow() {
     final RefreshDebouncer debouncer = new RefreshDebouncer(
-        Duration.ofMillis(10), Duration.ofMillis(10));
+        DebouncePolicy.of(Duration.ofMillis(10)));
     debouncer.shutdown();
     debouncer.shutdown();
   }
@@ -166,7 +146,7 @@ class RefreshDebouncerTest {
   void whenSubmitAfterFire_givenSchedulerStillRunning_shouldFireAgain()
       throws Exception {
     final RefreshDebouncer debouncer = new RefreshDebouncer(
-        Duration.ofMillis(50), Duration.ofMillis(50));
+        DebouncePolicy.of(Duration.ofMillis(50)));
     final AtomicInteger count = new AtomicInteger();
 
     debouncer.submit("c", count::incrementAndGet);

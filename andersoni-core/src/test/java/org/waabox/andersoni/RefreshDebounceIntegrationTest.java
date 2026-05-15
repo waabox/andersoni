@@ -27,8 +27,6 @@ import org.waabox.andersoni.sync.SyncStrategy;
  * instrumented to count invocations and (in some tests) block on a latch
  * so we can simulate a slow refresh and observe events that arrive while
  * one is in flight.
- *
- * @author waabox(waabox[at]gmail[dot]com)
  */
 class RefreshDebounceIntegrationTest {
 

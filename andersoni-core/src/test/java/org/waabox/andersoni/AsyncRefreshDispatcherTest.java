@@ -18,8 +18,6 @@ import org.junit.jupiter.api.Test;
  * a refresh is in flight must trigger exactly one follow-up refresh after
  * the running one finishes (no matter how many events arrived), instead of
  * being silently dropped.
- *
- * @author waabox(waabox[at]gmail[dot]com)
  */
 class AsyncRefreshDispatcherTest {
 
