@@ -24,7 +24,9 @@ public record GraphQueryCondition(String fieldName, Operation operation, Object[
    */
   public enum Operation {
     /** Matches items whose indexed value equals the single argument. */
-    EQUAL_TO
+    EQUAL_TO,
+    /** Matches items whose indexed value equals any of the arguments. */
+    IN_LIST
   }
 
   /**

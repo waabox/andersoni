@@ -39,7 +39,7 @@ class QueryPlannerTest {
         QueryPlanner.plan(List.of(index), conditions);
 
     assertEquals("by-country-cat", plan.graphIndexName());
-    assertEquals(CompositeKey.of("AR", "deportes/futbol"), plan.key());
+    assertEquals(List.of(CompositeKey.of("AR", "deportes/futbol")), plan.keys());
     assertTrue(plan.postFilterConditions().isEmpty());
   }
 
@@ -53,7 +53,7 @@ class QueryPlannerTest {
     final QueryPlanner.Plan<Pub> plan =
         QueryPlanner.plan(List.of(index), conditions);
 
-    assertEquals(CompositeKey.of("AR"), plan.key());
+    assertEquals(List.of(CompositeKey.of("AR")), plan.keys());
     assertTrue(plan.postFilterConditions().isEmpty());
   }
 
@@ -82,7 +82,7 @@ class QueryPlannerTest {
     final QueryPlanner.Plan<Pub> plan =
         QueryPlanner.plan(List.of(index), conditions);
 
-    assertEquals(CompositeKey.of("AR"), plan.key());
+    assertEquals(List.of(CompositeKey.of("AR")), plan.keys());
     assertEquals(1, plan.postFilterConditions().size());
     assertEquals("organizer",
         plan.postFilterConditions().getFirst().fieldName());
@@ -107,6 +107,47 @@ class QueryPlannerTest {
         QueryPlanner.plan(List.of(index1, index2), conditions);
 
     assertEquals("by-country-cat", plan.graphIndexName());
-    assertEquals(CompositeKey.of("AR", "deportes"), plan.key());
+    assertEquals(List.of(CompositeKey.of("AR", "deportes")), plan.keys());
+  }
+
+  @Test
+  void whenPlanning_givenInListOnCoveredField_shouldProduceOneKeyPerValue() {
+    final var index = twoFieldIndex();
+    final Map<String, GraphQueryCondition> conditions = new LinkedHashMap<>();
+    conditions.put("country", new GraphQueryCondition("country",
+        GraphQueryCondition.Operation.EQUAL_TO, new Object[]{"AR"}));
+    conditions.put("category", new GraphQueryCondition("category",
+        GraphQueryCondition.Operation.IN_LIST,
+        new Object[]{"deportes", "musica"}));
+
+    final QueryPlanner.Plan<Pub> plan =
+        QueryPlanner.plan(List.of(index), conditions);
+
+    assertEquals(
+        List.of(CompositeKey.of("AR", "deportes"), CompositeKey.of("AR", "musica")),
+        plan.keys());
+    assertTrue(plan.postFilterConditions().isEmpty());
+  }
+
+  @Test
+  void whenPlanning_givenTwoInListConditions_shouldProduceCartesianProduct() {
+    final var index = twoFieldIndex();
+    final Map<String, GraphQueryCondition> conditions = new LinkedHashMap<>();
+    conditions.put("country", new GraphQueryCondition("country",
+        GraphQueryCondition.Operation.IN_LIST, new Object[]{"AR", "MX"}));
+    conditions.put("category", new GraphQueryCondition("category",
+        GraphQueryCondition.Operation.IN_LIST,
+        new Object[]{"deportes", "musica"}));
+
+    final QueryPlanner.Plan<Pub> plan =
+        QueryPlanner.plan(List.of(index), conditions);
+
+    assertEquals(
+        List.of(
+            CompositeKey.of("AR", "deportes"),
+            CompositeKey.of("AR", "musica"),
+            CompositeKey.of("MX", "deportes"),
+            CompositeKey.of("MX", "musica")),
+        plan.keys());
   }
 }

@@ -1,10 +1,13 @@
 package org.waabox.andersoni;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -129,7 +132,21 @@ public final class GraphQueryBuilder<T> {
               + " query fields, or use compound() for uncovered fields.");
     }
 
-    return snapshot.search(plan.graphIndexName(), plan.key());
+    final List<CompositeKey> keys = plan.keys();
+    if (keys.size() == 1) {
+      return snapshot.search(plan.graphIndexName(), keys.getFirst());
+    }
+
+    final Set<T> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    final List<T> result = new ArrayList<>();
+    for (final CompositeKey key : keys) {
+      for (final T item : snapshot.search(plan.graphIndexName(), key)) {
+        if (seen.add(item)) {
+          result.add(item);
+        }
+      }
+    }
+    return Collections.unmodifiableList(result);
   }
 
   /**
@@ -174,7 +191,21 @@ public final class GraphQueryBuilder<T> {
               + " query fields, or use compound() for uncovered fields.");
     }
 
-    return snapshot.search(plan.graphIndexName(), plan.key(), viewType);
+    final List<CompositeKey> keys = plan.keys();
+    if (keys.size() == 1) {
+      return snapshot.search(plan.graphIndexName(), keys.getFirst(), viewType);
+    }
+
+    final Set<V> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    final List<V> result = new ArrayList<>();
+    for (final CompositeKey key : keys) {
+      for (final V view : snapshot.search(plan.graphIndexName(), key, viewType)) {
+        if (seen.add(view)) {
+          result.add(view);
+        }
+      }
+    }
+    return Collections.unmodifiableList(result);
   }
 
   /**

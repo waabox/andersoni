@@ -1,5 +1,6 @@
 package org.waabox.andersoni;
 
+import java.util.Collection;
 import java.util.Objects;
 
 /**
@@ -48,5 +49,52 @@ public final class GraphQueryConditionStep<T> {
     builder.addCondition(new GraphQueryCondition(fieldName,
         GraphQueryCondition.Operation.EQUAL_TO, new Object[]{value}));
     return builder;
+  }
+
+  /**
+   * Completes this condition with a membership check against the given values.
+   *
+   * <p>Registers a {@link GraphQueryCondition} with operation
+   * {@link GraphQueryCondition.Operation#IN_LIST} on the parent builder and
+   * returns the builder for further chaining. The condition matches items whose
+   * indexed value equals any of the supplied values (OR semantics). The field
+   * must be covered by a hotpath, exactly like {@link #eq(Object)}.
+   *
+   * @param values the values to match against, never null, never empty, never
+   *               containing null elements
+   * @return the parent builder for chaining, never null
+   * @throws NullPointerException     if values is null or contains a null element
+   * @throws IllegalArgumentException if values is empty
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public GraphQueryBuilder<T> in(final Collection<?> values) {
+    Objects.requireNonNull(values, "values must not be null");
+    if (values.isEmpty()) {
+      throw new IllegalArgumentException("values must not be empty");
+    }
+    final Object[] args = values.toArray();
+    for (final Object value : args) {
+      Objects.requireNonNull(value, "value must not be null");
+    }
+    builder.addCondition(new GraphQueryCondition(fieldName,
+        GraphQueryCondition.Operation.IN_LIST, args));
+    return builder;
+  }
+
+  /**
+   * Varargs overload of {@link #in(Collection)}.
+   *
+   * @param values the values to match against, never null, never empty, never
+   *               containing null elements
+   * @return the parent builder for chaining, never null
+   * @throws NullPointerException     if values is null or contains a null element
+   * @throws IllegalArgumentException if values is empty
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public GraphQueryBuilder<T> in(final Object... values) {
+    Objects.requireNonNull(values, "values must not be null");
+    return in(java.util.Arrays.asList(values));
   }
 }

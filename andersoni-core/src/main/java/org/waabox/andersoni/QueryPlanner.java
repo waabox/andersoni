@@ -1,5 +1,6 @@
 package org.waabox.andersoni;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -20,9 +21,14 @@ public final class QueryPlanner {
   /**
    * The result of planning a graph query.
    *
-   * <p>Carries the resolved index name, the composite key to use for the direct lookup,
+   * <p>Carries the resolved index name, the composite keys to use for the direct lookup,
    * and any conditions that could not be covered by the hotpath and must be evaluated
    * as post-filters on the result set.
+   *
+   * <p>A plan carries multiple keys when one or more covered conditions use the
+   * {@link GraphQueryCondition.Operation#IN_LIST} operation: the keys are the
+   * cartesian product of every covered field's candidate values. Single-value
+   * {@link GraphQueryCondition.Operation#EQUAL_TO} conditions yield exactly one key.
    *
    * @param <T> the type of root entity being indexed
    *
@@ -30,7 +36,7 @@ public final class QueryPlanner {
    */
   public record Plan<T>(
       String graphIndexName,
-      CompositeKey key,
+      List<CompositeKey> keys,
       List<GraphQueryCondition> postFilterConditions) {
   }
 
@@ -88,17 +94,29 @@ public final class QueryPlanner {
       final List<String> hotpathFields,
       final int coverage,
       final Map<String, GraphQueryCondition> conditions) {
-    final Object[] keyComponents = new Object[coverage];
+    List<List<Object>> combinations = new ArrayList<>();
+    combinations.add(new ArrayList<>());
     for (int i = 0; i < coverage; i++) {
       final GraphQueryCondition cond = conditions.get(hotpathFields.get(i));
-      keyComponents[i] = cond.args()[0];
+      final List<List<Object>> expanded = new ArrayList<>();
+      for (final List<Object> prefix : combinations) {
+        for (final Object value : cond.args()) {
+          final List<Object> next = new ArrayList<>(prefix);
+          next.add(value);
+          expanded.add(next);
+        }
+      }
+      combinations = expanded;
     }
-    final CompositeKey key = CompositeKey.of(keyComponents);
+    final List<CompositeKey> keys = new ArrayList<>(combinations.size());
+    for (final List<Object> components : combinations) {
+      keys.add(CompositeKey.ofList(components));
+    }
     final List<String> coveredFields = hotpathFields.subList(0, coverage);
     final List<GraphQueryCondition> postFilters = conditions.entrySet().stream()
         .filter(e -> !coveredFields.contains(e.getKey()))
         .map(Map.Entry::getValue)
         .toList();
-    return new Plan<>(indexName, key, postFilters);
+    return new Plan<>(indexName, keys, postFilters);
   }
 }

@@ -95,6 +95,82 @@ class GraphQueryBuilderTest {
   }
 
   @Test
+  void whenQuerying_givenInListOnCategory_shouldReturnUnionOfMatches() {
+    final var index = buildIndex();
+    final Pub pub1 = new Pub("p1", "deportes/futbol",
+        List.of(new Event(new Country("AR"))));
+    final Pub pub2 = new Pub("p2", "deportes/basket",
+        List.of(new Event(new Country("AR"))));
+    final Pub pub3 = new Pub("p3", "musica/rock",
+        List.of(new Event(new Country("AR"))));
+    final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1, pub2, pub3), index);
+
+    final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
+        snapshot, List.of(index));
+    final List<Pub> result = builder
+        .where("country").eq("AR")
+        .and("category").in(List.of("deportes/futbol", "musica/rock"))
+        .execute();
+
+    assertEquals(2, result.size());
+    assertTrue(result.contains(pub1));
+    assertTrue(result.contains(pub3));
+  }
+
+  @Test
+  void whenQuerying_givenInListMatchingSameItemTwice_shouldDeduplicate() {
+    final var index = buildIndex();
+    final Pub pub1 = new Pub("p1", "deportes",
+        List.of(new Event(new Country("AR")), new Event(new Country("MX"))));
+    final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1), index);
+
+    final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
+        snapshot, List.of(index));
+    final List<Pub> result = builder
+        .where("country").in("AR", "MX")
+        .execute();
+
+    assertEquals(1, result.size());
+    assertTrue(result.contains(pub1));
+  }
+
+  @Test
+  void whenQuerying_givenInListVarargs_shouldReturnMatches() {
+    final var index = buildIndex();
+    final Pub pub1 = new Pub("p1", "deportes",
+        List.of(new Event(new Country("AR"))));
+    final Pub pub2 = new Pub("p2", "deportes",
+        List.of(new Event(new Country("MX"))));
+    final Pub pub3 = new Pub("p3", "deportes",
+        List.of(new Event(new Country("BR"))));
+    final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1, pub2, pub3), index);
+
+    final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
+        snapshot, List.of(index));
+    final List<Pub> result = builder
+        .where("country").in("AR", "BR")
+        .execute();
+
+    assertEquals(2, result.size());
+    assertTrue(result.contains(pub1));
+    assertTrue(result.contains(pub3));
+  }
+
+  @Test
+  void whenQuerying_givenEmptyInList_shouldThrow() {
+    final var index = buildIndex();
+    final Pub pub1 = new Pub("p1", "deportes",
+        List.of(new Event(new Country("AR"))));
+    final Snapshot<Pub> snapshot = buildSnapshot(List.of(pub1), index);
+
+    final GraphQueryBuilder<Pub> builder = new GraphQueryBuilder<>(
+        snapshot, List.of(index));
+
+    assertThrows(IllegalArgumentException.class, () -> builder
+        .where("country").in(List.of()));
+  }
+
+  @Test
   void whenQuerying_givenNoMatchingIndex_shouldReturnEmptyList() {
     final var index = buildIndex();
     final Pub pub1 = new Pub("p1", "deportes",
