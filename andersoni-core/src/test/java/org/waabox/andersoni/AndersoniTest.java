@@ -76,6 +76,22 @@ class AndersoniTest {
   }
 
   @Test
+  void whenBuilding_givenDebouncePolicy_shouldAcceptIt() {
+    final Andersoni andersoni = Andersoni.builder()
+        .debouncePolicy(DebouncePolicy.of(Duration.ofMillis(100)))
+        .build();
+
+    assertNotNull(andersoni);
+    andersoni.stop();
+  }
+
+  @Test
+  void whenBuilding_givenNullDebouncePolicy_shouldThrow() {
+    assertThrows(NullPointerException.class, () ->
+        Andersoni.builder().debouncePolicy(null));
+  }
+
+  @Test
   void whenRegistering_givenCatalog_shouldMakeItSearchable() {
     final Sport football = new Sport("Football");
     final Venue maracana = new Venue("Maracana");

@@ -84,6 +84,9 @@ public final class Andersoni {
   /** The metrics reporter. */
   private final AndersoniMetrics metrics;
 
+  /** The debounce policy for refresh-event coalescing. */
+  private final DebouncePolicy debouncePolicy;
+
   /** The registered catalogs, keyed by catalog name. */
   private final Map<String, Catalog<?>> catalogsByName;
 
@@ -105,28 +108,34 @@ public final class Andersoni {
   /** The async refresh dispatcher for sync events. */
   private AsyncRefreshDispatcher asyncRefreshDispatcher;
 
+  /** The debouncer for refresh-event coalescing. */
+  private RefreshDebouncer refreshDebouncer;
+
   /**
    * Creates a new Andersoni instance.
    *
-   * @param nodeId          the unique node identifier, never null
-   * @param syncStrategy    the optional sync strategy, may be null
-   * @param leaderElection  the leader election strategy, never null
-   * @param snapshotStore   the optional snapshot store, may be null
-   * @param retryPolicy     the retry policy, never null
-   * @param metrics         the metrics reporter, never null
+   * @param nodeId           the unique node identifier, never null
+   * @param syncStrategy     the optional sync strategy, may be null
+   * @param leaderElection   the leader election strategy, never null
+   * @param snapshotStore    the optional snapshot store, may be null
+   * @param retryPolicy      the retry policy, never null
+   * @param metrics          the metrics reporter, never null
+   * @param debouncePolicy   the refresh-event debounce policy, never null
    */
   private Andersoni(final String nodeId,
       final SyncStrategy syncStrategy,
       final LeaderElectionStrategy leaderElection,
       final SnapshotStore snapshotStore,
       final RetryPolicy retryPolicy,
-      final AndersoniMetrics metrics) {
+      final AndersoniMetrics metrics,
+      final DebouncePolicy debouncePolicy) {
     this.nodeId = nodeId;
     this.syncStrategy = syncStrategy;
     this.leaderElection = leaderElection;
     this.snapshotStore = snapshotStore;
     this.retryPolicy = retryPolicy;
     this.metrics = metrics;
+    this.debouncePolicy = debouncePolicy;
     this.catalogsByName = new ConcurrentHashMap<>();
     this.failedCatalogs = ConcurrentHashMap.newKeySet();
     this.scheduledFutures = new ConcurrentHashMap<>();
@@ -219,6 +228,7 @@ public final class Andersoni {
     bootstrapAllCatalogs();
     asyncRefreshDispatcher = new AsyncRefreshDispatcher(
         catalogsByName.keySet());
+    refreshDebouncer = new RefreshDebouncer(debouncePolicy);
     wireSyncListener();
     schedulePeriodicRefreshes();
     metrics.start(
@@ -545,6 +555,10 @@ public final class Andersoni {
     metrics.stop();
 
     cancelScheduledRefreshes();
+
+    if (refreshDebouncer != null) {
+      refreshDebouncer.shutdown();
+    }
 
     if (syncStrategy != null) {
       syncStrategy.stop();
@@ -885,8 +899,9 @@ public final class Andersoni {
       }
 
       metrics.syncReceived(event.catalogName());
-      asyncRefreshDispatcher.dispatch(event.catalogName(),
-          () -> refreshFromEvent(event.catalogName(), catalog));
+      refreshDebouncer.submit(event.catalogName(),
+          () -> asyncRefreshDispatcher.dispatch(event.catalogName(),
+              () -> refreshFromEvent(event.catalogName(), catalog)));
     });
 
     syncStrategy.start();
@@ -1074,7 +1089,7 @@ public final class Andersoni {
    *
    * @author waabox(waabox[at]gmail[dot]com)
    */
-  private static final class AsyncRefreshDispatcher {
+  static final class AsyncRefreshDispatcher {
 
     /** The class logger. */
     private static final Logger log = LoggerFactory.getLogger(
@@ -1087,6 +1102,13 @@ public final class Andersoni {
     private final Map<String, AtomicBoolean> refreshPending;
 
     /**
+     * Per-catalog rerun flags. Set to {@code true} when a dispatch arrives
+     * while a refresh is already in flight, signaling that one extra refresh
+     * must run after the in-flight one finishes so events are not dropped.
+     */
+    private final Map<String, AtomicBoolean> rerunRequested;
+
+    /**
      * Creates a new dispatcher for the given catalog names.
      *
      * @param catalogNames the set of catalog names to manage, never null
@@ -1094,53 +1116,91 @@ public final class Andersoni {
     AsyncRefreshDispatcher(final Set<String> catalogNames) {
       final Map<String, Semaphore> sems = new HashMap<>();
       final Map<String, AtomicBoolean> pending = new HashMap<>();
+      final Map<String, AtomicBoolean> rerun = new HashMap<>();
       for (final String name : catalogNames) {
         sems.put(name, new Semaphore(1));
         pending.put(name, new AtomicBoolean(false));
+        rerun.put(name, new AtomicBoolean(false));
       }
       semaphores = Collections.unmodifiableMap(sems);
       refreshPending = Collections.unmodifiableMap(pending);
+      rerunRequested = Collections.unmodifiableMap(rerun);
     }
 
     /**
      * Dispatches a refresh task for the given catalog to a virtual thread.
      *
      * <p>If a refresh is already pending or running for this catalog, the
-     * new event is coalesced (discarded) since {@code refreshFromEvent}
-     * always loads the latest data.
+     * dispatch sets a rerun flag so the in-flight worker runs one extra
+     * refresh after it finishes. This prevents events that arrive during a
+     * long-running refresh from being silently lost (the in-flight refresh
+     * loaded its data before those events occurred and would otherwise
+     * overwrite the catalog with stale data).
      *
      * @param catalogName the catalog to refresh, never null
      * @param refreshTask the refresh task to execute, never null
      */
     void dispatch(final String catalogName, final Runnable refreshTask) {
       final AtomicBoolean pending = refreshPending.get(catalogName);
+      final AtomicBoolean rerun = rerunRequested.get(catalogName);
       if (pending == null) {
         log.warn("No dispatcher configured for catalog '{}'", catalogName);
         return;
       }
 
       if (!pending.compareAndSet(false, true)) {
-        log.debug("Refresh already pending for catalog '{}', coalescing",
+        rerun.set(true);
+        log.debug("Refresh in flight for catalog '{}', requesting rerun",
             catalogName);
         return;
       }
 
-      Thread.startVirtualThread(() -> {
-        final Semaphore semaphore = semaphores.get(catalogName);
+      Thread.startVirtualThread(
+          () -> runWorker(catalogName, refreshTask, pending, rerun));
+    }
+
+    /**
+     * Runs the refresh task on a worker thread, looping while the rerun flag
+     * is set so events arriving during the run are not lost.
+     */
+    private void runWorker(final String catalogName,
+        final Runnable refreshTask,
+        final AtomicBoolean pending,
+        final AtomicBoolean rerun) {
+      final Semaphore semaphore = semaphores.get(catalogName);
+      try {
+        semaphore.acquire();
         try {
-          semaphore.acquire();
-          try {
-            refreshTask.run();
-          } finally {
-            pending.set(false);
-            semaphore.release();
-          }
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
+          do {
+            // Reset before running so any dispatch that arrives while
+            // refreshTask.run() is executing is captured by the next loop.
+            rerun.set(false);
+            try {
+              refreshTask.run();
+            } catch (final RuntimeException e) {
+              // Swallow so a failed refresh still honors a queued rerun and
+              // reaches the late-rerun check below instead of stranding it.
+              log.error("Refresh task failed for catalog '{}': {}",
+                  catalogName, e.getMessage(), e);
+            }
+          } while (rerun.compareAndSet(true, false));
+        } finally {
           pending.set(false);
-          log.warn("Refresh interrupted for catalog '{}'", catalogName);
+          semaphore.release();
         }
-      });
+        // A dispatch that arrived between exiting the loop and clearing the
+        // pending flag would have set rerun=true with no worker to handle it.
+        // Pick it up now by re-dispatching to a fresh worker.
+        if (rerun.compareAndSet(true, false)) {
+          log.debug("Late rerun for catalog '{}', re-dispatching",
+              catalogName);
+          dispatch(catalogName, refreshTask);
+        }
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        pending.set(false);
+        log.warn("Refresh interrupted for catalog '{}'", catalogName);
+      }
     }
   }
 
@@ -1176,6 +1236,9 @@ public final class Andersoni {
 
     /** The optional metrics reporter. */
     private AndersoniMetrics metrics;
+
+    /** The optional debounce policy. */
+    private DebouncePolicy debouncePolicy;
 
     /** Creates a new builder with default settings. */
     private Builder() {
@@ -1295,6 +1358,32 @@ public final class Andersoni {
     }
 
     /**
+     * Sets the debounce policy for cross-node refresh-event coalescing.
+     *
+     * <p>When set to a policy with a non-zero window, refresh events
+     * received via the sync strategy are coalesced per catalog: the first
+     * event in a quiet period schedules a single refresh after the policy's
+     * window, subsequent events within the window push the timer out, and
+     * the policy's {@code maxWait} caps total delay under sustained
+     * traffic.
+     *
+     * <p>If not set, defaults to {@link DebouncePolicy#passThrough()},
+     * which disables debouncing entirely (events are dispatched
+     * immediately, preserving pre-debouncer behavior).
+     *
+     * @param thePolicy the debounce policy, never null
+     *
+     * @return this builder for chaining, never null
+     *
+     * @throws NullPointerException if thePolicy is null
+     */
+    public Builder debouncePolicy(final DebouncePolicy thePolicy) {
+      Objects.requireNonNull(thePolicy, "debouncePolicy must not be null");
+      this.debouncePolicy = thePolicy;
+      return this;
+    }
+
+    /**
      * Builds the Andersoni instance with the configured settings.
      *
      * <p>Any unset optional fields are replaced with their defaults.
@@ -1310,6 +1399,8 @@ public final class Andersoni {
           ? retryPolicy : RetryPolicy.defaultPolicy();
       final AndersoniMetrics resolvedMetrics = metrics != null
           ? metrics : new NoopAndersoniMetrics();
+      final DebouncePolicy resolvedDebounce = debouncePolicy != null
+          ? debouncePolicy : DebouncePolicy.passThrough();
 
       return new Andersoni(
           resolvedNodeId,
@@ -1317,7 +1408,8 @@ public final class Andersoni {
           resolvedLeader,
           snapshotStore,
           resolvedRetry,
-          resolvedMetrics);
+          resolvedMetrics,
+          resolvedDebounce);
     }
   }
 }
