@@ -2,6 +2,7 @@ package org.waabox.andersoni.sync.kafka.spring;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 
@@ -30,6 +31,25 @@ class SpringKafkaSyncPropertiesTest {
 
     assertEquals("broker1:9092,broker2:9092",
         properties.getBootstrapServers());
+  }
+
+  @Test
+  void whenSettingAcks_givenValidValue_shouldStoreIt() {
+    final SpringKafkaSyncProperties properties =
+        new SpringKafkaSyncProperties();
+
+    properties.setAcks("all");
+
+    assertEquals("all", properties.getAcks());
+  }
+
+  @Test
+  void whenSettingAcks_givenInvalidValue_shouldThrow() {
+    final SpringKafkaSyncProperties properties =
+        new SpringKafkaSyncProperties();
+
+    assertThrows(IllegalArgumentException.class,
+        () -> properties.setAcks("2"));
   }
 
   @Test

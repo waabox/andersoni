@@ -33,6 +33,16 @@ import org.waabox.andersoni.sync.SyncStrategy;
  * pattern) so that every node receives every refresh event. Messages are
  * serialized as JSON strings using {@link RefreshEventCodec}.
  *
+ * <p><strong>Delivery semantics:</strong> the consumer starts at
+ * {@code auto.offset.reset=latest}, so events published in the brief window
+ * between {@link #start()} and the consumer joining its group / getting its
+ * partition assignment may be missed. This is safe because nodes bootstrap
+ * fresh state on start and any missed event is corrected by the next refresh
+ * (hash comparison). Note that setting a stable {@code nodeId} on the config
+ * yields a stable consumer group, which changes semantics: on restart the node
+ * resumes from its last committed offset rather than {@code latest}, and may
+ * replay or skip depending on topic retention.
+ *
  * <p>Typical usage:
  * <pre>
  *   KafkaSyncConfig config = KafkaSyncConfig.create("localhost:9092");

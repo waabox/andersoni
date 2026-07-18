@@ -1,5 +1,7 @@
 package org.waabox.andersoni.sync.kafka.spring;
 
+import java.util.Set;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /** Configuration properties for the Spring Kafka-based synchronization
@@ -12,6 +14,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "andersoni.sync.kafka")
 public class SpringKafkaSyncProperties {
+
+  /** The set of valid producer acknowledgment levels. */
+  private static final Set<String> VALID_ACKS = Set.of("0", "1", "all");
 
   /** The Kafka bootstrap servers connection string, never null after
    * configuration binding. */
@@ -88,9 +93,15 @@ public class SpringKafkaSyncProperties {
 
   /** Sets the producer acknowledgment level.
    *
-   * @param theAcks the acks setting (e.g. "0", "1", "all"), never null
+   * @param theAcks the acks setting, one of {@code "0"}, {@code "1"} or
+   *     {@code "all"}, never null.
+   * @throws IllegalArgumentException if the value is not a valid acks setting.
    */
   public void setAcks(final String theAcks) {
+    if (theAcks == null || !VALID_ACKS.contains(theAcks)) {
+      throw new IllegalArgumentException(
+          "acks must be one of " + VALID_ACKS + ", got: " + theAcks);
+    }
     acks = theAcks;
   }
 

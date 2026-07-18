@@ -183,6 +183,25 @@ class DatadogAndersoniMetricsTest {
   }
 
   @Test
+  void whenSyncRequested_shouldIncrementDistinctCounter() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.requested"), eq(1L),
+        eq("catalog:products"), eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.syncRequested("products");
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
   void whenSyncPublished_givenAfterStart_shouldIncrementCounterWithNodeTag() {
     final StatsDClient client = createMock(StatsDClient.class);
 

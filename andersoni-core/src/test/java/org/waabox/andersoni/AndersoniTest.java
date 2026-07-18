@@ -1897,6 +1897,42 @@ class AndersoniTest {
     verify(syncStrategy);
   }
 
+  @Test
+  void whenStatus_givenRegisteredCatalog_shouldReportNodeAndCatalogState() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final AndersoniStatus status = andersoni.status();
+
+    assertEquals("node-1", status.nodeId());
+    assertTrue(status.leader(),
+        "Default single-node election makes this node the leader");
+    assertEquals(1, status.catalogs().size());
+
+    final AndersoniStatus.CatalogStatus catalogStatus =
+        status.catalogs().get(0);
+    assertEquals("events", catalogStatus.catalogName());
+    assertTrue(catalogStatus.available());
+    assertEquals(1, catalogStatus.itemCount());
+    assertNotNull(catalogStatus.hash());
+    assertFalse(catalogStatus.hash().isBlank());
+
+    andersoni.stop();
+  }
+
   // --- info() tests ---
 
   @Test

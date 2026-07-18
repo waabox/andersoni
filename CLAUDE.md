@@ -19,7 +19,7 @@ Multi-module Maven project. Version managed in parent pom, inherited by all chil
 
 | Module | Purpose |
 |--------|---------|
-| `andersoni-core` | Engine, DSL, Snapshot, core interfaces (zero dependencies) |
+| `andersoni-core` | Engine, DSL, Snapshot, core interfaces (deps: slf4j-api + org.json, used by the sync wire codec) |
 | `andersoni-sync-kafka` | Raw Kafka broadcast sync (no Spring dependency) |
 | `andersoni-spring-sync-kafka` | Spring Kafka-based sync with auto-configuration |
 | `andersoni-sync-http` | HTTP peer-to-peer sync |
@@ -27,9 +27,11 @@ Multi-module Maven project. Version managed in parent pom, inherited by all chil
 | `andersoni-leader-k8s` | K8s Lease leader election |
 | `andersoni-snapshot-s3` | S3 snapshot persistence |
 | `andersoni-snapshot-fs` | Filesystem snapshot (dev/test) |
+| `andersoni-json-serializer` | Jackson-based `SnapshotSerializer` implementation |
 | `andersoni-spring-boot-starter` | Spring Boot auto-configuration |
 | `andersoni-metrics-datadog` | Datadog DogStatsD metrics |
-| `andersoni-admin` | K8s admin console (Spring Boot app) |
+| `andersoni-admin` | K8s admin console (Spring Boot app, not published) |
+| `andersoni-cluster-it` | Docker-based multi-node integration test (Testcontainers; not published) |
 | `andersoni-example` | Full-stack demo app (standalone, not in parent modules) |
 
 ## Package Convention

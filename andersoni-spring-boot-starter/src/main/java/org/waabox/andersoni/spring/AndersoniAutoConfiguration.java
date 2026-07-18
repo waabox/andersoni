@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.Bean;
@@ -64,6 +65,7 @@ public final class AndersoniAutoConfiguration {
    * @return the configured Andersoni instance, never null
    */
   @Bean
+  @ConditionalOnMissingBean(Andersoni.class)
   public Andersoni andersoni(
       final AndersoniProperties properties,
       final ObjectProvider<SyncStrategy> syncStrategyProvider,
@@ -140,6 +142,7 @@ public final class AndersoniAutoConfiguration {
    * @return the lifecycle bean, never null
    */
   @Bean
+  @ConditionalOnMissingBean(name = "andersoniLifecycle")
   public SmartLifecycle andersoniLifecycle(final Andersoni andersoni) {
     return new SmartLifecycle() {
 

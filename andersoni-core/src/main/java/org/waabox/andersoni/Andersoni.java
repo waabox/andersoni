@@ -2,6 +2,7 @@ package org.waabox.andersoni;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -535,7 +536,7 @@ public final class Andersoni {
         catalogName, nodeId, Instant.now());
     try {
       syncStrategy.publish(request);
-      metrics.syncPublished(catalogName);
+      metrics.syncRequested(catalogName);
       log.debug("Not leader; published refresh request for catalog '{}'",
           catalogName);
     } catch (final Exception e) {
@@ -600,6 +601,51 @@ public final class Andersoni {
    */
   public Collection<Catalog<?>> catalogs() {
     return Collections.unmodifiableCollection(catalogsByName.values());
+  }
+
+  /**
+   * Returns a read-only snapshot of this node's operational state: whether it
+   * is the leader and, per catalog, the current version, hash, item count and
+   * estimated memory size.
+   *
+   * <p>Intended for health endpoints, dashboards and cross-node convergence
+   * checks (compare each catalog's {@code hash} across nodes). A catalog that
+   * failed to bootstrap or is not yet ready is reported with
+   * {@code available = false} rather than throwing.
+   *
+   * @return this node's status, never null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public AndersoniStatus status() {
+    final boolean leader = leaderElection.isLeader();
+    final List<AndersoniStatus.CatalogStatus> catalogStatuses =
+        new ArrayList<>();
+    for (final Catalog<?> catalog : catalogsByName.values()) {
+      catalogStatuses.add(buildCatalogStatus(catalog));
+    }
+    return new AndersoniStatus(nodeId, leader, catalogStatuses);
+  }
+
+  /**
+   * Builds the status for a single catalog, degrading gracefully if the
+   * catalog is not ready.
+   *
+   * @param catalog the catalog to inspect, never null
+   * @return the catalog status, never null
+   */
+  private static AndersoniStatus.CatalogStatus buildCatalogStatus(
+      final Catalog<?> catalog) {
+    try {
+      final Snapshot<?> snapshot = catalog.currentSnapshot();
+      final CatalogInfo info = catalog.info();
+      return new AndersoniStatus.CatalogStatus(
+          catalog.name(), true, snapshot.version(), snapshot.hash(),
+          info.itemCount(), info.totalEstimatedSizeMB());
+    } catch (final RuntimeException e) {
+      return new AndersoniStatus.CatalogStatus(
+          catalog.name(), false, 0L, "", 0, 0.0);
+    }
   }
 
   /**

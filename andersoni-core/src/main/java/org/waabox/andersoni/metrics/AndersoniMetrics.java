@@ -47,11 +47,23 @@ public interface AndersoniMetrics {
       long estimatedSizeBytes);
 
   /**
-   * Records a sync event published to the cluster.
+   * Records a result sync event (a completed refresh) published to the
+   * cluster by the leader.
    *
    * @param catalogName the name of the catalog, never null
    */
   default void syncPublished(final String catalogName) {
+  }
+
+  /**
+   * Records a refresh request published to the leader by a follower that
+   * received a {@code refreshAndSync} call. Distinct from
+   * {@link #syncPublished(String)} so leader broadcasts and follower requests
+   * can be told apart.
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void syncRequested(final String catalogName) {
   }
 
   /**

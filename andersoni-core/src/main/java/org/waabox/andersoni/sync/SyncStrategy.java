@@ -7,6 +7,22 @@ package org.waabox.andersoni.sync;
  * distributed (e.g. via Kafka, HTTP, database polling) and manage the
  * lifecycle of the underlying transport.
  *
+ * <p><strong>Contract for implementers:</strong>
+ * <ul>
+ *   <li><em>Threading:</em> {@link #publish(RefreshEvent)} may be called
+ *       concurrently and must be thread-safe. Received events are dispatched
+ *       to listeners on the transport's own thread(s); Andersoni offloads the
+ *       actual refresh to its own executor, so listeners return quickly.</li>
+ *   <li><em>Delivery:</em> delivery is best-effort and at-most-once is not
+ *       required — Andersoni tolerates duplicates (it ignores self-originated
+ *       events and events whose hash already matches the local snapshot), so
+ *       at-least-once or redelivery is safe. Missed events are self-correcting
+ *       on the next refresh.</li>
+ *   <li><em>Subscription:</em> Andersoni registers exactly one listener
+ *       before {@link #start()}; implementations need not support multiple
+ *       listeners.</li>
+ * </ul>
+ *
  * <p>Typical lifecycle:
  * <ol>
  *   <li>Register listeners via {@link #subscribe(RefreshListener)}</li>

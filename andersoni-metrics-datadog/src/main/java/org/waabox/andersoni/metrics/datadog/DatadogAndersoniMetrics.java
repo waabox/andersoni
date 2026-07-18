@@ -133,72 +133,98 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
   @Override
   public void snapshotLoaded(final String catalogName,
       final String source) {
-    final String node = this.nodeId;
-    if (node != null) {
-      client.count("catalog.snapshot.loaded", 1,
-          "catalog:" + catalogName, "source:" + source,
-          "node:" + node);
-    } else {
-      client.count("catalog.snapshot.loaded", 1,
-          "catalog:" + catalogName, "source:" + source);
-    }
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("catalog.snapshot.loaded", 1,
+            "catalog:" + catalogName, "source:" + source,
+            "node:" + node);
+      } else {
+        client.count("catalog.snapshot.loaded", 1,
+            "catalog:" + catalogName, "source:" + source);
+      }
+    });
   }
 
   /** {@inheritDoc} */
   @Override
   public void refreshFailed(final String catalogName,
       final Throwable cause) {
-    final String node = this.nodeId;
-    if (node != null) {
-      client.count("catalog.refresh.failed", 1,
-          "catalog:" + catalogName, "node:" + node);
-    } else {
-      client.count("catalog.refresh.failed", 1,
-          "catalog:" + catalogName);
-    }
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("catalog.refresh.failed", 1,
+            "catalog:" + catalogName, "node:" + node);
+      } else {
+        client.count("catalog.refresh.failed", 1,
+            "catalog:" + catalogName);
+      }
+    });
   }
 
   /** {@inheritDoc} */
   @Override
   public void indexSizeReported(final String catalogName,
       final String indexName, final long estimatedSizeBytes) {
-    final String node = this.nodeId;
-    if (node != null) {
-      client.gauge("index.memory.bytes", estimatedSizeBytes,
-          "catalog:" + catalogName, "index:" + indexName,
-          "node:" + node);
-    } else {
-      client.gauge("index.memory.bytes", estimatedSizeBytes,
-          "catalog:" + catalogName, "index:" + indexName);
-    }
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.gauge("index.memory.bytes", estimatedSizeBytes,
+            "catalog:" + catalogName, "index:" + indexName,
+            "node:" + node);
+      } else {
+        client.gauge("index.memory.bytes", estimatedSizeBytes,
+            "catalog:" + catalogName, "index:" + indexName);
+      }
+    });
   }
 
   /** {@inheritDoc} */
   @Override
   public void syncPublished(final String catalogName) {
     Objects.requireNonNull(catalogName, "catalogName must not be null");
-    final String node = this.nodeId;
-    if (node != null) {
-      client.count("sync.published", 1,
-          "catalog:" + catalogName, "node:" + node);
-    } else {
-      client.count("sync.published", 1,
-          "catalog:" + catalogName);
-    }
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("sync.published", 1,
+            "catalog:" + catalogName, "node:" + node);
+      } else {
+        client.count("sync.published", 1,
+            "catalog:" + catalogName);
+      }
+    });
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void syncRequested(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("sync.requested", 1,
+            "catalog:" + catalogName, "node:" + node);
+      } else {
+        client.count("sync.requested", 1,
+            "catalog:" + catalogName);
+      }
+    });
   }
 
   /** {@inheritDoc} */
   @Override
   public void syncReceived(final String catalogName) {
     Objects.requireNonNull(catalogName, "catalogName must not be null");
-    final String node = this.nodeId;
-    if (node != null) {
-      client.count("sync.received", 1,
-          "catalog:" + catalogName, "node:" + node);
-    } else {
-      client.count("sync.received", 1,
-          "catalog:" + catalogName);
-    }
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("sync.received", 1,
+            "catalog:" + catalogName, "node:" + node);
+      } else {
+        client.count("sync.received", 1,
+            "catalog:" + catalogName);
+      }
+    });
   }
 
   /** {@inheritDoc} */
@@ -206,24 +232,41 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
   public void syncPublishFailed(final String catalogName,
       final Throwable cause) {
     Objects.requireNonNull(catalogName, "catalogName must not be null");
-    final String node = this.nodeId;
-    if (node != null) {
-      client.count("sync.publish.failed", 1,
-          "catalog:" + catalogName, "node:" + node);
-    } else {
-      client.count("sync.publish.failed", 1,
-          "catalog:" + catalogName);
-    }
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("sync.publish.failed", 1,
+            "catalog:" + catalogName, "node:" + node);
+      } else {
+        client.count("sync.publish.failed", 1,
+            "catalog:" + catalogName);
+      }
+    });
   }
 
   /** {@inheritDoc} */
   @Override
   public void syncReceiveFailed(final Throwable cause) {
-    final String node = this.nodeId;
-    if (node != null) {
-      client.count("sync.receive.failed", 1, "node:" + node);
-    } else {
-      client.count("sync.receive.failed", 1);
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("sync.receive.failed", 1, "node:" + node);
+      } else {
+        client.count("sync.receive.failed", 1);
+      }
+    });
+  }
+
+  /** Runs a metric emission, swallowing and logging any error so that a
+   * failing or misconfigured StatsD client can never break the cache path.
+   *
+   * @param emission the metric emission to run, never null
+   */
+  private void safely(final Runnable emission) {
+    try {
+      emission.run();
+    } catch (final RuntimeException e) {
+      log.warn("Datadog metric emission failed: {}", e.getMessage());
     }
   }
 
