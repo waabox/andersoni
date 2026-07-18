@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,6 +64,11 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
 
   /** The name of the snapshot data file within each catalog prefix. */
   private static final String DATA_FILE = "snapshot.dat";
+
+  /** Allowed catalog-name characters. Anything else (path separators, {@code
+   *  ..}) is rejected to prevent building keys outside the configured prefix. */
+  private static final Pattern SAFE_CATALOG_NAME =
+      Pattern.compile("^[A-Za-z0-9._-]+$");
 
   /** S3 user metadata key for the content hash. */
   private static final String META_HASH = "hash";
@@ -261,6 +267,12 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
    * @return the full S3 object key, never null
    */
   private String buildKey(final String catalogName) {
+    if (catalogName.equals(".") || catalogName.equals("..")
+        || !SAFE_CATALOG_NAME.matcher(catalogName).matches()) {
+      throw new IllegalArgumentException(
+          "Invalid catalog name: '" + catalogName + "'. Allowed characters:"
+              + " letters, digits, '.', '_', '-' (no path separators).");
+    }
     return prefix + catalogName + "/" + DATA_FILE;
   }
 

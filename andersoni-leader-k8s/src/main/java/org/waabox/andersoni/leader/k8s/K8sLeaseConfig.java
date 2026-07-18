@@ -56,6 +56,28 @@ public final class K8sLeaseConfig {
         "renewalInterval must not be null");
     leaseDuration = Objects.requireNonNull(theLeaseDuration,
         "leaseDuration must not be null");
+
+    if (theRenewalInterval.isNegative() || theRenewalInterval.isZero()) {
+      throw new IllegalArgumentException(
+          "renewalInterval must be positive, got: " + theRenewalInterval);
+    }
+    if (theLeaseDuration.isNegative() || theLeaseDuration.isZero()) {
+      throw new IllegalArgumentException(
+          "leaseDuration must be positive, got: " + theLeaseDuration);
+    }
+    // The election derives renewDeadline = leaseDuration * 2/3 and uses
+    // renewalInterval as the retry period. The Kubernetes LeaderElector
+    // requires renewalInterval < renewDeadline < leaseDuration; otherwise the
+    // leader renews too rarely to hold the lease and leadership flaps.
+    final Duration renewDeadline = theLeaseDuration.multipliedBy(2)
+        .dividedBy(3);
+    if (theRenewalInterval.compareTo(renewDeadline) >= 0) {
+      throw new IllegalArgumentException(
+          "renewalInterval (" + theRenewalInterval + ") must be less than "
+              + "leaseDuration * 2/3 (" + renewDeadline + ") to keep the "
+              + "lease renewed; increase leaseDuration or lower "
+              + "renewalInterval");
+    }
   }
 
   /**

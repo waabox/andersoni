@@ -2,6 +2,7 @@ package org.waabox.andersoni.snapshot.fs;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -44,6 +45,23 @@ class FileSystemSnapshotStoreTest {
     assertEquals(42L, result.version());
     assertEquals(createdAt, result.createdAt());
     assertArrayEquals(data, result.data());
+  }
+
+  @Test
+  void whenSaving_givenTraversalCatalogName_shouldThrow(
+      @TempDir final Path tempDir) {
+    final FileSystemSnapshotStore store =
+        new FileSystemSnapshotStore(tempDir);
+    final SerializedSnapshot snapshot = new SerializedSnapshot(
+        "x", "h", 1L, Instant.parse("2026-01-15T10:30:00Z"),
+        "data".getBytes());
+
+    assertThrows(IllegalArgumentException.class, () ->
+        store.save("../escape", snapshot));
+    assertThrows(IllegalArgumentException.class, () ->
+        store.load("../escape"));
+    assertThrows(IllegalArgumentException.class, () ->
+        store.load(".."));
   }
 
   @Test

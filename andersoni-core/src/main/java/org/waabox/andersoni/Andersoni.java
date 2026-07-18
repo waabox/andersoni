@@ -96,14 +96,16 @@ public final class Andersoni {
   /** Whether this instance has been stopped. */
   private final AtomicBoolean stopped = new AtomicBoolean(false);
 
-  /** The scheduled executor for periodic refresh tasks. */
-  private ScheduledExecutorService scheduler;
+  /** The scheduled executor for periodic refresh tasks. Written in start()
+   *  and read from stop(); volatile for cross-thread visibility. */
+  private volatile ScheduledExecutorService scheduler;
 
   /** The scheduled refresh futures, keyed by catalog name. */
   private final Map<String, ScheduledFuture<?>> scheduledFutures;
 
-  /** The async refresh dispatcher for sync events. */
-  private AsyncRefreshDispatcher asyncRefreshDispatcher;
+  /** The async refresh dispatcher for sync events. Written in start() and
+   *  read from transport/dispatch threads; volatile for visibility. */
+  private volatile AsyncRefreshDispatcher asyncRefreshDispatcher;
 
   /**
    * Creates a new Andersoni instance.

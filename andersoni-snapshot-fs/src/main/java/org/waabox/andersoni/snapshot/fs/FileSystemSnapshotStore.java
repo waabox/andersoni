@@ -8,6 +8,7 @@ import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
 import org.waabox.andersoni.snapshot.SnapshotStore;
@@ -41,6 +42,11 @@ import org.waabox.andersoni.snapshot.SnapshotStore;
 public final class FileSystemSnapshotStore implements SnapshotStore {
 
   /** The name of the data file within each catalog directory. */
+  /** Allowed catalog-name characters. Anything else (path separators, {@code
+   *  ..}) is rejected to prevent writing/reading outside the base directory. */
+  private static final Pattern SAFE_CATALOG_NAME =
+      Pattern.compile("^[A-Za-z0-9._-]+$");
+
   private static final String DATA_FILE = "snapshot.dat";
 
   /** The name of the metadata file within each catalog directory. */
@@ -98,6 +104,7 @@ public final class FileSystemSnapshotStore implements SnapshotStore {
 
     Objects.requireNonNull(catalogName, "catalogName must not be null");
     Objects.requireNonNull(snapshot, "snapshot must not be null");
+    validateCatalogName(catalogName);
 
     final Path catalogDir = baseDir.resolve(catalogName);
 
@@ -141,6 +148,7 @@ public final class FileSystemSnapshotStore implements SnapshotStore {
   @Override
   public Optional<SerializedSnapshot> load(final String catalogName) {
     Objects.requireNonNull(catalogName, "catalogName must not be null");
+    validateCatalogName(catalogName);
 
     final Path catalogDir = baseDir.resolve(catalogName);
     final Path dataFile = catalogDir.resolve(DATA_FILE);
@@ -232,5 +240,20 @@ public final class FileSystemSnapshotStore implements SnapshotStore {
     }
 
     return new SerializedSnapshot(catalogName, hash, version, createdAt, data);
+  }
+
+  /** Rejects catalog names that could escape the base directory.
+   *
+   * @param catalogName the name to validate, never null.
+   * @throws IllegalArgumentException if the name contains path separators,
+   *     is {@code .}/{@code ..}, or uses characters outside the safe set.
+   */
+  private static void validateCatalogName(final String catalogName) {
+    if (catalogName.equals(".") || catalogName.equals("..")
+        || !SAFE_CATALOG_NAME.matcher(catalogName).matches()) {
+      throw new IllegalArgumentException(
+          "Invalid catalog name: '" + catalogName + "'. Allowed characters:"
+              + " letters, digits, '.', '_', '-' (no path separators).");
+    }
   }
 }

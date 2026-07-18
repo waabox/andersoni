@@ -2,6 +2,7 @@ package org.waabox.andersoni.sync.http;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URI;
@@ -28,6 +29,17 @@ import org.waabox.andersoni.sync.RefreshEventCodec;
  * @author waabox(waabox[at]gmail[dot]com)
  */
 class HttpSyncStrategyTest {
+
+  @Test
+  void whenPublishing_givenNotStarted_shouldThrowIllegalState() {
+    final HttpSyncConfig config = HttpSyncConfig.create(
+        19099, List.of("http://localhost:19100"));
+    final HttpSyncStrategy strategy = new HttpSyncStrategy(config);
+
+    assertThrows(IllegalStateException.class, () ->
+        strategy.publish(new RefreshEvent(
+            "events", "node-1", 1L, "hash", Instant.now())));
+  }
 
   @Test
   void whenPublishing_givenPeerUrl_shouldSendHttpPost() throws Exception {

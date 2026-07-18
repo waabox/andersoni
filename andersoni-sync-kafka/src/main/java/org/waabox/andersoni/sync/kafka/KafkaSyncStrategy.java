@@ -127,17 +127,44 @@ public final class KafkaSyncStrategy implements SyncStrategy {
       return;
     }
 
-    producer = createProducer();
-    consumer = createConsumer();
+    try {
+      producer = createProducer();
+      consumer = createConsumer();
 
-    consumer.subscribe(Collections.singletonList(config.topic()));
+      consumer.subscribe(Collections.singletonList(config.topic()));
 
-    pollThread = new Thread(this::pollLoop, "andersoni-kafka-sync-poll");
-    pollThread.setDaemon(true);
-    pollThread.start();
+      pollThread = new Thread(this::pollLoop, "andersoni-kafka-sync-poll");
+      pollThread.setDaemon(true);
+      pollThread.start();
 
-    log.info("KafkaSyncStrategy started on topic '{}' with bootstrap servers "
-        + "'{}'", config.topic(), config.bootstrapServers());
+      log.info("KafkaSyncStrategy started on topic '{}' with bootstrap servers "
+          + "'{}'", config.topic(), config.bootstrapServers());
+    } catch (final RuntimeException e) {
+      // Roll back a partial start: close any resource already created and
+      // clear the running flag so the producer/consumer do not leak and the
+      // instance is not wedged in a "running" state that blocks a retry.
+      closeQuietly(producer);
+      closeQuietly(consumer);
+      producer = null;
+      consumer = null;
+      running.set(false);
+      throw e;
+    }
+  }
+
+  /** Closes a resource, swallowing and logging any error.
+   *
+   * @param closeable the resource to close, may be null
+   */
+  private static void closeQuietly(final AutoCloseable closeable) {
+    if (closeable == null) {
+      return;
+    }
+    try {
+      closeable.close();
+    } catch (final Exception e) {
+      log.warn("Error closing Kafka resource: {}", e.getMessage(), e);
+    }
   }
 
   /** {@inheritDoc} */

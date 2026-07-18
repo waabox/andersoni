@@ -60,6 +60,22 @@ class K8sLeaseLeaderElectionTest {
   }
 
   @Test
+  void whenCreatingConfig_givenRenewalNotBelowRenewDeadline_shouldThrow() {
+    // renewDeadline = leaseDuration * 2/3 = 13.3s; renewalInterval 20s >= that
+    // violates the LeaderElector invariant and would flap leadership.
+    assertThrows(IllegalArgumentException.class, () ->
+        K8sLeaseConfig.create("lease", "ns", "pod-1",
+            Duration.ofSeconds(20), Duration.ofSeconds(20)));
+  }
+
+  @Test
+  void whenCreatingConfig_givenZeroLeaseDuration_shouldThrow() {
+    assertThrows(IllegalArgumentException.class, () ->
+        K8sLeaseConfig.create("lease", "ns", "pod-1",
+            Duration.ofSeconds(5), Duration.ZERO));
+  }
+
+  @Test
   void whenCheckingIsLeader_givenNotStarted_shouldReturnFalse() {
     final K8sLeaseConfig config = K8sLeaseConfig.create(
         "andersoni-leader", "pod-1");

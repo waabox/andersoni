@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -57,11 +58,18 @@ public final class HttpSyncStrategy implements SyncStrategy {
   /** HTTP 405 Method Not Allowed status code. */
   private static final int HTTP_METHOD_NOT_ALLOWED = 405;
 
+  /** HTTP 413 Payload Too Large status code. */
+  private static final int HTTP_PAYLOAD_TOO_LARGE = 413;
+
   /** HTTP 500 Internal Server Error status code. */
   private static final int HTTP_INTERNAL_ERROR = 500;
 
   /** The delay in seconds before stopping the HTTP server. */
   private static final int SERVER_STOP_DELAY_SECONDS = 1;
+
+  /** Maximum accepted request body size, in bytes. Refresh events are tiny;
+   * this bounds heap use and prevents a large POST from exhausting memory. */
+  private static final int MAX_BODY_BYTES = 64 * 1024;
 
   /** The configuration for this strategy. */
   private final HttpSyncConfig config;
@@ -69,11 +77,14 @@ public final class HttpSyncStrategy implements SyncStrategy {
   /** The list of registered refresh listeners. */
   private final List<RefreshListener> listeners = new CopyOnWriteArrayList<>();
 
+  /** Whether this strategy is started and not yet stopped. */
+  private final AtomicBoolean running = new AtomicBoolean(false);
+
   /** The HTTP server for receiving incoming events. */
-  private HttpServer server;
+  private volatile HttpServer server;
 
   /** The HTTP client for publishing events to peers. */
-  private HttpClient client;
+  private volatile HttpClient client;
 
   /**
    * Creates a new HTTP sync strategy with the given configuration.
@@ -88,6 +99,10 @@ public final class HttpSyncStrategy implements SyncStrategy {
   @Override
   public void publish(final RefreshEvent event) {
     Objects.requireNonNull(event, "event cannot be null");
+    if (!running.get()) {
+      throw new IllegalStateException(
+          "HttpSyncStrategy is not running; call start() before publish()");
+    }
 
     final String json = RefreshEventCodec.serialize(event);
 
@@ -123,6 +138,10 @@ public final class HttpSyncStrategy implements SyncStrategy {
   /** {@inheritDoc} */
   @Override
   public void start() {
+    if (running.getAndSet(true)) {
+      LOG.warn("HttpSyncStrategy is already running");
+      return;
+    }
     try {
       server = HttpServer.create(
           new InetSocketAddress(config.port()), 0
@@ -135,6 +154,7 @@ public final class HttpSyncStrategy implements SyncStrategy {
       LOG.info("HttpSyncStrategy started on port {} at path {}",
           config.port(), config.path());
     } catch (final IOException e) {
+      running.set(false);
       throw new IllegalStateException(
           "Failed to start HTTP server on port " + config.port(), e
       );
@@ -144,12 +164,19 @@ public final class HttpSyncStrategy implements SyncStrategy {
   /** {@inheritDoc} */
   @Override
   public void stop() {
-    if (server != null) {
-      server.stop(SERVER_STOP_DELAY_SECONDS);
+    if (!running.getAndSet(false)) {
+      return;
+    }
+    final HttpServer localServer = server;
+    if (localServer != null) {
+      localServer.stop(SERVER_STOP_DELAY_SECONDS);
+      server = null;
       LOG.info("HTTP server stopped");
     }
-    if (client != null) {
-      client.close();
+    final HttpClient localClient = client;
+    if (localClient != null) {
+      localClient.close();
+      client = null;
       LOG.info("HTTP client closed");
     }
   }
@@ -172,9 +199,13 @@ public final class HttpSyncStrategy implements SyncStrategy {
     }
 
     try (InputStream is = exchange.getRequestBody()) {
-      final String body = new String(
-          is.readAllBytes(), StandardCharsets.UTF_8
-      );
+      // Bound the read: never buffer an unbounded body into heap.
+      final byte[] bytes = is.readNBytes(MAX_BODY_BYTES + 1);
+      if (bytes.length > MAX_BODY_BYTES) {
+        sendResponse(exchange, HTTP_PAYLOAD_TOO_LARGE, "Payload Too Large");
+        return;
+      }
+      final String body = new String(bytes, StandardCharsets.UTF_8);
       final RefreshEvent event = RefreshEventCodec.deserialize(body);
 
       for (final RefreshListener listener : listeners) {
