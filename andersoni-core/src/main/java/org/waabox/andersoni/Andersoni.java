@@ -1053,7 +1053,13 @@ public final class Andersoni {
         final ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(
             () -> {
               try {
-                refreshAndSync(name);
+                // Periodic refresh is leader-only. A follower must not run
+                // it, and in particular must not publish a refresh request
+                // (refreshAndSync would otherwise do so), which would storm
+                // the leader once per interval per follower.
+                if (leaderElection.isLeader()) {
+                  refreshAndSync(name);
+                }
               } catch (final Exception e) {
                 log.error("Scheduled refresh failed for catalog '{}': {}",
                     name, e.getMessage(), e);
@@ -1162,9 +1168,11 @@ public final class Andersoni {
     /**
      * Dispatches a refresh task for the given catalog to a virtual thread.
      *
-     * <p>If a refresh is already pending or running for this catalog, the
-     * new event is coalesced (discarded) since {@code refreshFromEvent}
-     * always loads the latest data.
+     * <p>If a refresh is already queued for this catalog (dispatched but not
+     * yet started), the new event is coalesced: the imminent run loads the
+     * latest data anyway. Once a refresh has started running, the pending
+     * flag is cleared, so an event arriving mid-run re-arms the dispatcher
+     * and triggers a follow-up run rather than being lost.
      *
      * @param catalogName the catalog to refresh, never null
      * @param refreshTask the refresh task to execute, never null
@@ -1187,9 +1195,13 @@ public final class Andersoni {
         try {
           semaphore.acquire();
           try {
+            // Clear pending BEFORE running: an event that arrives while this
+            // refresh is in flight must re-arm the dispatcher so its newer
+            // data is not silently coalesced away and lost. The semaphore
+            // still serializes the actual refresh per catalog.
+            pending.set(false);
             refreshTask.run();
           } finally {
-            pending.set(false);
             semaphore.release();
           }
         } catch (final InterruptedException e) {

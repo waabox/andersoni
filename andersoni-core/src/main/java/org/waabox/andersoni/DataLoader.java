@@ -13,6 +13,14 @@ import java.util.List;
  * refresh cycle. It must return the full dataset; partial loads are not
  * supported.
  *
+ * <p><strong>Deterministic order is required for multi-node deployments.</strong>
+ * The catalog content hash (the cross-node convergence signal) is
+ * order-sensitive, so the loader must return items in a stable, repeatable
+ * order across nodes and refreshes (e.g. an SQL {@code ORDER BY} on a stable
+ * key). A nondeterministic order (unordered queries, {@code HashSet}
+ * iteration, parallel fetch) makes two nodes holding identical data compute
+ * different hashes, causing perpetual refresh churn.
+ *
  * @param <T> the type of items this loader produces
  *
  * @author waabox(waabox[at]gmail[dot]com)

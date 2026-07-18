@@ -7,7 +7,9 @@ import java.util.List;
 import java.util.Objects;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
@@ -86,13 +88,24 @@ public class JacksonSnapshotSerializer<T>
     }
   }
 
-  /** Creates a default ObjectMapper with JavaTimeModule registered.
+  /** Creates a default ObjectMapper with JavaTimeModule registered and
+   * deterministic output enabled.
+   *
+   * <p>Map entries are ordered by key and object properties are sorted
+   * alphabetically so that identical data always serializes to identical
+   * bytes. The catalog content hash is computed over these bytes and used as
+   * the cross-node convergence signal; without stable ordering, a domain type
+   * containing a {@code Map} (or any type whose property order is not fixed)
+   * would serialize differently on different nodes/JVMs, producing different
+   * hashes for identical data and causing perpetual refresh churn.
    *
    * @return a new ObjectMapper, never null.
    */
   private static ObjectMapper defaultMapper() {
     final ObjectMapper mapper = new ObjectMapper();
     mapper.registerModule(new JavaTimeModule());
+    mapper.configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
+    mapper.configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
     return mapper;
   }
 }

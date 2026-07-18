@@ -22,9 +22,8 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
-import software.amazon.awssdk.services.sts.auth.StsAssumeRoleWithWebIdentityCredentialsProvider;
+import software.amazon.awssdk.services.sts.auth.StsWebIdentityTokenFileCredentialsProvider;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
-import software.amazon.awssdk.services.sts.model.AssumeRoleWithWebIdentityRequest;
 
 /**
  * A {@link SnapshotStore} implementation that persists snapshots to
@@ -305,18 +304,17 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
     log.info("Configuring STS AssumeRoleWithWebIdentity for role '{}'",
         roleArn);
 
-    final AssumeRoleWithWebIdentityRequest.Builder requestBuilder =
-        AssumeRoleWithWebIdentityRequest.builder()
-            .roleArn(roleArn)
-            .roleSessionName(config.sessionName())
-            .webIdentityToken(
-                config.webIdentityTokenFile().orElseThrow().toString());
-
-    config.durationSeconds().ifPresent(requestBuilder::durationSeconds);
-
-    return StsAssumeRoleWithWebIdentityCredentialsProvider.builder()
+    // Use the token-FILE provider: it reads the OIDC token from the file and
+    // re-reads it on each credential refresh. Passing the file path as the
+    // token (or reading its contents once) is wrong — the token is a JWT, and
+    // projected tokens such as EKS/IRSA rotate, so a captured value expires.
+    // Note: durationSeconds is not configurable in this mode; the token file's
+    // own expiry governs credential lifetime.
+    return StsWebIdentityTokenFileCredentialsProvider.builder()
         .stsClient(theStsClient)
-        .refreshRequest(requestBuilder.build())
+        .roleArn(roleArn)
+        .roleSessionName(config.sessionName())
+        .webIdentityTokenFile(config.webIdentityTokenFile().orElseThrow())
         .build();
   }
 

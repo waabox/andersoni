@@ -56,6 +56,9 @@ public final class KafkaSyncStrategy implements SyncStrategy {
   /** Poll timeout for the Kafka consumer loop. */
   private static final Duration POLL_TIMEOUT = Duration.ofMillis(500);
 
+  /** Backoff applied after a non-fatal poll error before retrying. */
+  private static final Duration POLL_ERROR_BACKOFF = Duration.ofSeconds(1);
+
   /** The Kafka configuration, never null. */
   private final KafkaSyncConfig config;
 
@@ -193,17 +196,31 @@ public final class KafkaSyncStrategy implements SyncStrategy {
   private void pollLoop() {
     try {
       while (running.get()) {
-        final ConsumerRecords<String, String> records =
-            consumer.poll(POLL_TIMEOUT);
-        for (final ConsumerRecord<String, String> record : records) {
-          try {
-            final RefreshEvent event = RefreshEventCodec.deserialize(
-                record.value());
-            notifyListeners(event);
-          } catch (final Exception e) {
-            log.error("Failed to deserialize refresh event from partition {} "
-                + "offset {}: {}", record.partition(), record.offset(),
-                e.getMessage(), e);
+        try {
+          final ConsumerRecords<String, String> records =
+              consumer.poll(POLL_TIMEOUT);
+          for (final ConsumerRecord<String, String> record : records) {
+            try {
+              final RefreshEvent event = RefreshEventCodec.deserialize(
+                  record.value());
+              notifyListeners(event);
+            } catch (final Exception e) {
+              log.error("Failed to deserialize refresh event from partition {} "
+                  + "offset {}: {}", record.partition(), record.offset(),
+                  e.getMessage(), e);
+            }
+          }
+        } catch (final WakeupException e) {
+          throw e;
+        } catch (final Exception e) {
+          // Any other poll error (broker outage, rebalance failure, etc.)
+          // must NOT kill the consumer thread, or the node would silently
+          // stop receiving sync events while still appearing alive. Log,
+          // back off briefly, and keep polling.
+          log.error("Kafka poll failed for topic '{}', backing off {}ms: {}",
+              config.topic(), POLL_ERROR_BACKOFF.toMillis(), e.getMessage(), e);
+          if (!sleepBackoff()) {
+            return;
           }
         }
       }
@@ -212,6 +229,21 @@ public final class KafkaSyncStrategy implements SyncStrategy {
         throw e;
       }
       // Expected on shutdown, ignore.
+    }
+  }
+
+  /** Sleeps for the poll-error backoff duration.
+   *
+   * @return {@code true} if the sleep completed, {@code false} if the thread
+   *     was interrupted (caller should stop the loop).
+   */
+  private boolean sleepBackoff() {
+    try {
+      Thread.sleep(POLL_ERROR_BACKOFF.toMillis());
+      return true;
+    } catch (final InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      return false;
     }
   }
 

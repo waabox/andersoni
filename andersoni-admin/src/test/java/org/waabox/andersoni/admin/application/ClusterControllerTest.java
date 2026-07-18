@@ -83,7 +83,7 @@ class ClusterControllerTest {
         "test-ns", "app=test", "test-leader", "/events/info");
 
     ResponseEntity<Map<String, Object>> entity =
-        controller.getClusterStatus(null, null, null, null);
+        controller.getClusterStatus();
 
     assertEquals(200, entity.getStatusCode().value());
 
@@ -143,7 +143,7 @@ class ClusterControllerTest {
         "test-ns", "app=test", "test-leader", "/events/info");
 
     ResponseEntity<Map<String, Object>> entity =
-        controller.getClusterStatus(null, null, null, null);
+        controller.getClusterStatus();
 
     assertEquals(200, entity.getStatusCode().value());
 
@@ -211,7 +211,7 @@ class ClusterControllerTest {
         "test-ns", "app=test", "test-leader", "/events/info");
 
     ResponseEntity<Map<String, Object>> entity =
-        controller.getClusterStatus(null, null, null, null);
+        controller.getClusterStatus();
 
     assertEquals(200, entity.getStatusCode().value());
 
@@ -256,14 +256,17 @@ class ClusterControllerTest {
         "test-ns", "app=test", "test-leader", "/events/info");
 
     ResponseEntity<Map<String, Object>> entity =
-        controller.getClusterStatus(null, null, null, null);
+        controller.getClusterStatus();
 
     assertEquals(502, entity.getStatusCode().value());
 
     Map<String, Object> body = entity.getBody();
     assertNotNull(body);
     assertEquals("Kubernetes API error", body.get("error"));
-    assertEquals(403, body.get("code"));
+    // The K8s status code and message must NOT be leaked to the caller; only
+    // logged server-side.
+    assertFalse(body.containsKey("code"));
+    assertFalse(body.containsKey("message"));
 
     verify(coreApi, coordApi, leaseRequest, podRequest);
   }
@@ -299,7 +302,7 @@ class ClusterControllerTest {
         "test-ns", "app=test", "test-leader", "/events/info");
 
     ResponseEntity<Map<String, Object>> entity =
-        controller.getClusterStatus(null, null, null, null);
+        controller.getClusterStatus();
 
     assertEquals(200, entity.getStatusCode().value());
     assertNull(entity.getBody().get("leaderIdentity"));
@@ -314,27 +317,28 @@ class ClusterControllerTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void whenFetchingCluster_givenCustomParams_shouldUseOverrides()
+  void whenFetchingCluster_shouldUseConfiguredValuesNotRequestParams()
       throws Exception {
 
     CoreV1Api coreApi = createMock(CoreV1Api.class);
     CoordinationV1Api coordApi = createMock(CoordinationV1Api.class);
 
-    // Lease mock with custom namespace/lease
+    // The endpoint must only ever query the CONFIGURED namespace/lease/
+    // selector; the request cannot override them (SSRF hardening). The mocks
+    // therefore expect exactly the configured values.
     CoordinationV1Api.APIreadNamespacedLeaseRequest leaseRequest =
         createMock(CoordinationV1Api.APIreadNamespacedLeaseRequest.class);
-    expect(coordApi.readNamespacedLease("custom-leader", "custom-ns"))
+    expect(coordApi.readNamespacedLease("test-leader", "test-ns"))
         .andReturn(leaseRequest);
     expect(leaseRequest.execute())
         .andReturn(new V1Lease().spec(new V1LeaseSpec()));
 
-    // Pod list with custom namespace/selector
     V1PodList podList = new V1PodList().items(List.of());
 
     CoreV1Api.APIlistNamespacedPodRequest podRequest =
         createMock(CoreV1Api.APIlistNamespacedPodRequest.class);
-    expect(coreApi.listNamespacedPod("custom-ns")).andReturn(podRequest);
-    expect(podRequest.labelSelector("app=custom")).andReturn(podRequest);
+    expect(coreApi.listNamespacedPod("test-ns")).andReturn(podRequest);
+    expect(podRequest.labelSelector("app=test")).andReturn(podRequest);
     expect(podRequest.execute()).andReturn(podList);
 
     replay(coreApi, coordApi, leaseRequest, podRequest);
@@ -344,11 +348,10 @@ class ClusterControllerTest {
         "test-ns", "app=test", "test-leader", "/events/info");
 
     ResponseEntity<Map<String, Object>> entity =
-        controller.getClusterStatus(
-            "custom-ns", "app=custom", "custom-leader", "/custom/info");
+        controller.getClusterStatus();
 
     assertEquals(200, entity.getStatusCode().value());
-    assertEquals("custom-ns", entity.getBody().get("namespace"));
+    assertEquals("test-ns", entity.getBody().get("namespace"));
 
     verify(coreApi, coordApi, leaseRequest, podRequest);
   }

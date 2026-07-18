@@ -27,6 +27,9 @@
     <spring-boot.version>3.4.2</spring-boot.version>
     <kubernetes-client.version>21.0.2</kubernetes-client.version>
     <jackson.version>2.17.0</jackson.version>
+    <!-- Runnable Spring Boot app (repackaged fat jar): never publish it to
+         Maven Central. It is not consumable as a library dependency. -->
+    <maven.deploy.skip>true</maven.deploy.skip>
   </properties>
 
   <dependencies>

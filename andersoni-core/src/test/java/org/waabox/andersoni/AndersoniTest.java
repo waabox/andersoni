@@ -24,6 +24,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.easymock.Capture;
 import org.junit.jupiter.api.Test;
@@ -1738,6 +1741,160 @@ class AndersoniTest {
     andersoni.stop();
 
     verify(leaderElection, syncStrategy);
+  }
+
+  @Test
+  void whenScheduledRefresh_givenNonLeaderWithSync_shouldNotPublishRequest()
+      throws InterruptedException {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .refreshEvery(Duration.ofMillis(50))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader())
+        .andReturn(true)             // bootstrap
+        .andReturn(false).anyTimes(); // every scheduled tick
+    leaderElection.stop();
+    expectLastCall().once();
+    replay(leaderElection);
+
+    final AtomicInteger publishCount = new AtomicInteger();
+    final SyncStrategy syncStrategy = new SyncStrategy() {
+      @Override
+      public void publish(final RefreshEvent event) {
+        publishCount.incrementAndGet();
+      }
+
+      @Override
+      public void subscribe(final RefreshListener listener) {
+      }
+
+      @Override
+      public void start() {
+      }
+
+      @Override
+      public void stop() {
+      }
+    };
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .leaderElection(leaderElection)
+        .syncStrategy(syncStrategy)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    Thread.sleep(300);
+
+    assertEquals(0, publishCount.get(),
+        "A follower must not publish refresh requests on its schedule");
+
+    andersoni.stop();
+
+    verify(leaderElection);
+  }
+
+  @Test
+  void whenReceivingEventDuringRefresh_givenNewerEvent_shouldNotLoseUpdate()
+      throws InterruptedException {
+    final Sport football = new Sport("Football");
+    final Sport rugby = new Sport("Rugby");
+    final Sport tennis = new Sport("Tennis");
+    final Venue maracana = new Venue("Maracana");
+    final Event v1 = new Event("1", football, maracana);
+    final Event v2 = new Event("2", rugby, maracana);
+    final Event v3 = new Event("3", tennis, maracana);
+
+    final List<Event>[] dataHolder = new List[]{List.of(v1)};
+    final AtomicInteger loadCount = new AtomicInteger();
+    final CountDownLatch secondLoadStarted = new CountDownLatch(1);
+    final CountDownLatch releaseSecondLoad = new CountDownLatch(1);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          final int call = loadCount.incrementAndGet();
+          final List<Event> snapshot = dataHolder[0];
+          if (call == 2) {
+            // Read the data, then block: a newer event will arrive while this
+            // refresh is in flight and must not be coalesced away.
+            secondLoadStarted.countDown();
+            try {
+              releaseSecondLoad.await();
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+          return snapshot;
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Capture<RefreshListener> listenerCapture = newCapture();
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    syncStrategy.subscribe(capture(listenerCapture));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+    replay(syncStrategy);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .syncStrategy(syncStrategy)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final RefreshListener listener = listenerCapture.getValue();
+
+    // Trigger refresh #2 (from another node); its load blocks after reading v2.
+    dataHolder[0] = List.of(v2);
+    listener.onRefresh(new RefreshEvent(
+        "events", "node-2", 2L, "hash-2", Instant.now()));
+    assertTrue(secondLoadStarted.await(2, TimeUnit.SECONDS),
+        "Second load should have started");
+
+    // While refresh #2 is in flight, a newer event arrives with v3 data.
+    dataHolder[0] = List.of(v3);
+    listener.onRefresh(new RefreshEvent(
+        "events", "node-2", 3L, "hash-3", Instant.now()));
+
+    // Let refresh #2 finish; the newer event must still trigger refresh #3.
+    releaseSecondLoad.countDown();
+
+    boolean converged = false;
+    for (int i = 0; i < 40 && !converged; i++) {
+      converged = !andersoni.search("events", "by-sport", "Tennis").isEmpty();
+      if (!converged) {
+        Thread.sleep(50);
+      }
+    }
+
+    assertTrue(converged,
+        "Event arriving during an in-flight refresh must not be lost; "
+            + "catalog should converge to the newest data (v3)");
+    assertEquals(3, loadCount.get(),
+        "The newer event should have triggered a third load");
+
+    andersoni.stop();
+
+    verify(syncStrategy);
   }
 
   // --- info() tests ---

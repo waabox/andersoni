@@ -220,8 +220,9 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
         final String sourceNodeId = rs.getString("source_node_id");
         final long version = rs.getLong("version");
         final String hash = rs.getString("hash");
+        final Timestamp updatedTs = rs.getTimestamp("updated_at");
         final Instant updatedAt =
-            rs.getTimestamp("updated_at").toInstant();
+            updatedTs != null ? updatedTs.toInstant() : Instant.now();
 
         final String previousHash = lastKnownHashes.put(catalogName, hash);
 
@@ -233,7 +234,11 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
         }
       }
 
-    } catch (final SQLException e) {
+    } catch (final Exception e) {
+      // Catch broadly on purpose: this runs under scheduleAtFixedRate, where
+      // any thrown exception (e.g. a null column producing an NPE, not just a
+      // SQLException) permanently suppresses all future executions. Swallow
+      // and log so a single bad row or transient error never stops polling.
       log.error("Error polling sync log table '{}'", config.tableName(), e);
     }
   }

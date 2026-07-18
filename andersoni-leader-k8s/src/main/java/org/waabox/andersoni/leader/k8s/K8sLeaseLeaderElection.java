@@ -127,10 +127,26 @@ public final class K8sLeaseLeaderElection implements LeaderElectionStrategy {
             + " in namespace '{}' with identity '{}'",
             config.leaseName(), config.leaseNamespace(),
             config.identity());
-        leaderElector.run(
-            this::onStartLeading,
-            this::onStopLeading,
-            this::onNewLeader);
+        try {
+          leaderElector.run(
+              this::onStartLeading,
+              this::onStopLeading,
+              this::onNewLeader);
+          log.warn("K8s leader elector run() returned for lease '{}'",
+              config.leaseName());
+        } catch (final Exception e) {
+          log.error("K8s leader election thread failed for lease '{}'",
+              config.leaseName(), e);
+        } finally {
+          // If the elector exits for any reason (fatal error, unexpected
+          // return, interruption) while this node still believes it leads,
+          // relinquish leadership so isLeader() cannot keep returning true
+          // with no renewal happening — otherwise the lease expires and a
+          // peer takes over while this node still reports leadership (split
+          // brain). Idempotent with stop() and onStopLeading().
+          firstElectionLatch.countDown();
+          relinquishLeadership();
+        }
       }, "k8s-leader-election");
 
       thread.setDaemon(true);
@@ -197,7 +213,15 @@ public final class K8sLeaseLeaderElection implements LeaderElectionStrategy {
       log.info("Stopping K8s leader election");
       thread.interrupt();
       electionThread = null;
+      try {
+        thread.join(TimeUnit.SECONDS.toMillis(5));
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
     }
+    // Relinquish leadership locally and notify listeners so isLeader() cannot
+    // keep reporting true after stop() and dependents learn leadership ended.
+    relinquishLeadership();
   }
 
   /**
@@ -213,7 +237,7 @@ public final class K8sLeaseLeaderElection implements LeaderElectionStrategy {
   }
 
   /** Called when this node starts leading. */
-  private void onStartLeading() {
+  private synchronized void onStartLeading() {
     log.info("This node ('{}') is now the leader", config.identity());
     leader = true;
     notifyListeners(true);
@@ -222,8 +246,22 @@ public final class K8sLeaseLeaderElection implements LeaderElectionStrategy {
   /** Called when this node stops leading. */
   private void onStopLeading() {
     log.info("This node ('{}') lost leadership", config.identity());
-    leader = false;
-    notifyListeners(false);
+    relinquishLeadership();
+  }
+
+  /**
+   * Atomically clears leadership and notifies listeners, at most once per
+   * leadership term.
+   *
+   * <p>Safe to call from the {@link LeaderElector} stop callback, the
+   * election thread's exit handler, and {@link #stop()}; the {@code leader}
+   * guard makes redundant calls no-ops so listeners are not notified twice.
+   */
+  private synchronized void relinquishLeadership() {
+    if (leader) {
+      leader = false;
+      notifyListeners(false);
+    }
   }
 
   /**

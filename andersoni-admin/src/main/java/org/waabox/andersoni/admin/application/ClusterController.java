@@ -24,7 +24,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** REST controller that aggregates cluster status for the admin dashboard.
@@ -110,31 +109,26 @@ public final class ClusterController {
 
   /** Returns the aggregated cluster status.
    *
-   * <p>Discovers pods matching the label selector, reads the leader Lease,
-   * and proxies a request to each pod's info endpoint through the K8s API
-   * server in parallel.
+   * <p>Discovers pods matching the configured label selector, reads the
+   * leader Lease, and proxies a request to each pod's info endpoint through
+   * the K8s API server in parallel.
    *
-   * @param namespace the Kubernetes namespace, defaults to config value.
-   * @param labelSelector the pod label selector, defaults to config value.
-   * @param leaseName the lease name for leader detection, defaults to config
-   *     value.
-   * @param infoPath the HTTP path to call on each pod, defaults to config
-   *     value.
+   * <p><strong>Security:</strong> the namespace, label selector, lease name
+   * and proxy path are pinned to the configured values and are deliberately
+   * NOT accepted from the request. This endpoint proxies through the
+   * Kubernetes API using the admin ServiceAccount's privileges, so
+   * caller-controlled values would be a server-side request forgery /
+   * lateral-movement primitive into the cluster.
    *
    * @return the cluster status as a JSON response, never null.
    */
   @GetMapping
-  public ResponseEntity<Map<String, Object>> getClusterStatus(
-      @RequestParam(required = false) final String namespace,
-      @RequestParam(required = false) final String labelSelector,
-      @RequestParam(required = false) final String leaseName,
-      @RequestParam(required = false) final String infoPath) {
+  public ResponseEntity<Map<String, Object>> getClusterStatus() {
 
-    final String ns = namespace != null ? namespace : defaultNamespace;
-    final String selector = labelSelector != null
-        ? labelSelector : defaultLabelSelector;
-    final String lease = leaseName != null ? leaseName : defaultLeaseName;
-    final String path = infoPath != null ? infoPath : defaultInfoPath;
+    final String ns = defaultNamespace;
+    final String selector = defaultLabelSelector;
+    final String lease = defaultLeaseName;
+    final String path = defaultInfoPath;
 
     try {
       final String leaderIdentity = readLeaderIdentity(ns, lease);
@@ -163,19 +157,18 @@ public final class ClusterController {
       return ResponseEntity.ok(response);
 
     } catch (final ApiException e) {
+      // Log full detail (including the K8s response body) server-side only;
+      // do not leak it to the caller.
       log.error("Kubernetes API error: {} - {}", e.getCode(),
           e.getResponseBody(), e);
       final Map<String, Object> error = new LinkedHashMap<>();
       error.put("error", "Kubernetes API error");
-      error.put("message", e.getMessage());
-      error.put("code", e.getCode());
       return ResponseEntity.status(502).body(error);
 
     } catch (final Exception e) {
       log.error("Unexpected error fetching cluster status", e);
       final Map<String, Object> error = new LinkedHashMap<>();
       error.put("error", "Internal error");
-      error.put("message", e.getMessage());
       return ResponseEntity.status(500).body(error);
     }
   }
