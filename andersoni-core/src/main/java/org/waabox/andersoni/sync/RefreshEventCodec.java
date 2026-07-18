@@ -26,9 +26,9 @@ public final class RefreshEventCodec {
   /**
    * Serializes a {@link RefreshEvent} into a JSON string.
    *
-   * <p>The resulting JSON contains exactly five fields:
+   * <p>The resulting JSON contains exactly six fields:
    * {@code catalogName}, {@code sourceNodeId}, {@code version},
-   * {@code hash}, and {@code timestamp}.
+   * {@code hash}, {@code timestamp}, and {@code kind}.
    *
    * @param event the event to serialize, never null.
    * @return the JSON representation of the event, never null.
@@ -42,6 +42,7 @@ public final class RefreshEventCodec {
     node.put("version", event.version());
     node.put("hash", event.hash());
     node.put("timestamp", event.timestamp().toString());
+    node.put("kind", event.kind().name());
 
     return node.toString();
   }
@@ -51,7 +52,8 @@ public final class RefreshEventCodec {
    *
    * <p>The JSON must contain the fields {@code catalogName},
    * {@code sourceNodeId}, {@code version}, {@code hash}, and
-   * {@code timestamp}.
+   * {@code timestamp}. The {@code kind} field is optional and defaults to
+   * {@link RefreshKind#EVENT} when absent or unrecognized.
    *
    * @param json the JSON string to parse, never null.
    * @return the parsed {@link RefreshEvent}, never null.
@@ -69,9 +71,10 @@ public final class RefreshEventCodec {
       final long version = node.getLong("version");
       final String hash = requireString(node, "hash");
       final Instant timestamp = Instant.parse(requireString(node, "timestamp"));
+      final RefreshKind kind = parseKind(node);
 
       return new RefreshEvent(
-          catalogName, sourceNodeId, version, hash, timestamp
+          catalogName, sourceNodeId, version, hash, timestamp, kind
       );
     } catch (final IllegalArgumentException e) {
       throw e;
@@ -97,5 +100,25 @@ public final class RefreshEventCodec {
       );
     }
     return node.getString(field);
+  }
+
+  /** Returns the message kind, defaulting to {@link RefreshKind#EVENT}.
+   *
+   * <p>Absent or unrecognized values default to {@code EVENT} so that
+   * payloads produced by older nodes (which did not emit a {@code kind}
+   * field) are still accepted on the wire.
+   *
+   * @param node the JSON object.
+   * @return the parsed kind, never null.
+   */
+  private static RefreshKind parseKind(final JSONObject node) {
+    if (!node.has("kind") || node.isNull("kind")) {
+      return RefreshKind.EVENT;
+    }
+    try {
+      return RefreshKind.valueOf(node.getString("kind"));
+    } catch (final IllegalArgumentException e) {
+      return RefreshKind.EVENT;
+    }
   }
 }

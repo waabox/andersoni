@@ -453,13 +453,16 @@ public final class Andersoni {
    * Refreshes a catalog locally and synchronizes the refresh event across
    * nodes.
    *
-   * <p>If a {@link LeaderElectionStrategy} is configured, this method only
-   * executes when the current node is the leader. If this node is not the
-   * leader, the call is silently ignored. This prevents follower nodes from
-   * triggering unnecessary refreshes and avoids concurrent refresh storms
-   * in multi-node deployments.
+   * <p>The authoritative refresh always runs on the leader. If this node is
+   * the leader, it refreshes locally and broadcasts the result. If this node
+   * is not the leader and a sync strategy is present, it instead publishes a
+   * {@link RefreshEvent} of kind {@link org.waabox.andersoni.sync.RefreshKind#REQUEST}
+   * so the leader performs the refresh; the requesting node then converges
+   * through the normal result event. Followers ignore requests, so no
+   * propagation loop can form. If this node is not the leader and no sync
+   * strategy is configured, the call is a no-op.
    *
-   * <p>If a sync strategy is present, a {@link RefreshEvent} is published
+   * <p>When acting as the leader, a {@link RefreshEvent} is published
    * after the local refresh. If a snapshot store is present and the catalog
    * has a serializer, the refreshed data is serialized and saved to the
    * snapshot store before publishing the event.
@@ -477,12 +480,12 @@ public final class Andersoni {
       throw new IllegalStateException(
           "Cannot refresh after stop() has been called");
     }
+    final Catalog<?> catalog = requireCatalog(catalogName);
+
     if (!leaderElection.isLeader()) {
-      log.debug("Skipping refreshAndSync for catalog '{}': not leader",
-          catalogName);
+      publishRefreshRequest(catalogName);
       return;
     }
-    final Catalog<?> catalog = requireCatalog(catalogName);
 
     catalog.refresh();
     reportIndexSizes(catalog);
@@ -505,6 +508,38 @@ public final class Andersoni {
             catalogName, e.getMessage(), e);
         metrics.syncPublishFailed(catalogName, e);
       }
+    }
+  }
+
+  /**
+   * Publishes a {@link org.waabox.andersoni.sync.RefreshKind#REQUEST}
+   * message asking the leader to refresh the given catalog.
+   *
+   * <p>Invoked when a non-leader node receives a {@code refreshAndSync}
+   * call. The request is a broadcast command; only the leader acts upon it
+   * (see {@link #wireSyncListener()}), so it is never re-emitted and cannot
+   * form a loop. If no sync strategy is configured the request cannot be
+   * delivered and the call becomes a no-op.
+   *
+   * @param catalogName the catalog to request a refresh for, never null
+   */
+  private void publishRefreshRequest(final String catalogName) {
+    if (syncStrategy == null) {
+      log.debug("Skipping refreshAndSync for catalog '{}': not leader "
+          + "and no sync strategy to reach the leader", catalogName);
+      return;
+    }
+    final RefreshEvent request = RefreshEvent.request(
+        catalogName, nodeId, Instant.now());
+    try {
+      syncStrategy.publish(request);
+      metrics.syncPublished(catalogName);
+      log.debug("Not leader; published refresh request for catalog '{}'",
+          catalogName);
+    } catch (final Exception e) {
+      log.error("Failed to publish refresh request for catalog '{}': {}",
+          catalogName, e.getMessage(), e);
+      metrics.syncPublishFailed(catalogName, e);
     }
   }
 
@@ -853,10 +888,15 @@ public final class Andersoni {
   /**
    * Wires the sync listener if a sync strategy is configured.
    *
-   * <p>The listener ignores events from this node (to prevent infinite
-   * loops) and events where the local catalog already has the same hash.
-   * When a new event is received, it attempts to load from the snapshot
-   * store first, falling back to the catalog's DataLoader.
+   * <p>Incoming messages are handled by kind. A
+   * {@link org.waabox.andersoni.sync.RefreshKind#REQUEST} is a command that
+   * only the leader acts upon (by running the authoritative refresh);
+   * followers ignore it, so it is never re-emitted. A
+   * {@link org.waabox.andersoni.sync.RefreshKind#EVENT} is a result: the
+   * listener ignores events from this node (to prevent infinite loops) and
+   * events where the local catalog already has the same hash, otherwise it
+   * reloads from the snapshot store first, falling back to the catalog's
+   * DataLoader.
    */
   private void wireSyncListener() {
     if (syncStrategy == null) {
@@ -864,15 +904,32 @@ public final class Andersoni {
     }
 
     syncStrategy.subscribe(event -> {
-      if (nodeId.equals(event.sourceNodeId())) {
-        log.debug("Ignoring refresh event from self for catalog '{}'",
+      final Catalog<?> catalog = catalogsByName.get(event.catalogName());
+      if (catalog == null) {
+        log.warn("Received refresh event for unknown catalog '{}'",
             event.catalogName());
         return;
       }
 
-      final Catalog<?> catalog = catalogsByName.get(event.catalogName());
-      if (catalog == null) {
-        log.warn("Received refresh event for unknown catalog '{}'",
+      if (event.isRequest()) {
+        // A request is a command to the leader. Only the leader acts on it,
+        // by running the authoritative refresh (which broadcasts a result
+        // event). Followers ignore it, so the request is never re-emitted
+        // and no propagation loop can form.
+        if (leaderElection.isLeader()) {
+          log.debug("Leader received refresh request for catalog '{}'",
+              event.catalogName());
+          asyncRefreshDispatcher.dispatch(event.catalogName(),
+              () -> refreshAndSync(event.catalogName()));
+        } else {
+          log.debug("Ignoring refresh request for catalog '{}': not leader",
+              event.catalogName());
+        }
+        return;
+      }
+
+      if (nodeId.equals(event.sourceNodeId())) {
+        log.debug("Ignoring refresh event from self for catalog '{}'",
             event.catalogName());
         return;
       }

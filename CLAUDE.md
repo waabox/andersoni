@@ -83,6 +83,7 @@ org.waabox.andersoni.example            # Example app
 - **Catalog Views**: pre-computed projections of `T` into smaller typed objects `V`, materialized at snapshot build time via `AndersoniCatalogItem<T>` (internal wrapper, never exposed). Query any index with a view class to get `List<V>` instead of `List<T>`
 - **Build Hooks**: `SnapshotBuildHook<T>` — per-item hooks during snapshot build with priority ordering. Single-loop build: views → indexation → hooks in one pass
 - **Retry with backoff**: `RetryPolicy` for bootstrap and refresh failures
+- **Refresh request propagation**: `RefreshEvent` carries a `RefreshKind` (`EVENT` = result, `REQUEST` = command). The authoritative refresh runs **only on the leader**. `refreshAndSync` on a follower publishes a `REQUEST`; **only the leader acts on requests**, followers ignore them, so the propagation graph `REQUEST → EVENT → reload` stays acyclic (no loop). DB polling is a state channel and cannot carry requests — it drops them (follower refresh becomes a no-op there). See `.claude/docs/use-cases/cluster-refresh-request-propagation.md`
 
 ## CI/CD
 
