@@ -62,4 +62,56 @@ class RefreshEventCodecTest {
 
     assertEquals(original, restored);
   }
+
+  @Test
+  void whenSerializing_givenEvent_shouldIncludeKind() {
+    final RefreshEvent event = new RefreshEvent(
+        "products", "node-1", 42L, "abc123hash",
+        Instant.parse("2026-01-15T10:30:00Z")
+    );
+
+    final String json = RefreshEventCodec.serialize(event);
+
+    assertTrue(json.contains("\"kind\":\"EVENT\""));
+  }
+
+  @Test
+  void whenRoundTripping_givenRequest_shouldPreserveKind() {
+    final RefreshEvent request = RefreshEvent.request(
+        "inventory", "node-3", Instant.parse("2026-03-01T12:00:00Z")
+    );
+
+    final String json = RefreshEventCodec.serialize(request);
+    final RefreshEvent restored = RefreshEventCodec.deserialize(json);
+
+    assertEquals(RefreshKind.REQUEST, restored.kind());
+    assertEquals(request, restored);
+  }
+
+  @Test
+  void whenDeserializing_givenJsonWithoutKind_shouldDefaultToEvent() {
+    final String json = "{\"catalogName\":\"orders\","
+        + "\"sourceNodeId\":\"node-2\","
+        + "\"version\":99,"
+        + "\"hash\":\"sha256abc\","
+        + "\"timestamp\":\"2026-02-10T08:00:00Z\"}";
+
+    final RefreshEvent event = RefreshEventCodec.deserialize(json);
+
+    assertEquals(RefreshKind.EVENT, event.kind());
+  }
+
+  @Test
+  void whenDeserializing_givenUnknownKind_shouldDefaultToEvent() {
+    final String json = "{\"catalogName\":\"orders\","
+        + "\"sourceNodeId\":\"node-2\","
+        + "\"version\":99,"
+        + "\"hash\":\"sha256abc\","
+        + "\"timestamp\":\"2026-02-10T08:00:00Z\","
+        + "\"kind\":\"BOGUS\"}";
+
+    final RefreshEvent event = RefreshEventCodec.deserialize(json);
+
+    assertEquals(RefreshKind.EVENT, event.kind());
+  }
 }

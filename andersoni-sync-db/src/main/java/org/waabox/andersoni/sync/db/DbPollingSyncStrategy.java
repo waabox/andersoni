@@ -74,6 +74,17 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
   public void publish(final RefreshEvent event) {
     Objects.requireNonNull(event, "event cannot be null");
 
+    if (event.isRequest()) {
+      // The DB polling channel tracks the latest hash per catalog to detect
+      // changes; it is a state channel, not a command channel. A refresh
+      // request carries no hash and has no leader back-channel here, so
+      // writing it would corrupt change detection. Requests are ignored:
+      // with DB polling, a follower's refreshAndSync is a safe no-op.
+      log.debug("DB polling sync does not support refresh requests; "
+          + "ignoring request for catalog '{}'", event.catalogName());
+      return;
+    }
+
     final String updateSql = "UPDATE " + config.tableName()
         + " SET source_node_id = ?, version = ?, hash = ?, updated_at = ?"
         + " WHERE catalog_name = ?";

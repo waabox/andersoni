@@ -53,6 +53,7 @@
     <module>andersoni-spring-boot-starter</module>
     <module>andersoni-admin</module>
     <module>andersoni-metrics-datadog</module>
+    <module>andersoni-cluster-it</module>
   </modules>
 
   <properties>

@@ -33,6 +33,7 @@ import org.waabox.andersoni.snapshot.SerializedSnapshot;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.snapshot.SnapshotStore;
 import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.RefreshKind;
 import org.waabox.andersoni.sync.RefreshListener;
 import org.waabox.andersoni.sync.SyncStrategy;
 
@@ -1544,6 +1545,199 @@ class AndersoniTest {
     andersoni.stop();
 
     verify(leaderElection);
+  }
+
+  @Test
+  void whenRefreshAndSync_givenNotLeaderWithSync_shouldPublishRequest() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final int[] loadCount = {0};
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          loadCount[0]++;
+          return List.of(e1);
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader())
+        .andReturn(true)   // bootstrap
+        .andReturn(false); // refreshAndSync call
+    leaderElection.stop();
+    expectLastCall().once();
+
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    final Capture<RefreshEvent> requestCapture = newCapture();
+    syncStrategy.publish(capture(requestCapture));
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+
+    replay(leaderElection, syncStrategy);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .leaderElection(leaderElection)
+        .syncStrategy(syncStrategy)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final int loadCountAfterBootstrap = loadCount[0];
+
+    andersoni.refreshAndSync("events");
+
+    assertEquals(loadCountAfterBootstrap, loadCount[0],
+        "Follower must not refresh locally");
+
+    final RefreshEvent request = requestCapture.getValue();
+    assertEquals(RefreshKind.REQUEST, request.kind());
+    assertEquals("events", request.catalogName());
+    assertEquals("node-1", request.sourceNodeId());
+
+    andersoni.stop();
+
+    verify(leaderElection, syncStrategy);
+  }
+
+  @Test
+  void whenReceivingRefreshRequest_givenLeader_shouldRefreshAndPublishEvent()
+      throws InterruptedException {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final int[] loadCount = {0};
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          loadCount[0]++;
+          return List.of(e1);
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Capture<RefreshListener> listenerCapture = newCapture();
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    syncStrategy.subscribe(capture(listenerCapture));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    final Capture<RefreshEvent> eventCapture = newCapture();
+    syncStrategy.publish(capture(eventCapture));
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+    replay(syncStrategy);
+
+    // Default leader election: this node is always the leader.
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .syncStrategy(syncStrategy)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final int loadCountAfterBootstrap = loadCount[0];
+
+    // A follower asks the leader (this node) to refresh.
+    final RefreshListener listener = listenerCapture.getValue();
+    listener.onRefresh(RefreshEvent.request("events", "node-2",
+        Instant.now()));
+
+    Thread.sleep(200);
+
+    assertTrue(loadCount[0] > loadCountAfterBootstrap,
+        "Leader must run the authoritative refresh on request");
+
+    final RefreshEvent published = eventCapture.getValue();
+    assertEquals(RefreshKind.EVENT, published.kind());
+    assertEquals("events", published.catalogName());
+    assertEquals("node-1", published.sourceNodeId());
+
+    andersoni.stop();
+
+    verify(syncStrategy);
+  }
+
+  @Test
+  void whenReceivingRefreshRequest_givenFollower_shouldIgnore()
+      throws InterruptedException {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final int[] loadCount = {0};
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          loadCount[0]++;
+          return List.of(e1);
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader())
+        .andReturn(true)    // bootstrap
+        .andReturn(false);  // handling the received request
+    leaderElection.stop();
+    expectLastCall().once();
+
+    final Capture<RefreshListener> listenerCapture = newCapture();
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    syncStrategy.subscribe(capture(listenerCapture));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    // No publish expected: a follower ignores requests.
+    syncStrategy.stop();
+    expectLastCall().once();
+
+    replay(leaderElection, syncStrategy);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .leaderElection(leaderElection)
+        .syncStrategy(syncStrategy)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final int loadCountAfterBootstrap = loadCount[0];
+
+    final RefreshListener listener = listenerCapture.getValue();
+    listener.onRefresh(RefreshEvent.request("events", "node-2",
+        Instant.now()));
+
+    Thread.sleep(200);
+
+    assertEquals(loadCountAfterBootstrap, loadCount[0],
+        "Follower must ignore refresh requests");
+
+    andersoni.stop();
+
+    verify(leaderElection, syncStrategy);
   }
 
   // --- info() tests ---
