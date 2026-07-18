@@ -149,9 +149,23 @@ public final class AndersoniAutoConfiguration {
       @Override
       public void start() {
         log.info("Starting Andersoni lifecycle...");
-        andersoni.start();
-        running = true;
-        log.info("Andersoni lifecycle started successfully.");
+        try {
+          andersoni.start();
+          running = true;
+          log.info("Andersoni lifecycle started successfully.");
+        } catch (final RuntimeException e) {
+          // A partial start (e.g. sync subscribe or a scheduler already
+          // created before a later step failed) would otherwise leak threads
+          // and sockets, because Spring only calls stop() when isRunning() is
+          // true. Best-effort stop() to release resources, then rethrow.
+          log.error("Andersoni lifecycle failed to start; rolling back", e);
+          try {
+            andersoni.stop();
+          } catch (final RuntimeException stopError) {
+            log.warn("Error while rolling back a failed start", stopError);
+          }
+          throw e;
+        }
       }
 
       @Override

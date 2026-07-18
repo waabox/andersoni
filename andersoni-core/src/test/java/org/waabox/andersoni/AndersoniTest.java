@@ -13,6 +13,7 @@ import static org.easymock.EasyMock.replay;
 import static org.easymock.EasyMock.verify;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -23,7 +24,6 @@ import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -60,10 +60,10 @@ class AndersoniTest {
   void whenBuilding_givenDefaults_shouldCreateWithAutoNodeId() {
     final Andersoni andersoni = Andersoni.builder().build();
 
+    // The default node id is HOSTNAME when present, else a random UUID;
+    // either way it must be a non-blank stable identifier.
     assertNotNull(andersoni.nodeId());
-
-    // Verify it is a valid UUID format.
-    UUID.fromString(andersoni.nodeId());
+    assertFalse(andersoni.nodeId().isBlank());
 
     andersoni.stop();
   }

@@ -1372,9 +1372,27 @@ public final class Andersoni {
      *
      * @return a new Andersoni instance, never null
      */
+    /**
+     * Resolves the default node id when none was configured.
+     *
+     * <p>Prefers a stable identifier from the {@code HOSTNAME} environment
+     * variable (in Kubernetes this is the pod name), falling back to a random
+     * UUID. A stable id keeps per-node metric tags from growing unbounded
+     * across process restarts.
+     *
+     * @return the default node id, never null.
+     */
+    private static String defaultNodeId() {
+      final String hostname = System.getenv("HOSTNAME");
+      if (hostname != null && !hostname.isBlank()) {
+        return hostname;
+      }
+      return UUID.randomUUID().toString();
+    }
+
     public Andersoni build() {
       final String resolvedNodeId = nodeId != null
-          ? nodeId : UUID.randomUUID().toString();
+          ? nodeId : defaultNodeId();
       final LeaderElectionStrategy resolvedLeader = leaderElection != null
           ? leaderElection : new SingleNodeLeaderElection();
       final RetryPolicy resolvedRetry = retryPolicy != null

@@ -95,17 +95,7 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
 
     try (final Connection conn = config.dataSource().getConnection()) {
 
-      final int affectedRows;
-      try (final PreparedStatement ps = conn.prepareStatement(updateSql)) {
-        ps.setString(1, event.sourceNodeId());
-        ps.setLong(2, event.version());
-        ps.setString(3, event.hash());
-        ps.setTimestamp(4, Timestamp.from(event.timestamp()));
-        ps.setString(5, event.catalogName());
-        affectedRows = ps.executeUpdate();
-      }
-
-      if (affectedRows == 0) {
+      if (updateRow(conn, updateSql, event) == 0) {
         try (final PreparedStatement ps =
             conn.prepareStatement(insertSql)) {
           ps.setString(1, event.catalogName());
@@ -114,6 +104,13 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
           ps.setString(4, event.hash());
           ps.setTimestamp(5, Timestamp.from(event.timestamp()));
           ps.executeUpdate();
+        } catch (final SQLException insertError) {
+          // Another node inserted the row for this catalog between our UPDATE
+          // (0 rows) and this INSERT, causing a primary-key clash. Recover by
+          // retrying the UPDATE instead of failing the publish.
+          if (updateRow(conn, updateSql, event) == 0) {
+            throw insertError;
+          }
         }
       }
 
@@ -124,6 +121,26 @@ public final class DbPollingSyncStrategy implements SyncStrategy {
       throw new AndersoniException(
           "Failed to publish refresh event for catalog '"
               + event.catalogName() + "'", e);
+    }
+  }
+
+  /** Runs the update statement for a refresh event.
+   *
+   * @param conn      the database connection, never null.
+   * @param updateSql the UPDATE statement, never null.
+   * @param event     the event to persist, never null.
+   * @return the number of rows affected.
+   * @throws SQLException if the update fails.
+   */
+  private static int updateRow(final Connection conn, final String updateSql,
+      final RefreshEvent event) throws SQLException {
+    try (final PreparedStatement ps = conn.prepareStatement(updateSql)) {
+      ps.setString(1, event.sourceNodeId());
+      ps.setLong(2, event.version());
+      ps.setString(3, event.hash());
+      ps.setTimestamp(4, Timestamp.from(event.timestamp()));
+      ps.setString(5, event.catalogName());
+      return ps.executeUpdate();
     }
   }
 

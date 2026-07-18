@@ -20,6 +20,12 @@ import java.util.Objects;
  *       empty, as they carry no meaning until the refresh actually happens.</li>
  * </ul>
  *
+ * <p><strong>Rolling-upgrade note:</strong> {@code REQUEST} was introduced in
+ * 1.10. A node running an older version decodes a request as a plain event
+ * (unknown kinds default to {@code EVENT}) with an empty hash, and may perform
+ * one spurious refresh. This is transient and never loops, but to avoid it,
+ * upgrade all nodes to 1.10+ before relying on follower-initiated refresh.
+ *
  * @param catalogName   the name of the catalog the message refers to,
  *                      never null
  * @param sourceNodeId  the identifier of the node that originated the
