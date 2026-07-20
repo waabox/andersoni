@@ -1,5 +1,7 @@
 package org.waabox.andersoni;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -1043,6 +1045,15 @@ public final class Andersoni {
    * if both the snapshot store is configured and the catalog has a
    * serializer.
    *
+   * <p>The stored hash is the SHA-256 of the bytes actually written, not the
+   * in-memory snapshot's hash. The two are identical whenever the serializer
+   * honours its determinism contract, but deriving the stored hash from the
+   * stored bytes makes it self-consistent by construction, so a store can
+   * verify integrity on load without depending on two separate
+   * {@code serialize()} calls agreeing. The stored hash is metadata only:
+   * restoring a snapshot recomputes the catalog's hash from the loaded items,
+   * so this does not affect the cross-node convergence signal.
+   *
    * @param catalog the catalog whose snapshot should be saved, never null
    */
   @SuppressWarnings("unchecked")
@@ -1065,12 +1076,34 @@ public final class Andersoni {
 
     final SerializedSnapshot serialized = new SerializedSnapshot(
         catalog.name(),
-        snapshot.hash(),
+        sha256Hex(bytes),
         snapshot.version(),
         snapshot.createdAt(),
         bytes);
 
     snapshotStore.save(catalog.name(), serialized);
+  }
+
+  /**
+   * Returns the lowercase hex SHA-256 digest of the given bytes.
+   *
+   * @param bytes the bytes to digest, never null
+   *
+   * @return the hex-encoded digest, never null
+   */
+  private static String sha256Hex(final byte[] bytes) {
+    try {
+      final byte[] digest =
+          MessageDigest.getInstance("SHA-256").digest(bytes);
+      final StringBuilder builder = new StringBuilder(digest.length * 2);
+      for (final byte b : digest) {
+        builder.append(Character.forDigit((b >> 4) & 0xF, 16));
+        builder.append(Character.forDigit(b & 0xF, 16));
+      }
+      return builder.toString();
+    } catch (final NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 algorithm not available", e);
+    }
   }
 
   /**

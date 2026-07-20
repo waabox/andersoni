@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
@@ -100,7 +101,7 @@ class S3SnapshotStoreTest {
 
     final GetObjectResponse response = GetObjectResponse.builder()
         .metadata(Map.of(
-            "hash", "sha256hash",
+            "hash", sha256Hex(data),
             "version", "42",
             "created-at", "2026-01-15T10:30:00Z",
             "catalog-name", "events"
@@ -132,10 +133,67 @@ class S3SnapshotStoreTest {
 
     final SerializedSnapshot result = loaded.get();
     assertEquals("events", result.catalogName());
-    assertEquals("sha256hash", result.hash());
+    assertEquals(sha256Hex(data), result.hash());
     assertEquals(42L, result.version());
     assertEquals(createdAt, result.createdAt());
     assertArrayEquals(data, result.data());
+  }
+
+  @Test
+  void whenLoading_givenHashNotMatchingData_shouldReturnEmpty()
+      throws Exception {
+
+    final S3Client s3Client = createMock(S3Client.class);
+
+    final S3SnapshotConfig config = S3SnapshotConfig.builder()
+        .bucket("my-bucket")
+        .region(Region.US_EAST_1)
+        .s3Client(s3Client)
+        .build();
+
+    final byte[] corrupted = "tampered-snapshot-bytes".getBytes();
+
+    final GetObjectResponse response = GetObjectResponse.builder()
+        .metadata(Map.of(
+            "hash", sha256Hex("the-original-bytes".getBytes()),
+            "version", "42",
+            "created-at", "2026-01-15T10:30:00Z",
+            "catalog-name", "events"
+        ))
+        .build();
+
+    expect(s3Client.getObject(anyObject(GetObjectRequest.class)))
+        .andReturn(new ResponseInputStream<>(response,
+            AbortableInputStream.create(new ByteArrayInputStream(corrupted))));
+
+    replay(s3Client);
+
+    final S3SnapshotStore store = new S3SnapshotStore(config);
+
+    final Optional<SerializedSnapshot> loaded = store.load("events");
+
+    verify(s3Client);
+
+    assertTrue(loaded.isEmpty(),
+        "A snapshot whose stored hash does not match its bytes must be "
+            + "treated as absent so the caller falls back to the DataLoader, "
+            + "rather than served as if it were intact");
+  }
+
+  /** Returns the lowercase hex SHA-256 of the given bytes.
+   *
+   * @param data the bytes to digest, never null.
+   * @return the hex digest, never null.
+   */
+  private static String sha256Hex(final byte[] data) throws Exception {
+    final byte[] digest =
+        MessageDigest.getInstance("SHA-256").digest(data);
+    final StringBuilder builder = new StringBuilder(digest.length * 2);
+    for (final byte b : digest) {
+      builder.append(Character.forDigit((b >> 4) & 0xF, 16));
+      builder.append(Character.forDigit(b & 0xF, 16));
+    }
+    return builder.toString();
   }
 
   @Test

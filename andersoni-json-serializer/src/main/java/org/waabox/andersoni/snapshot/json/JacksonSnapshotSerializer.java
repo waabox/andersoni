@@ -77,12 +77,24 @@ public class JacksonSnapshotSerializer<T>
     }
   }
 
-  /** {@inheritDoc} */
+  /** {@inheritDoc}
+   *
+   * <p>A payload holding the JSON literal {@code null} is rejected like any
+   * other malformed input: Jackson maps it to a {@code null} list rather than
+   * throwing, so it is caught explicitly here instead of surfacing as a raw
+   * {@link NullPointerException} from the unmodifiable wrapper.
+   */
   @Override
   public List<T> deserialize(final byte[] data) {
     Objects.requireNonNull(data, "data must not be null");
     try {
-      return Collections.unmodifiableList(mapper.readValue(data, typeReference));
+      final List<T> items = mapper.readValue(data, typeReference);
+      if (items == null) {
+        throw new UncheckedIOException("Failed to deserialize items",
+            new IOException("The payload holds the JSON literal null;"
+                + " a snapshot must contain a JSON array of items"));
+      }
+      return Collections.unmodifiableList(items);
     } catch (final IOException e) {
       throw new UncheckedIOException("Failed to deserialize items", e);
     }

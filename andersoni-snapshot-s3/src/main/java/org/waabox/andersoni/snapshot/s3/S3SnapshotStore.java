@@ -2,6 +2,8 @@ package org.waabox.andersoni.snapshot.s3;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
@@ -223,6 +225,20 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
       final long version = Long.parseLong(metadata.get(META_VERSION));
       final Instant createdAt = Instant.parse(metadata.get(META_CREATED_AT));
 
+      final String actualHash = sha256Hex(data);
+      if (!actualHash.equals(hash)) {
+        log.warn("Discarding snapshot for catalog '{}' at s3://{}/{}:"
+            + " stored hash {} does not match the SHA-256 of the downloaded"
+            + " bytes ({}). The caller will fall back to the DataLoader."
+            + " This means the object was modified or truncated after it was"
+            + " written, OR it was written by a version whose"
+            + " SnapshotSerializer was not deterministic — check that the"
+            + " serializer produces identical bytes for identical items"
+            + " before assuming storage corruption.",
+            catalogName, bucket, key, hash, actualHash);
+        return Optional.empty();
+      }
+
       final SerializedSnapshot snapshot = new SerializedSnapshot(
           catalogName, hash, version, createdAt, data);
 
@@ -239,6 +255,32 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
     } catch (final IOException e) {
       throw new UncheckedIOException(
           "Failed to read snapshot for catalog: " + catalogName, e);
+    }
+  }
+
+  /**
+   * Returns the lowercase hex SHA-256 digest of the given bytes.
+   *
+   * <p>Every snapshot Andersoni writes carries the SHA-256 of its own
+   * serialized bytes as the {@code hash} metadata, so recomputing it on load
+   * detects an object that was truncated or modified after it was written.
+   *
+   * @param data the bytes to digest, never null
+   *
+   * @return the hex-encoded digest, never null
+   */
+  private static String sha256Hex(final byte[] data) {
+    try {
+      final byte[] digest =
+          MessageDigest.getInstance("SHA-256").digest(data);
+      final StringBuilder builder = new StringBuilder(digest.length * 2);
+      for (final byte b : digest) {
+        builder.append(Character.forDigit((b >> 4) & 0xF, 16));
+        builder.append(Character.forDigit(b & 0xF, 16));
+      }
+      return builder.toString();
+    } catch (final NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 algorithm not available", e);
     }
   }
 

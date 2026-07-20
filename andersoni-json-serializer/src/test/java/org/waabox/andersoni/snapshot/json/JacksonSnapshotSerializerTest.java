@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,6 +26,17 @@ class JacksonSnapshotSerializerTest {
 
   private static final TypeReference<List<MappedItem>> MAPPED_TYPE_REF =
       new TypeReference<>() { };
+
+  @Test
+  void whenDeserializing_givenJsonNullLiteral_shouldThrowUncheckedIoException() {
+    final JacksonSnapshotSerializer<SampleItem> serializer =
+        new JacksonSnapshotSerializer<>(TYPE_REF);
+
+    assertThrows(UncheckedIOException.class,
+        () -> serializer.deserialize("null".getBytes(StandardCharsets.UTF_8)),
+        "A stored snapshot holding the JSON literal null must fail like any "
+            + "other malformed payload, not escape as a raw NPE");
+  }
 
   @Test
   void whenSerializing_givenMapsInDifferentInsertionOrder_shouldProduceIdenticalBytes() {

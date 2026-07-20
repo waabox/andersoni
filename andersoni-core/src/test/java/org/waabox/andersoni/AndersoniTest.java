@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -1989,6 +1990,82 @@ class AndersoniTest {
             + "comparable across nodes");
 
     andersoni.stop();
+  }
+
+  @Test
+  void whenSavingSnapshot_givenNonDeterministicSerializer_shouldStoreHashOfTheStoredBytes()
+      throws Exception {
+
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    // Emits a different suffix on every call, so a hash taken from a separate
+    // serialize() call cannot match the bytes actually handed to the store.
+    final AtomicInteger calls = new AtomicInteger();
+    final SnapshotSerializer<Event> drifting = new SnapshotSerializer<>() {
+      @Override
+      public byte[] serialize(final List<Event> items) {
+        return ("payload-" + calls.incrementAndGet())
+            .getBytes(StandardCharsets.UTF_8);
+      }
+
+      @Override
+      public List<Event> deserialize(final byte[] data) {
+        throw new UnsupportedOperationException("not needed for this test");
+      }
+    };
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .serializer(drifting)
+        .build();
+
+    final CapturingSnapshotStore store = new CapturingSnapshotStore();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .snapshotStore(store)
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+
+    assertNotNull(store.saved, "The snapshot should have been saved");
+
+    final byte[] digest = MessageDigest.getInstance("SHA-256")
+        .digest(store.saved.data());
+    final StringBuilder hex = new StringBuilder(digest.length * 2);
+    for (final byte b : digest) {
+      hex.append(Character.forDigit((b >> 4) & 0xF, 16));
+      hex.append(Character.forDigit(b & 0xF, 16));
+    }
+
+    assertEquals(hex.toString(), store.saved.hash(),
+        "The stored hash must be the digest of the bytes actually stored, so "
+            + "a store can verify integrity on load without depending on two "
+            + "serialize() calls agreeing");
+
+    andersoni.stop();
+  }
+
+  /** A snapshot store that records the last snapshot handed to it. */
+  static final class CapturingSnapshotStore implements SnapshotStore {
+
+    /** The last saved snapshot, or null if none. */
+    private SerializedSnapshot saved;
+
+    @Override
+    public void save(final String catalogName,
+        final SerializedSnapshot snapshot) {
+      saved = snapshot;
+    }
+
+    @Override
+    public Optional<SerializedSnapshot> load(final String catalogName) {
+      return Optional.empty();
+    }
   }
 
   /** A serializer producing stable bytes for the Event test type. */
