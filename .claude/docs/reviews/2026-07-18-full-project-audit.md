@@ -15,21 +15,25 @@ then a verification pass on the highest-impact and most actionable findings.
 
 Each finding below is annotated with its current state. Summary:
 
-| Severity | Fixed | Partial | Open | Withdrawn | Total |
-|----------|-------|---------|------|-----------|-------|
-| P0       | 8     | 1       | 0    | 0         | 9     |
-| P1       | 10    | 2       | 1    | 1         | 14    |
-| P2       | 6     | 2       | 5    | 0         | 13    |
+| Severity | Fixed | Partial | Open | Withdrawn | Won't fix | Total |
+|----------|-------|---------|------|-----------|-----------|-------|
+| P0       | 8     | 1       | 0    | 0         | 0         | 9     |
+| P1       | 10    | 2       | 0    | 1         | 1         | 14    |
+| P2       | 6     | 3       | 4    | 0         | 0         | 13    |
 
 Commits that addressed them: `7b1f356` (P0), `b682d64` + `4f38260` (P1),
 `c5ecf1e` (P2 + read-only status API), `8166f03` (hash comparability),
-`0c65347` (table name validation, FS write atomicity).
+`0c65347` (table name validation, FS write atomicity), `e2f7b7e` (snapshot
+integrity verification, self-consistent stored hash).
 
-**One finding was withdrawn as unsafe.** The P1 proposal to add
-`AND version < ?` to the sync-db UPDATE must NOT be implemented — see the
-annotation on that entry. Read it before acting on this document.
+**Two findings will not be implemented as written.** The P1 proposal to add
+`AND version < ?` to the sync-db UPDATE must NOT be implemented — it would
+break publishing permanently. The P1 proposal to stream S3 snapshots instead
+of buffering them is a deliberate **[WONTFIX]**. Both carry their reasoning on
+the entry. Read them before acting on this document.
 
-Annotation key: **[FIXED]**, **[PARTIAL]**, **[OPEN]**, **[WITHDRAWN]**.
+Annotation key: **[FIXED]**, **[PARTIAL]**, **[OPEN]**, **[WITHDRAWN]**
+(proposal is wrong), **[WONTFIX]** (finding is real, fix is not worth it).
 
 ---
 
@@ -198,10 +202,27 @@ Fix: add `<maven.deploy.skip>true</maven.deploy.skip>` to `andersoni-admin`
 - **Kafka `start()`** — **[FIXED]** (`b682d64`): sets `running=true` before building resources; if the
   consumer fails, the already-created producer leaks and the instance is wedged
   in "running". Build resources before flipping the flag / clean up on failure.
-- **S3 store** — **[OPEN]**: `readAllBytes()` / `RequestBody.fromBytes(...)` buffer the whole
-  snapshot in heap (OOM for large catalogs) and the stored `hash` metadata is
-  never verified against the downloaded bytes. Use streaming/multipart; verify
-  hash on load.
+- **S3 store** — split into two findings with different outcomes:
+  `readAllBytes()` / `RequestBody.fromBytes(...)` buffer the whole snapshot in
+  heap (OOM for large catalogs) and the stored `hash` metadata is never
+  verified against the downloaded bytes. Use streaming/multipart; verify hash
+  on load.
+  - **Hash verification — [FIXED]** (`e2f7b7e`): `load()` recomputes the SHA-256
+    of the downloaded bytes and, on mismatch, logs and returns empty so the
+    caller falls back to the `DataLoader`. It never throws. `saveSnapshotIfPossible`
+    was also changed to derive the stored hash from the bytes it actually
+    writes, so the metadata is self-consistent by construction rather than
+    depending on two `serialize()` calls agreeing.
+  - **Heap buffering — [WONTFIX]** (decided 2026-07-20): the snapshot swap is
+    an `AtomicReference` set, so the previous snapshot stays live while
+    in-flight readers drain it — peak memory already holds two full datasets,
+    and the deserialized object graph dwarfs the serialized bytes it came from.
+    Streaming the download would shave a fraction off a peak that has to be
+    provisioned for anyway. Fixing it properly also means changing the
+    `byte[]`-based `SnapshotStore` SPI and all four implementations. The cost
+    is structural, the benefit is marginal: the pod is expected to hold both.
+    Do not reopen this without a measured OOM attributable to the transient
+    buffer specifically.
 - **FS store** — **[FIXED]** (`0c65347`, single-file `snapshot.bin` committed with one
   atomic rename; the legacy two-file layout is still readable and migrated on
   the next save): `snapshot.dat` and `snapshot.meta` are moved with two separate
@@ -270,8 +291,15 @@ Fix: add `<maven.deploy.skip>true</maven.deploy.skip>` to `andersoni-admin`
   (a second code path to keep in sync — already inconsistent on null-key
   handling vs `accumulate`).
 - **[OPEN]** **Query IN_LIST** cartesian product has no query-time size cap.
-- **[OPEN]** **Serializer**: `FAIL_ON_UNKNOWN_PROPERTIES` is on (brittle schema evolution
+- **[PARTIAL]** **Serializer**: `FAIL_ON_UNKNOWN_PROPERTIES` is on (brittle schema evolution
   when loading older snapshots) and `readValue` → `null` NPEs.
+  > The `null` NPE is **[FIXED]** (`e2f7b7e`): a payload holding the JSON
+  > literal `null` now throws `UncheckedIOException` like any other malformed
+  > input. `FAIL_ON_UNKNOWN_PROPERTIES` is **still open** — it breaks only the
+  > field-removal direction, where a rolling deploy that drops a field leaves
+  > new nodes unable to load the snapshot the old leader wrote. The failure is
+  > swallowed by `refreshFromEvent`, so the node degrades to silently stale
+  > rather than crashing.
 - **[FIXED]** (`c5ecf1e`) **Docs drift**: `CLAUDE.md` module table omits `andersoni-json-serializer`
   and `andersoni-cluster-it`; `README.md` pins `1.9.0`; the "zero-dependency"
   claim is inaccurate.
@@ -313,12 +341,17 @@ Ranked by what breaks in production first:
    is gone, but topology disclosure remains for anyone who can reach it.
 2. **HTTP sync has no authentication**, a single-thread executor, and no publish
    retry — a peer that is briefly down diverges permanently.
-3. **S3 store** buffers whole snapshots in heap and never verifies the stored
-   hash against the downloaded bytes. `hash` is exactly SHA-256 of `data` for
-   every snapshot Andersoni writes, so verification on load is exact and cheap.
-4. **Starter blocks Spring context startup** for the follower bootstrap-retry
-   window.
-5. **Purge `org.json` from core** so the module is genuinely dependency-light.
+3. **Starter blocks Spring context startup** for the follower bootstrap-retry
+   window — and `getPhase()` returns `Integer.MAX_VALUE - 1`, which is *after*
+   Boot's web-server lifecycle, so the HTTP port is already accepting traffic
+   while the cache is still empty. Catalogs bootstrap serially, so the window
+   scales linearly with catalog count.
+4. **`FAIL_ON_UNKNOWN_PROPERTIES`** breaks rolling deploys that remove a field:
+   new nodes cannot load the old leader's snapshot and degrade to silently
+   stale.
+5. **IN_LIST has no query-time size cap** — a DoS vector wherever untrusted
+   input reaches `.in(...)` on a wide hotpath.
+6. **Purge `org.json` from core** so the module is genuinely dependency-light.
 
 Longer term: normalize `RefreshEvent` into a sealed `RefreshMessage`; backfill
 the remaining test gaps (dispatcher concurrency, leader transitions, follower
