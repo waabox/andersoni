@@ -2,6 +2,7 @@ package org.waabox.andersoni.sync.db;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 import javax.sql.DataSource;
 
@@ -18,6 +19,14 @@ import javax.sql.DataSource;
  * @author waabox(waabox[at]gmail[dot]com)
  */
 public final class DbPollingSyncConfig {
+
+  /** Accepted sync log table names: a plain SQL identifier, optionally
+   *  schema-qualified. The table name cannot be a bind parameter, so it is
+   *  interpolated directly into the DDL/DML this strategy issues; restricting
+   *  it to this shape keeps an externalized configuration value from becoming
+   *  a SQL injection vector. */
+  private static final Pattern SAFE_TABLE_NAME =
+      Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?$");
 
   /** Default table name for the sync log. */
   private static final String DEFAULT_TABLE_NAME = "andersoni_sync_log";
@@ -52,10 +61,18 @@ public final class DbPollingSyncConfig {
    * Creates a configuration with all custom values.
    *
    * @param dataSource   the JDBC data source, never null
-   * @param tableName    the table name for the sync log, never null or empty
+   * @param tableName    the table name for the sync log, never null or empty.
+   *                     Must be a plain SQL identifier, optionally
+   *                     schema-qualified (for example {@code sync_log} or
+   *                     {@code andersoni.sync_log})
    * @param pollInterval the polling interval, never null
    *
    * @return a new configuration instance, never null
+   *
+   * @throws NullPointerException     if any argument is null
+   * @throws IllegalArgumentException if the table name is blank or is not a
+   *                                  plain, optionally schema-qualified SQL
+   *                                  identifier
    */
   public static DbPollingSyncConfig create(final DataSource dataSource,
       final String tableName, final Duration pollInterval) {
@@ -65,6 +82,13 @@ public final class DbPollingSyncConfig {
 
     if (tableName.isBlank()) {
       throw new IllegalArgumentException("tableName cannot be blank");
+    }
+
+    if (!SAFE_TABLE_NAME.matcher(tableName).matches()) {
+      throw new IllegalArgumentException(
+          "Invalid tableName: '" + tableName + "'. Must be a plain SQL"
+              + " identifier, optionally schema-qualified (letters, digits"
+              + " and '_', not starting with a digit).");
     }
 
     return new DbPollingSyncConfig(dataSource, tableName, pollInterval);
