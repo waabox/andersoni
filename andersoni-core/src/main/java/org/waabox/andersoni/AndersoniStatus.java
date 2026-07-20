@@ -47,9 +47,15 @@ public record AndersoniStatus(
    *                        not yet ready
    * @param version         the current snapshot version, or {@code 0} if
    *                        unavailable
-   * @param hash            the current snapshot content hash (the cross-node
-   *                        convergence signal), or empty if unavailable,
-   *                        never null
+   * @param hash            the current snapshot content hash, or empty if
+   *                        unavailable, never null. Only meaningful as a
+   *                        cross-node convergence signal when
+   *                        {@code hashComparable} is {@code true}
+   * @param hashComparable  {@code true} if the catalog has a
+   *                        {@link org.waabox.andersoni.snapshot.SnapshotSerializer}
+   *                        and its hash may therefore be compared against
+   *                        other nodes; {@code false} if the hash falls back
+   *                        to {@code toString()} and is node-local only
    * @param itemCount       the number of items in the current snapshot
    * @param estimatedSizeMB the estimated in-memory size of the catalog's
    *                        indices, in megabytes
@@ -61,6 +67,7 @@ public record AndersoniStatus(
       boolean available,
       long version,
       String hash,
+      boolean hashComparable,
       int itemCount,
       double estimatedSizeMB) {
 
@@ -71,6 +78,7 @@ public record AndersoniStatus(
      * @param available       whether the catalog is bootstrapped.
      * @param version         the snapshot version.
      * @param hash            the snapshot hash, never null.
+     * @param hashComparable  whether the hash is comparable across nodes.
      * @param itemCount       the item count.
      * @param estimatedSizeMB the estimated size in megabytes.
      */

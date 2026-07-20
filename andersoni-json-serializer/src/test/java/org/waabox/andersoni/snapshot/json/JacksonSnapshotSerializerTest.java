@@ -8,14 +8,48 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 class JacksonSnapshotSerializerTest {
 
   record SampleItem(String id, String name, LocalDateTime createdAt) { }
 
+  /** An item carrying a Map, whose iteration order is not fixed. */
+  record MappedItem(String id, Map<String, String> attributes) { }
+
   private static final TypeReference<List<SampleItem>> TYPE_REF =
       new TypeReference<>() { };
+
+  private static final TypeReference<List<MappedItem>> MAPPED_TYPE_REF =
+      new TypeReference<>() { };
+
+  @Test
+  void whenSerializing_givenMapsInDifferentInsertionOrder_shouldProduceIdenticalBytes() {
+    final JacksonSnapshotSerializer<MappedItem> serializer =
+        new JacksonSnapshotSerializer<>(MAPPED_TYPE_REF);
+
+    final Map<String, String> first = new LinkedHashMap<>();
+    first.put("zone", "north");
+    first.put("alpha", "1");
+    first.put("mid", "x");
+
+    final Map<String, String> second = new LinkedHashMap<>();
+    second.put("mid", "x");
+    second.put("alpha", "1");
+    second.put("zone", "north");
+
+    final byte[] firstBytes =
+        serializer.serialize(List.of(new MappedItem("1", first)));
+    final byte[] secondBytes =
+        serializer.serialize(List.of(new MappedItem("1", second)));
+
+    assertArrayEquals(firstBytes, secondBytes,
+        "Identical data with different map insertion order must serialize "
+            + "to identical bytes; the catalog content hash is computed over "
+            + "these bytes and is the cross-node convergence signal");
+  }
 
   @Test
   void whenSerializingAndDeserializing_givenValidItems_shouldRoundTrip() {

@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -1931,6 +1932,83 @@ class AndersoniTest {
     assertFalse(catalogStatus.hash().isBlank());
 
     andersoni.stop();
+  }
+
+  @Test
+  void whenStatus_givenCatalogWithoutSerializer_shouldReportHashNotComparable() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final AndersoniStatus.CatalogStatus catalogStatus =
+        andersoni.status().catalogs().get(0);
+
+    assertFalse(catalogStatus.hashComparable(),
+        "Without a serializer the hash comes from toString() and must not "
+            + "be presented as a cross-node convergence signal");
+
+    andersoni.stop();
+  }
+
+  @Test
+  void whenStatus_givenCatalogWithSerializer_shouldReportHashComparable() {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .serializer(new EventSerializer())
+        .build();
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+
+    final AndersoniStatus.CatalogStatus catalogStatus =
+        andersoni.status().catalogs().get(0);
+
+    assertTrue(catalogStatus.hashComparable(),
+        "With a serializer the hash is computed over stable bytes and is "
+            + "comparable across nodes");
+
+    andersoni.stop();
+  }
+
+  /** A serializer producing stable bytes for the Event test type. */
+  static final class EventSerializer implements SnapshotSerializer<Event> {
+
+    @Override
+    public byte[] serialize(final List<Event> items) {
+      final StringBuilder builder = new StringBuilder();
+      for (final Event event : items) {
+        builder.append(event.id()).append('|')
+            .append(event.sport().name()).append('|')
+            .append(event.venue().name()).append('\n');
+      }
+      return builder.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    @Override
+    public List<Event> deserialize(final byte[] data) {
+      throw new UnsupportedOperationException("not needed for this test");
+    }
   }
 
   // --- info() tests ---

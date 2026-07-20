@@ -641,10 +641,11 @@ public final class Andersoni {
       final CatalogInfo info = catalog.info();
       return new AndersoniStatus.CatalogStatus(
           catalog.name(), true, snapshot.version(), snapshot.hash(),
+          catalog.serializer().isPresent(),
           info.itemCount(), info.totalEstimatedSizeMB());
     } catch (final RuntimeException e) {
       return new AndersoniStatus.CatalogStatus(
-          catalog.name(), false, 0L, "", 0, 0.0);
+          catalog.name(), false, 0L, "", false, 0, 0.0);
     }
   }
 
