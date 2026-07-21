@@ -409,7 +409,7 @@ For graph indexes, Spring Boot, sync strategies, snapshot persistence, K8s deplo
 
 | Module | Purpose |
 |---|---|
-| `andersoni-core` | Engine, DSL, Snapshot, Graph Index, Query Planner, Views, Build Hooks (zero dependencies) |
+| `andersoni-core` | Engine, DSL, Snapshot, Graph Index, Query Planner, Views, Build Hooks (depends only on slf4j-api + org.json) |
 | `andersoni-json-serializer` | Jackson-based snapshot serializer |
 | `andersoni-sync-kafka` | Kafka broadcast sync |
 | `andersoni-spring-sync-kafka` | Spring Kafka auto-configured sync |
@@ -421,6 +421,11 @@ For graph indexes, Spring Boot, sync strategies, snapshot persistence, K8s deplo
 | `andersoni-spring-boot-starter` | Spring Boot auto-configuration |
 | `andersoni-metrics-datadog` | Datadog DogStatsD metrics |
 | `andersoni-admin` | K8s admin console |
+
+## Used by
+
+Andersoni runs in production at the organizations listed in
+**[ADOPTERS.md](ADOPTERS.md)**. Using it? Open a PR to add yourself.
 
 ## Building
 
