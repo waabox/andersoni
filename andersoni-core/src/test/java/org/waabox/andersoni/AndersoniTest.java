@@ -1591,6 +1591,7 @@ class AndersoniTest {
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     syncStrategy.subscribe(anyObject(RefreshListener.class));
     expectLastCall().once();
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     syncStrategy.start();
     expectLastCall().once();
     final Capture<RefreshEvent> requestCapture = newCapture();
@@ -1649,6 +1650,7 @@ class AndersoniTest {
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     syncStrategy.subscribe(capture(listenerCapture));
     expectLastCall().once();
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     syncStrategy.start();
     expectLastCall().once();
     final Capture<RefreshEvent> eventCapture = newCapture();
@@ -1721,6 +1723,7 @@ class AndersoniTest {
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     syncStrategy.subscribe(capture(listenerCapture));
     expectLastCall().once();
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     syncStrategy.start();
     expectLastCall().once();
     // No publish expected: a follower ignores requests.
@@ -1858,6 +1861,7 @@ class AndersoniTest {
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     syncStrategy.subscribe(capture(listenerCapture));
     expectLastCall().once();
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
     syncStrategy.start();
     expectLastCall().once();
     syncStrategy.stop();

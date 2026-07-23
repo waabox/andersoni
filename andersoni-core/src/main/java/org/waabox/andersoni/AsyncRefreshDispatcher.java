@@ -62,10 +62,14 @@ final class AsyncRefreshDispatcher {
       final Semaphore semaphore = semaphores.get(catalogName);
       try {
         semaphore.acquire();
+        // Clear pending BEFORE running: an event that arrives while this
+        // refresh is in flight must re-arm the dispatcher so its newer
+        // data is not silently coalesced away and lost. The semaphore
+        // still serializes the actual refresh per catalog.
+        pending.set(false);
         try {
           refreshTask.run();
         } finally {
-          pending.set(false);
           semaphore.release();
         }
       } catch (final InterruptedException e) {
