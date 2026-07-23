@@ -37,6 +37,14 @@ import org.waabox.andersoni.sync.SyncStrategy;
  * {@link CopyOnWriteArrayList} and the hash tracking uses
  * {@link ConcurrentHashMap}.
  *
+ * <p><strong>Patch propagation is not supported by this strategy.</strong>
+ * The table is keyed by {@code catalog_name} with one row per catalog
+ * tracking the latest hash — there is no per-event log, so individual
+ * patches cannot be delivered. Followers on this transport learn about
+ * leader-side patches only on the next periodic refresh that picks up
+ * the updated hash. Cross-node surgical patch propagation requires a
+ * patch-aware transport such as Kafka or HTTP.
+ *
  * @author waabox(waabox[at]gmail[dot]com)
  */
 public final class DbPollingSyncStrategy implements SyncStrategy {

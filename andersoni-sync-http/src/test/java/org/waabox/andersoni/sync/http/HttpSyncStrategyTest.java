@@ -17,8 +17,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 
+import org.waabox.andersoni.sync.PatchEvent;
 import org.waabox.andersoni.sync.RefreshEvent;
-import org.waabox.andersoni.sync.RefreshEventCodec;
+import org.waabox.andersoni.sync.SyncMessageCodec;
 
 /**
  * Integration tests for {@link HttpSyncStrategy}.
@@ -120,7 +121,7 @@ class HttpSyncStrategyTest {
       final RefreshEvent event = new RefreshEvent(
           "orders", "node-x", 5L, "hashX", now
       );
-      final String json = RefreshEventCodec.serialize(event);
+      final String json = SyncMessageCodec.serialize(event);
 
       // Act: POST directly to the server
       final HttpClient client = HttpClient.newHttpClient();
@@ -151,6 +152,56 @@ class HttpSyncStrategyTest {
       assertEquals(now, receivedEvent.timestamp());
     } finally {
       strategy.stop();
+    }
+  }
+
+  @Test
+  void whenPublishingPatch_givenPeerUrl_shouldDeliverPatchEvent()
+      throws Exception {
+    final int port1 = 19084;
+    final int port2 = 19085;
+
+    final HttpSyncConfig config1 = HttpSyncConfig.create(port1,
+        List.of("http://localhost:" + port2));
+    final HttpSyncConfig config2 = HttpSyncConfig.create(port2,
+        List.of("http://localhost:" + port1));
+
+    final HttpSyncStrategy node1 = new HttpSyncStrategy(config1);
+    final HttpSyncStrategy node2 = new HttpSyncStrategy(config2);
+
+    final CountDownLatch latch = new CountDownLatch(1);
+    final AtomicReference<PatchEvent> received = new AtomicReference<>();
+
+    node2.subscribePatch(event -> {
+      received.set(event);
+      latch.countDown();
+    });
+
+    node1.start();
+    node2.start();
+
+    try {
+      assertTrue(node1.supportsPatches());
+      final Instant now = Instant.now();
+      final PatchEvent event = new PatchEvent(
+          "events", "node-1", 7L, 8L, "fromHash", "toHash", "by-id",
+          new byte[]{1, 2, 3}, new byte[]{4, 5, 6}, now);
+
+      node1.publishPatch(event);
+
+      final boolean completed = latch.await(5, TimeUnit.SECONDS);
+      assertTrue(completed,
+          "Patch listener on node2 should have been notified");
+
+      final PatchEvent receivedEvent = received.get();
+      assertNotNull(receivedEvent);
+      assertEquals("events", receivedEvent.catalogName());
+      assertEquals("by-id", receivedEvent.indexName());
+      assertEquals(7L, receivedEvent.fromVersion());
+      assertEquals(8L, receivedEvent.toVersion());
+    } finally {
+      node1.stop();
+      node2.stop();
     }
   }
 }

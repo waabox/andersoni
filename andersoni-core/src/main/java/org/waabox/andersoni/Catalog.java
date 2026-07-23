@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
+import org.waabox.andersoni.CatalogPatcher.PatchResult;
+import org.waabox.andersoni.CatalogPatcher.ReplaceOutcome;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 
 /**
@@ -118,6 +120,9 @@ public final class Catalog<T> {
   /** The build hooks sorted by priority, never null. */
   private final List<PrioritizedHook<T>> hooks;
 
+  /** The surgical snapshot patcher (lazy-initialized once defs are frozen). */
+  private final CatalogPatcher<T> patcher;
+
   /** The data loader, null if using static data. */
   private final DataLoader<T> dataLoader;
 
@@ -186,6 +191,10 @@ public final class Catalog<T> {
     this.current = new AtomicReference<>(Snapshot.empty());
     this.refreshLock = new ReentrantLock();
     this.versionCounter = new AtomicLong(0);
+    this.patcher = new CatalogPatcher<>(this.name,
+        this.indexDefinitions, this.sortedIndexDefinitions,
+        this.multiKeyIndexDefinitions, this.graphIndexDefinitions,
+        this.viewDefinitions, this.hooks);
   }
 
   /**
@@ -278,6 +287,176 @@ public final class Catalog<T> {
     } finally {
       refreshLock.unlock();
     }
+  }
+
+  /**
+   * Replaces a single item in this catalog by looking it up through the
+   * specified index and key, then atomically swapping the resulting
+   * snapshot.
+   *
+   * <p>The lookup is the standard equality search on the named index:
+   * {@code search(indexName, key)}. The outcome depends on how many items
+   * the lookup resolves to:
+   * <ul>
+   *   <li>If the bucket is empty, the catalog is left untouched and
+   *       {@code false} is returned.</li>
+   *   <li>If the bucket contains exactly one item, that item is replaced
+   *       with {@code newItem}. The new snapshot rebuilds only the index
+   *       buckets affected by the change; all other buckets are shared
+   *       by reference with the previous snapshot.</li>
+   *   <li>If the bucket contains more than one item, the operation is
+   *       ambiguous and an {@link AmbiguousReplaceException} is thrown.
+   *       The caller should pick an index whose keys are unique for the
+   *       intended item (typically an id-based index).</li>
+   * </ul>
+   *
+   * <p>Views are recomputed for {@code newItem} via the registered view
+   * mappers. Snapshot build hooks are executed against {@code newItem}
+   * for their side effects, matching the build path.
+   *
+   * <p>This method is serialized against {@link #refresh()} and
+   * {@link #refresh(List)} via the same refresh lock — a replace cannot
+   * interleave with a full rebuild. Read operations remain lock-free.
+   *
+   * @param indexName the index name used to locate the item, never null
+   * @param key       the lookup key, never null
+   * @param newItem   the replacement domain object, never null
+   *
+   * @return {@code true} if a single item was found and replaced,
+   *         {@code false} if the lookup returned no items
+   *
+   * @throws NullPointerException        if any argument is null
+   * @throws IndexNotFoundException      if no index with the given name is
+   *                                     registered on this catalog
+   * @throws AmbiguousReplaceException   if the lookup returned more than
+   *                                     one item
+   */
+  public boolean replace(final String indexName, final Object key,
+      final T newItem) {
+    return replaceAndCapture(indexName, key, newItem).isPresent();
+  }
+
+  /**
+   * Performs the same patch as {@link #replace(String, Object, T)} but
+   * additionally returns metadata about the operation — the replaced
+   * item and the from/to snapshot version/hash pair. Used by
+   * {@code Andersoni.replaceAndSync} to build cross-node patch events
+   * with a consistent precondition snapshot.
+   *
+   * <p>Returns an empty optional when the lookup found no items (a no-op
+   * leaves the snapshot untouched). Throws
+   * {@link AmbiguousReplaceException} on a multi-element bucket exactly
+   * like {@link #replace}.
+   *
+   * @param indexName the index name, never null
+   * @param key       the lookup key, never null
+   * @param newItem   the replacement item, never null
+   *
+   * @return an outcome describing the replaced item plus the snapshot
+   *         metadata, or empty when the lookup found nothing
+   *
+   * @throws NullPointerException        if any argument is null
+   * @throws IndexNotFoundException      if the index is not declared
+   * @throws AmbiguousReplaceException   on a multi-element bucket
+   */
+  Optional<ReplaceOutcome<T>> replaceAndCapture(final String indexName,
+      final Object key, final T newItem) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+
+    refreshLock.lock();
+    try {
+      return applyPatch(indexName, key, newItem);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Replaces a single item only if the local bucket at
+   * {@code (indexName, key)} matches the supplied precondition — exactly
+   * one item, equal to {@code expectedOldItem} via {@code .equals()}.
+   *
+   * <p>Used by the follower-side patch dispatch to apply a
+   * {@link org.waabox.andersoni.sync.PatchEvent} surgically when the local
+   * snapshot matches the leader's pre-patch state. When the precondition
+   * fails the caller falls back to a full reload rather than silently
+   * replacing the wrong item.
+   *
+   * <p>Atomically performs the precondition check and the swap under the
+   * same refresh lock so there is no race window with concurrent writes.
+   *
+   * @return the outcome on success, empty when the precondition failed
+   *         or no item was found
+   */
+  Optional<ReplaceOutcome<T>> replaceWithPrecondition(
+      final String indexName, final Object key,
+      final T expectedOldItem, final T newItem) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(expectedOldItem,
+        "expectedOldItem must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+
+    refreshLock.lock();
+    try {
+      final Snapshot<T> snapshot = current.get();
+      final Map<Object, List<AndersoniCatalogItem<T>>> bucketMap =
+          snapshot.indicesMap().get(indexName);
+      if (bucketMap == null) {
+        throw new IndexNotFoundException(indexName, name);
+      }
+      final List<AndersoniCatalogItem<T>> bucket = bucketMap.get(key);
+      if (bucket == null || bucket.size() != 1) {
+        return Optional.empty();
+      }
+      if (!expectedOldItem.equals(bucket.get(0).item())) {
+        return Optional.empty();
+      }
+      return applyPatch(indexName, key, newItem);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Delegates to {@link CatalogPatcher#extractKeyFor}. Exposed package-
+   * private so the patch dispatch can re-derive the lookup key from a
+   * deserialized oldItem without shipping it on the wire.
+   */
+  Object extractKeyFor(final String indexName, final T item) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+    return patcher.extractKeyFor(indexName, item);
+  }
+
+  /**
+   * Computes the patch via the patcher, wraps the result into a new
+   * {@link Snapshot} with a fresh version and hash, and swaps the atomic
+   * reference. Must be called while holding the refresh lock.
+   */
+  private Optional<ReplaceOutcome<T>> applyPatch(final String indexName,
+      final Object key, final T newItem) {
+    final Snapshot<T> snapshot = current.get();
+    final Optional<PatchResult<T>> patched =
+        patcher.patch(snapshot, indexName, key, newItem);
+    if (patched.isEmpty()) {
+      return Optional.empty();
+    }
+    final PatchResult<T> result = patched.get();
+    final List<T> newData = new ArrayList<>(result.newItems().size());
+    for (final AndersoniCatalogItem<T> item : result.newItems()) {
+      newData.add(item.item());
+    }
+    final long newVersion = versionCounter.incrementAndGet();
+    final String newHash = computeHash(newData);
+    final Snapshot<T> newSnapshot = Snapshot.ofWithItems(result.newItems(),
+        result.newIndices(), result.newSorted(), result.newReversed(),
+        newVersion, newHash);
+    current.set(newSnapshot);
+    return Optional.of(new ReplaceOutcome<>(result.oldItem(),
+        snapshot.version(), snapshot.hash(), newVersion, newHash));
   }
 
   /**

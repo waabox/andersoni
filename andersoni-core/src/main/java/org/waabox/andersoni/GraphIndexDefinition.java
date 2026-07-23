@@ -180,6 +180,41 @@ public final class GraphIndexDefinition<T> {
   void accumulate(final AndersoniCatalogItem<T> item,
       final Map<Object, Set<AndersoniCatalogItem<T>>> accumulator) {
     final T domainItem = item.item();
+    final Set<CompositeKey> allKeys = computeKeys(domainItem);
+    for (final CompositeKey key : allKeys) {
+      accumulator.computeIfAbsent(key,
+          k -> Collections.newSetFromMap(new IdentityHashMap<>())).add(item);
+    }
+  }
+
+  /**
+   * Extracts the set of composite keys for the given domain object.
+   *
+   * <p>The result matches the buckets this item would be indexed under,
+   * across all configured hotpaths. Used by {@link Catalog#replace} to
+   * compute which buckets need updating during a patch.
+   *
+   * @param item the domain object, never null
+   * @return the set of composite keys, never null
+   * @throws IndexKeyLimitExceededException if the item exceeds the
+   *         configured {@code maxKeysPerItem}
+   */
+  Set<Object> extractKeys(final T item) {
+    final Set<CompositeKey> keys = computeKeys(item);
+    if (keys.isEmpty()) {
+      return Collections.emptySet();
+    }
+    return new LinkedHashSet<>(keys);
+  }
+
+  /**
+   * Computes the set of composite keys for the given domain object,
+   * applying hotpath traversal logic and the {@code maxKeysPerItem} limit.
+   *
+   * @param domainItem the domain object, never null
+   * @return the ordered set of composite keys, never null
+   */
+  private Set<CompositeKey> computeKeys(final T domainItem) {
     final Set<CompositeKey> allKeys = new LinkedHashSet<>();
     for (final Hotpath hotpath : hotpaths) {
       final List<Set<?>> traversalValues = new ArrayList<>();
@@ -205,10 +240,7 @@ public final class GraphIndexDefinition<T> {
       throw new IndexKeyLimitExceededException(name, domainItem.toString(),
           allKeys.size(), maxKeysPerItem);
     }
-    for (final CompositeKey key : allKeys) {
-      accumulator.computeIfAbsent(key,
-          k -> Collections.newSetFromMap(new IdentityHashMap<>())).add(item);
-    }
+    return allKeys;
   }
 
   /**

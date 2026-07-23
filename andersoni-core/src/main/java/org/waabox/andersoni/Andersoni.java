@@ -110,6 +110,9 @@ public final class Andersoni {
    *  read from transport/dispatch threads; volatile for visibility. */
   private volatile AsyncRefreshDispatcher asyncRefreshDispatcher;
 
+  /** Cross-node patch coordination (publish + dispatch). */
+  private final PatchCoordinator patchCoordinator;
+
   /**
    * Creates a new Andersoni instance.
    *
@@ -135,6 +138,30 @@ public final class Andersoni {
     this.catalogsByName = new ConcurrentHashMap<>();
     this.failedCatalogs = ConcurrentHashMap.newKeySet();
     this.scheduledFutures = new ConcurrentHashMap<>();
+    this.patchCoordinator = new PatchCoordinator(nodeId, syncStrategy,
+        leaderElection, metrics, catalogsByName,
+        new PatchCoordinator.Callbacks() {
+          @Override public boolean isStopped() {
+            return stopped.get();
+          }
+          @Override public Catalog<?> requireCatalog(final String name) {
+            return Andersoni.this.requireCatalog(name);
+          }
+          @Override public boolean isFailedCatalog(final String name) {
+            return failedCatalogs.contains(name);
+          }
+          @Override public void reportIndexSizes(final Catalog<?> catalog) {
+            Andersoni.this.reportIndexSizes(catalog);
+          }
+          @Override public void saveSnapshotIfPossible(
+              final Catalog<?> catalog) {
+            Andersoni.this.saveSnapshotIfPossible(catalog);
+          }
+          @Override public void refreshFromEvent(final String name,
+              final Catalog<?> catalog) {
+            Andersoni.this.refreshFromEvent(name, catalog);
+          }
+        });
   }
 
   /**
@@ -224,6 +251,7 @@ public final class Andersoni {
     bootstrapAllCatalogs();
     asyncRefreshDispatcher = new AsyncRefreshDispatcher(
         catalogsByName.keySet());
+    patchCoordinator.setDispatcher(asyncRefreshDispatcher);
     wireSyncListener();
     schedulePeriodicRefreshes();
     metrics.start(
@@ -569,6 +597,66 @@ public final class Andersoni {
     final Catalog<?> catalog = requireCatalog(catalogName);
     catalog.refresh();
     reportIndexSizes(catalog);
+  }
+
+  /**
+   * Replaces a single item in the named catalog and broadcasts the patch
+   * to other nodes via the configured sync strategy.
+   *
+   * <p>Mirrors {@link #refreshAndSync(String)} for the patch path: leader-
+   * gated, saves the snapshot, then publishes a
+   * {@link org.waabox.andersoni.sync.PatchEvent}. See
+   * {@link PatchCoordinator#replaceAndSync} for the full contract.
+   *
+   * @return {@code true} if a single item was found and replaced;
+   *         {@code false} if no item matched, this node is not the leader,
+   *         or Andersoni has been stopped
+   */
+  public boolean replaceAndSync(final String catalogName,
+      final String indexName, final Object key, final Object newItem) {
+    return patchCoordinator.replaceAndSync(catalogName, indexName, key,
+        newItem);
+  }
+
+  /**
+   * Replaces a single item in the named catalog locally, without
+   * coordinating across the cluster.
+   *
+   * <p>This is the local-only entry point — analogous to
+   * {@link #refresh(String)} vs. {@link #refreshAndSync(String)}. It does
+   * not check leadership and does not publish a sync event. It is intended
+   * for tests, single-node usage, and as the receive-side of an inbound
+   * patch event.
+   *
+   * @return {@code true} if a single item was found and replaced,
+   *         {@code false} if the lookup returned no items
+   *
+   * @throws IllegalStateException        if Andersoni has been stopped
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   * @throws AmbiguousReplaceException    if the lookup returned more than
+   *                                      one item
+   */
+  @SuppressWarnings("unchecked")
+  public boolean replace(final String catalogName, final String indexName,
+      final Object key, final Object newItem) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException(
+          "Cannot replace after stop() has been called");
+    }
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
+    final boolean replaced = typedCatalog.replace(indexName, key, newItem);
+    if (replaced) {
+      reportIndexSizes(catalog);
+    }
+    return replaced;
   }
 
   /**
@@ -997,6 +1085,10 @@ public final class Andersoni {
           () -> refreshFromEvent(event.catalogName(), catalog));
     });
 
+    if (syncStrategy.supportsPatches()) {
+      syncStrategy.subscribePatch(patchCoordinator::handlePatch);
+    }
+
     syncStrategy.start();
   }
 
@@ -1205,95 +1297,8 @@ public final class Andersoni {
     return catalog;
   }
 
-  /** Dispatches catalog refresh operations to virtual threads with
-   * per-catalog serialization and event coalescing.
-   *
-   * <p>Each catalog gets its own {@link Semaphore} (1 permit) to ensure
-   * that refreshes for the same catalog execute serially. An
-   * {@link AtomicBoolean} per catalog tracks whether a refresh is already
-   * pending, enabling coalescing: if a refresh is queued or running for a
-   * catalog, subsequent events for that catalog are discarded because
-   * {@code refreshFromEvent} always loads the latest data.
-   *
-   * <p>Uses Java 21 virtual threads for lightweight async execution.
-   *
-   * @author waabox(waabox[at]gmail[dot]com)
-   */
-  private static final class AsyncRefreshDispatcher {
 
-    /** The class logger. */
-    private static final Logger log = LoggerFactory.getLogger(
-        AsyncRefreshDispatcher.class);
-
-    /** Per-catalog semaphores for serial execution. */
-    private final Map<String, Semaphore> semaphores;
-
-    /** Per-catalog pending flags for event coalescing. */
-    private final Map<String, AtomicBoolean> refreshPending;
-
-    /**
-     * Creates a new dispatcher for the given catalog names.
-     *
-     * @param catalogNames the set of catalog names to manage, never null
-     */
-    AsyncRefreshDispatcher(final Set<String> catalogNames) {
-      final Map<String, Semaphore> sems = new HashMap<>();
-      final Map<String, AtomicBoolean> pending = new HashMap<>();
-      for (final String name : catalogNames) {
-        sems.put(name, new Semaphore(1));
-        pending.put(name, new AtomicBoolean(false));
-      }
-      semaphores = Collections.unmodifiableMap(sems);
-      refreshPending = Collections.unmodifiableMap(pending);
-    }
-
-    /**
-     * Dispatches a refresh task for the given catalog to a virtual thread.
-     *
-     * <p>If a refresh is already queued for this catalog (dispatched but not
-     * yet started), the new event is coalesced: the imminent run loads the
-     * latest data anyway. Once a refresh has started running, the pending
-     * flag is cleared, so an event arriving mid-run re-arms the dispatcher
-     * and triggers a follow-up run rather than being lost.
-     *
-     * @param catalogName the catalog to refresh, never null
-     * @param refreshTask the refresh task to execute, never null
-     */
-    void dispatch(final String catalogName, final Runnable refreshTask) {
-      final AtomicBoolean pending = refreshPending.get(catalogName);
-      if (pending == null) {
-        log.warn("No dispatcher configured for catalog '{}'", catalogName);
-        return;
-      }
-
-      if (!pending.compareAndSet(false, true)) {
-        log.debug("Refresh already pending for catalog '{}', coalescing",
-            catalogName);
-        return;
-      }
-
-      Thread.startVirtualThread(() -> {
-        final Semaphore semaphore = semaphores.get(catalogName);
-        try {
-          semaphore.acquire();
-          try {
-            // Clear pending BEFORE running: an event that arrives while this
-            // refresh is in flight must re-arm the dispatcher so its newer
-            // data is not silently coalesced away and lost. The semaphore
-            // still serializes the actual refresh per catalog.
-            pending.set(false);
-            refreshTask.run();
-          } finally {
-            semaphore.release();
-          }
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          pending.set(false);
-          log.warn("Refresh interrupted for catalog '{}'", catalogName);
-        }
-      });
-    }
-  }
+  /**
 
   /**
    * A fluent builder for constructing {@link Andersoni} instances.
