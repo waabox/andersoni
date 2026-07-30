@@ -229,6 +229,14 @@ public final class Andersoni {
     metrics.start(
         Collections.unmodifiableCollection(catalogsByName.values()),
         nodeId);
+    // Wire leader-election observability: the strategy invokes this
+    // listener immediately with the current state (see LeaderElectionStrategy
+    // contract), so the gauge is seeded on start and kept in sync with
+    // every subsequent transition without an extra isLeader() poll.
+    leaderElection.onLeaderChange(isLeader -> {
+      log.info("Andersoni leader state changed: isLeader={}", isLeader);
+      metrics.leaderElectionActive(isLeader);
+    });
   }
 
   /**
@@ -973,6 +981,11 @@ public final class Andersoni {
           asyncRefreshDispatcher.dispatch(event.catalogName(),
               () -> refreshAndSync(event.catalogName()));
         } else {
+          // Track dropped requests so an operator can distinguish
+          // "no traffic" from "requests silently discarded because
+          // no leader is elected" (the exact production symptom the
+          // supervisor above is meant to prevent).
+          metrics.syncRequestIgnored(event.catalogName());
           log.debug("Ignoring refresh request for catalog '{}': not leader",
               event.catalogName());
         }

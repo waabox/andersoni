@@ -33,6 +33,12 @@ public interface LeaderElectionStrategy {
   /**
    * Registers a listener to be notified when leadership status changes.
    *
+   * <p>If the strategy has already been started, implementations should
+   * invoke the listener immediately with the current leadership state so
+   * callers registering after {@link #start()} still receive an initial
+   * notification and can drive a state gauge without polling
+   * {@link #isLeader()}.
+   *
    * @param listener the listener to register, never null
    */
   void onLeaderChange(LeaderChangeListener listener);

@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.easymock.Capture;
 import org.junit.jupiter.api.Test;
+import org.waabox.andersoni.leader.LeaderChangeListener;
 import org.waabox.andersoni.leader.LeaderElectionStrategy;
 import org.waabox.andersoni.metrics.AndersoniMetrics;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
@@ -443,6 +444,8 @@ class AndersoniTest {
     // Expect start lifecycle: leader election starts before sync.
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     leaderElection.isLeader();
     expectLastCall().andReturn(true).anyTimes();
 
@@ -508,6 +511,8 @@ class AndersoniTest {
     // Leader election starts and this node is leader.
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
 
     // S3 load returns empty (simulating no snapshot or incompatible).
@@ -583,6 +588,8 @@ class AndersoniTest {
     // Leader election starts and this node is a follower.
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader()).andReturn(false).anyTimes();
 
     // First S3 attempt: returns empty (initial try).
@@ -669,7 +676,8 @@ class AndersoniTest {
     // Leader election starts, initially this node is a follower.
     leaderElection.start();
     expectLastCall().once();
-
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     // Initial S3 try returns empty.
     expect(snapshotStore.load("events"))
         .andReturn(Optional.empty()).once();
@@ -744,6 +752,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader()).andReturn(false).anyTimes();
 
     // S3 always returns empty: exhaust all 30 attempts (maxRetries=3 * 10).
@@ -810,6 +820,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader()).andReturn(false).anyTimes();
 
     // S3 always returns empty: exhaust all 30 attempts.
@@ -868,6 +880,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
 
     metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
@@ -1067,6 +1081,11 @@ class AndersoniTest {
     metrics.start(anyObject(Collection.class), eq("node-1"));
     expectLastCall().once();
 
+    // SingleNodeLeaderElection fires onLeaderChange(true) when Andersoni
+    // registers its listener after start().
+    metrics.leaderElectionActive(true);
+    expectLastCall().once();
+
     metrics.stop();
     expectLastCall().once();
 
@@ -1132,6 +1151,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
 
     // SnapshotStore throws on load.
@@ -1220,6 +1241,8 @@ class AndersoniTest {
     // Leader during bootstrap, non-leader for scheduled refresh.
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader())
         .andReturn(true)   // bootstrap
         .andReturn(false)  // scheduled refresh 1
@@ -1523,6 +1546,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader())
         .andReturn(true)   // bootstrap
         .andReturn(false); // refreshAndSync call
@@ -1573,6 +1598,8 @@ class AndersoniTest {
         createMock(LeaderElectionStrategy.class);
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader())
         .andReturn(true)   // bootstrap
         .andReturn(false); // refreshAndSync call
@@ -1702,6 +1729,8 @@ class AndersoniTest {
         createMock(LeaderElectionStrategy.class);
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader())
         .andReturn(true)    // bootstrap
         .andReturn(false);  // handling the received request
@@ -1763,6 +1792,8 @@ class AndersoniTest {
         createMock(LeaderElectionStrategy.class);
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader())
         .andReturn(true)             // bootstrap
         .andReturn(false).anyTimes(); // every scheduled tick
@@ -2155,6 +2186,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
 
     metrics.snapshotLoaded("events", "dataLoader");
@@ -2238,6 +2271,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().anyTimes();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
 
     metrics.refreshFailed(eq("dated-events"), anyObject(Throwable.class));
@@ -2341,5 +2376,149 @@ class AndersoniTest {
     assertEquals(e1, results.get(0));
 
     andersoni.stop();
+  }
+
+  @Test
+  void whenStart_shouldRegisterLeaderChangeListenerOnStrategy() {
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+
+    final Capture<LeaderChangeListener> listenerCapture = newCapture();
+
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader()).andReturn(false).anyTimes();
+    leaderElection.onLeaderChange(capture(listenerCapture));
+    expectLastCall().once();
+    leaderElection.stop();
+    expectLastCall().once();
+
+    replay(leaderElection);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .leaderElection(leaderElection)
+        .build();
+
+    andersoni.start();
+    andersoni.stop();
+
+    verify(leaderElection);
+    assertNotNull(listenerCapture.getValue(),
+        "andersoni.start() must register a LeaderChangeListener");
+  }
+
+  @Test
+  void whenLeaderChangeFires_thenMetricsGaugeIsUpdated() {
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
+
+    final Capture<LeaderChangeListener> listenerCapture = newCapture();
+
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader()).andReturn(false).anyTimes();
+    leaderElection.onLeaderChange(capture(listenerCapture));
+    expectLastCall().once();
+    leaderElection.stop();
+    expectLastCall().once();
+
+    metrics.start(anyObject(Collection.class), eq("node-1"));
+    expectLastCall().once();
+    // Simulated flip to leader and back (fired manually to represent the
+    // strategy invoking the captured listener).
+    metrics.leaderElectionActive(true);
+    expectLastCall().once();
+    metrics.leaderElectionActive(false);
+    expectLastCall().once();
+    metrics.stop();
+    expectLastCall().once();
+
+    replay(leaderElection, metrics);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .leaderElection(leaderElection)
+        .metrics(metrics)
+        .build();
+
+    andersoni.start();
+    final LeaderChangeListener listener = listenerCapture.getValue();
+    listener.onLeaderChange(true);
+    listener.onLeaderChange(false);
+    andersoni.stop();
+
+    verify(leaderElection, metrics);
+  }
+
+  @Test
+  void whenReceivingRefreshRequest_givenNotLeader_shouldRecordSyncRequestIgnored()
+      throws InterruptedException {
+    final Sport football = new Sport("Football");
+    final Venue maracana = new Venue("Maracana");
+    final Event e1 = new Event("1", football, maracana);
+
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+
+    final LeaderElectionStrategy leaderElection =
+        createMock(LeaderElectionStrategy.class);
+    final AndersoniMetrics metrics = createMock(AndersoniMetrics.class);
+
+    leaderElection.start();
+    expectLastCall().once();
+    expect(leaderElection.isLeader()).andReturn(false).anyTimes();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
+    leaderElection.stop();
+    expectLastCall().once();
+
+    metrics.start(anyObject(Collection.class), eq("node-1"));
+    expectLastCall().once();
+    metrics.snapshotLoaded(eq("events"), anyString());
+    expectLastCall().anyTimes();
+    metrics.indexSizeReported(eq("events"), anyString(), anyLong());
+    expectLastCall().anyTimes();
+    // The key expectation: dropped REQUEST is counted.
+    metrics.syncRequestIgnored("events");
+    expectLastCall().once();
+    metrics.stop();
+    expectLastCall().once();
+
+    final Capture<RefreshListener> listenerCapture = newCapture();
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    syncStrategy.subscribe(capture(listenerCapture));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+
+    replay(leaderElection, metrics, syncStrategy);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .leaderElection(leaderElection)
+        .syncStrategy(syncStrategy)
+        .metrics(metrics)
+        .build();
+
+    andersoni.register(catalog);
+    andersoni.start();
+
+    // Simulate another node broadcasting a REQUEST that this follower
+    // receives while no leader is elected — the current bug drops it
+    // silently; the fix records syncRequestIgnored to expose it.
+    final RefreshListener listener = listenerCapture.getValue();
+    listener.onRefresh(RefreshEvent.request(
+        "events", "node-2", java.time.Instant.now()));
+
+    andersoni.stop();
+
+    verify(leaderElection, metrics, syncStrategy);
   }
 }

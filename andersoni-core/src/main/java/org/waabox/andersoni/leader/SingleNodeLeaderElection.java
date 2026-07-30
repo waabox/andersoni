@@ -23,9 +23,14 @@ public final class SingleNodeLeaderElection implements LeaderElectionStrategy {
   private final List<LeaderChangeListener> listeners =
       new CopyOnWriteArrayList<>();
 
+  /** Whether {@link #start()} has been invoked; controls whether
+   * post-start listener registrations receive an immediate notification. */
+  private volatile boolean started;
+
   /** {@inheritDoc} */
   @Override
   public void start() {
+    started = true;
     for (final LeaderChangeListener listener : listeners) {
       listener.onLeaderChange(true);
     }
@@ -46,11 +51,17 @@ public final class SingleNodeLeaderElection implements LeaderElectionStrategy {
   public void onLeaderChange(final LeaderChangeListener listener) {
     Objects.requireNonNull(listener, "listener must not be null");
     listeners.add(listener);
+    // Fire immediately only when registration happens after start(), so
+    // callers seeding a gauge see the initial state without polling
+    // isLeader(). Pre-start registrations are still notified by start().
+    if (started) {
+      listener.onLeaderChange(true);
+    }
   }
 
   /** {@inheritDoc} */
   @Override
   public void stop() {
-    // Nothing to release in a single-node deployment.
+    started = false;
   }
 }

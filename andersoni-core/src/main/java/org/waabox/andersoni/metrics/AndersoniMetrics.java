@@ -92,6 +92,39 @@ public interface AndersoniMetrics {
   }
 
   /**
+   * Records a refresh request that arrived at a node but was ignored
+   * because that node is not the leader. When emitted by every node in the
+   * cluster it means no leader is currently elected and refresh requests
+   * are being silently dropped.
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void syncRequestIgnored(final String catalogName) {
+  }
+
+  /**
+   * Records the current leader-election status of this node as a gauge
+   * so cluster health can be monitored — summing the gauge across all
+   * nodes should always equal {@code 1}.
+   *
+   * @param isLeader {@code true} if this node currently holds leadership
+   */
+  default void leaderElectionActive(final boolean isLeader) {
+  }
+
+  /**
+   * Records a restart of the leader-election background loop by the
+   * supervisor. In a healthy cluster this counter stays at zero; any
+   * non-zero rate indicates the elector loop is failing and being revived.
+   *
+   * @param reason a short machine-readable tag identifying the cause,
+   *               such as {@code "run_returned"} or {@code "exception"},
+   *               never null
+   */
+  default void leaderElectionRestart(final String reason) {
+  }
+
+  /**
    * Called when the Andersoni engine has fully started.
    *
    * <p>Implementations can use this to begin periodic metric reporting.

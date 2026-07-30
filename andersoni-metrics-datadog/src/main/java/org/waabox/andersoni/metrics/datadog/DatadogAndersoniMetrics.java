@@ -257,6 +257,52 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
     });
   }
 
+  /** {@inheritDoc} */
+  @Override
+  public void syncRequestIgnored(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("sync.request.ignored", 1,
+            "catalog:" + catalogName, "node:" + node);
+      } else {
+        client.count("sync.request.ignored", 1,
+            "catalog:" + catalogName);
+      }
+    });
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void leaderElectionActive(final boolean isLeader) {
+    safely(() -> {
+      final long value = isLeader ? 1L : 0L;
+      final String node = this.nodeId;
+      if (node != null) {
+        client.gauge("leader.active", value, "node:" + node);
+      } else {
+        client.gauge("leader.active", value);
+      }
+    });
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void leaderElectionRestart(final String reason) {
+    Objects.requireNonNull(reason, "reason must not be null");
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("leader.election_restart", 1,
+            "reason:" + reason, "node:" + node);
+      } else {
+        client.count("leader.election_restart", 1,
+            "reason:" + reason);
+      }
+    });
+  }
+
   /** Runs a metric emission, swallowing and logging any error so that a
    * failing or misconfigured StatsD client can never break the cache path.
    *
