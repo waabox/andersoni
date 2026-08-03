@@ -328,6 +328,96 @@ class DatadogAndersoniMetricsTest {
   }
 
   @Test
+  void whenLeaderElectionActive_givenLeaderTrue_shouldReportGaugeOne() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.gauge(eq("leader.active"), eq(1L), eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.leaderElectionActive(true);
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenLeaderElectionActive_givenLeaderFalse_shouldReportGaugeZero() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.gauge(eq("leader.active"), eq(0L), eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.leaderElectionActive(false);
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenLeaderElectionActive_givenBeforeStart_shouldReportGaugeWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.gauge(eq("leader.active"), eq(1L));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.leaderElectionActive(true);
+
+    verify(client);
+  }
+
+  @Test
+  void whenLeaderElectionRestart_givenReason_shouldIncrementCounterWithReasonTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("leader.election_restart"), eq(1L),
+        eq("reason:run_returned"), eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.leaderElectionRestart("run_returned");
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenSyncRequestIgnored_givenNotLeader_shouldIncrementCounter() {
+    final StatsDClient client = createMock(StatsDClient.class);
+
+    client.count(eq("sync.request.ignored"), eq(1L),
+        eq("catalog:products"), eq("node:node-1"));
+    expectLastCall().once();
+
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics =
+        DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.syncRequestIgnored("products");
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
   void whenReportingGauges_givenCatalogWithIndex_shouldReportAllGauges() {
     final StatsDClient client = createMock(StatsDClient.class);
 
