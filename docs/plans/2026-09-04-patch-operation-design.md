@@ -1,0 +1,247 @@
+# Patch Operation — Design and Status
+
+**Date:** 2026-09-04
+**Status:** Partly implemented on `feature/3/snapshot-patch-support`
+**Scope:** `andersoni-core`, `andersoni-sync-*`, `andersoni-cluster-it`
+
+This document describes the patch operation as it is actually built, and what
+is left to finish. It replaces the design half of the earlier draft of the same
+filename, which was written before the branch was inventoried and proposed
+mechanisms the branch had already settled differently.
+
+---
+
+## 1. Relationship to `2026-07-28-incremental-refresh-design.md`
+
+Both documents solve the same problem — surgical updates instead of full
+reloads — and reach it differently. The differences are not cosmetic, and they
+change what an adopter has to build, so they need resolving before either lands.
+
+| | 2026-07-28 (incremental refresh) | This design |
+|---|---|---|
+| Locating the entity | `.identifiedBy(Stadium::getEventCode)` on the catalog | the caller passes an index name and key per call |
+| Getting the entity to followers | `DataLoader.loadOne(id)` on every node | the entity travels in the sync message |
+| New adopter code | an id extractor + a `loadOne` implementation + `assembleSingleStadium` | none |
+| Upstream calls per change | one per pod | zero |
+| Delta chaining | `event.version - localVersion` | content hashes |
+| Changing an entity's key | explicitly unsupported | supported (it is just a patch) |
+
+The consequence for the primary target adopter: **stadium-service needs neither
+`identifiedBy` nor `loadOne`**. Sections 4.1 and 4.2 of the 2026-07-28 document
+describe work that this design makes unnecessary. Its remaining sections — the
+per-entity debounce in `CatalogMessageHandler`, the rollout order, the metric
+list — stay valid and are not duplicated here.
+
+The version-based chaining in that document (§6, "Version gap detection")
+would not have worked as written, for the reason recorded in §4 below.
+
+---
+
+## 2. The shape of the operation
+
+Patch's only real difficulty is identity: a new `Stadium(code=E-1234, …)` is a
+different instance with different field values from the one in the snapshot, so
+neither `equals` nor reference identity finds the item it supersedes.
+
+The catalog already holds indices, and the caller already knows which one
+identifies its entities. So the lookup is an argument, not a declaration:
+
+```java
+boolean replaced = catalog.replace("by-id", eventId, updatedEvent);
+boolean replaced = andersoni.replaceAndSync("events", "by-id", eventId, updatedEvent);
+```
+
+Nothing is declared on the catalog, no DSL step is added, and no interface gains
+a required method. The lookup must resolve to exactly one item; more than one
+throws (§5.2).
+
+Rejected alternatives, briefly: an **id function** duplicates an extractor the
+catalog usually already has and needs a new id→item map in every snapshot; a
+**designated identity index** fixes one identity per catalog and cannot express
+a key change; **`equals` on the domain type** is not something a library can
+require of `T` (§4); a **predicate or compound query** cannot cross the wire,
+where an index name and a key can.
+
+---
+
+## 3. What is implemented
+
+On `feature/3/snapshot-patch-support`, green across 518 tests:
+
+- **`Catalog.replace(indexName, key, newItem)`** and the package-private
+  `replaceAndCapture` / `replaceWithPrecondition` variants used by the cluster
+  path. Serialized against `refresh()` by the existing refresh lock.
+- **`CatalogPatcher`** — the copy-on-write snapshot derivation. It computes the
+  old and new key sets per index and rewrites only their symmetric difference;
+  every untouched bucket is shared by reference with the previous snapshot.
+  Covers hash, multi-key, sorted (including the reversed-key map) and graph
+  indices, recomputes views for the new item, and runs build hooks against it.
+  Because it works from key *sets*, an item whose key changes moves between
+  buckets correctly — renames need no special case.
+- **`Andersoni.replaceAndSync(...)`** — leader-only: replaces locally, saves the
+  full snapshot to the store, publishes a `PatchEvent`. `Andersoni.replace(...)`
+  is the same operation without cluster coordination.
+- **Wire** — `SyncMessage` sealed over `RefreshEvent` and `PatchEvent`, with
+  `SyncMessageCodec`. `SyncStrategy` gains `publishPatch`, `subscribePatch` and
+  `supportsPatches` as **default methods**, so existing custom transports
+  compile and run unchanged. Kafka and HTTP carry patches; DB polling stays
+  refresh-only (one row per catalog, no per-event log to deliver deltas over) —
+  its followers converge through the hash change at the next poll.
+- **Follower dispatch** — `PatchCoordinator`, hash-keyed (§4).
+- **Metrics** — `patchApplied`, `patchDiscarded`, `patchFellBack`.
+
+`AmbiguousReplaceException` is thrown when a lookup matches more than one item.
+
+---
+
+## 4. Preconditions are content hashes
+
+A follower applies a delta only against the state the leader computed it from.
+Three properties make that safe, and all three come from comparing **content
+hashes**:
+
+```
+event.toHash   == localHash  → already applied; discard
+event.fromHash == localHash  → apply surgically
+otherwise                    → full reload from the snapshot store
+```
+
+**Snapshot versions cannot serve here.** `Catalog.versionCounter` is a per-node
+`AtomicLong` that starts at zero in every process and is never adopted from
+another node; it counts how many times *this pod* has rebuilt. Two nodes holding
+identical data are only coincidentally at the same version. A follower whose
+counter had run ahead of the leader's — after a leader pod restart, a late join,
+or simply more frequent refreshes — read `toVersion <= localVersion` and
+discarded live patches as stale, then served stale data indefinitely with
+nothing to correct it. Hashes are derived from content, so they are comparable
+across nodes by construction, and they are already the convergence signal for
+refresh events. `fromVersion`/`toVersion` remain on `PatchEvent` as diagnostics.
+
+**The apply-time check is a hash too, not `equals`.** It previously compared the
+item deserialized off the wire against the local one with `.equals()`. A domain
+class that does not override `equals` compares by identity, so that check could
+never pass: followers would silently fall back to a full reload forever, and the
+feature would look healthy while doing nothing. `replaceWithPrecondition`
+re-checks the snapshot hash under the refresh lock instead. That requires
+nothing of `T`, and is strictly stronger — it also rejects a snapshot that
+drifted somewhere *other* than the patched item, which would otherwise apply
+cleanly and leave the node diverged from the leader.
+
+**The lookup key never crosses the wire.** `PatchEvent` carries the serialized
+old and new items; the follower re-derives the key by feeding the old item
+through its own index definition. No key codec, and no constraint on what an
+index key may be.
+
+**Patches are queued, not coalesced.** `AsyncRefreshDispatcher.dispatchOrdered`
+gives each catalog a FIFO patch queue, separate from the coalescing path used
+for full refreshes. Coalescing is correct for reloads, where a later one
+subsumes an earlier one, and wrong for deltas. Sharing one slot meant a pending
+patch could swallow the fallback reload a second patch had correctly requested,
+losing that edit. Both paths still take the catalog's semaphore, so a patch and
+a refresh never interleave. A saturated queue refuses the work and the caller
+falls back to a reload rather than dropping it.
+
+---
+
+## 5. What is left to build
+
+### 5.1 The other three operations
+
+`replace` is the only operation. Still missing:
+
+```java
+void insert(T item);                                  // no lookup; appends
+boolean remove(String indexName, Object key);
+boolean upsert(String indexName, Object key, T item); // replace, else insert
+void apply(List<PatchOp<T>> ops);                     // batch
+```
+
+`CatalogPatcher` needs a removal path (drop from the item list and from every
+bucket its key set touches) and an insert path (append, add to buckets). Both
+are the existing machinery with one side of the symmetric difference empty.
+
+`PatchEvent` needs an operation discriminator, and the two payload fields become
+optional per operation: an insert carries only the new item, a removal only the
+old one. **`PatchListener` stays single-method** — the operation is data on the
+event, not a delivery channel. A method per operation would force all four
+transports to change every time an operation is added, and would make a batch
+mixing an insert and a removal undeliverable as one atomic unit.
+
+### 5.2 Result types and the zero-match contract
+
+`replaceAndSync` returns `false` for three unrelated outcomes: not leader, no
+match, and stopped. A caller cannot tell "I am a follower, this was someone
+else's job" from "that entity is not in the catalog", and the second is usually
+a bug worth alerting on. Proposed: keep `boolean` where only found/not-found is
+possible (`Catalog.replace`, `Andersoni.replace`) and return an enum from the
+cluster-coordinated entry points:
+
+```java
+enum PatchOutcome { APPLIED, NOT_FOUND, NOT_LEADER }
+```
+
+An earlier draft argued a zero match should *throw*. An explicit `NOT_FOUND` is
+just as loud, and composes with batching in a way an exception does not: a batch
+of fifty operations cannot throw on the thirty-seventh without leaving the
+caller to guess which of the others applied.
+
+For batches: validate every op's lookup up front, then apply all of them into a
+single new snapshot, so the batch is one `fromHash → toHash` step on the wire
+and one snapshot swap. An ambiguous lookup throws before anything is applied; a
+missing target for a `replace` op fails the whole batch and names the key.
+
+### 5.3 Naming
+
+`AmbiguousReplaceException` will be thrown by removals and upserts too. Rename
+it to something operation-neutral (`AmbiguousPatchTargetException`) while it is
+still unreleased.
+
+### 5.4 Documentation drift
+
+`README.md` marks the feature "Since 1.10.0"; the pom is at 1.11.0 and the
+release this lands in is later still.
+
+---
+
+## 6. Costs
+
+| Cost | Full sync | Patch |
+|---|---|---|
+| `DataLoader.load()` (leader) | all N entities, network-bound | **gone** |
+| View + index build (leader) | N items × all indices | 1 item + O(K) map copies |
+| Snapshot download + deserialize (followers) | full snapshot | **gone** |
+| Upstream calls per change | N | **0** |
+| Item list copy | rebuild | O(N) reference copy |
+| Content hash | O(N) serialize | O(N) serialize — unchanged |
+| Store write (leader) | O(N) serialize + upload | O(N) serialize + upload — unchanged |
+
+The residual O(N) work is CPU-bound serialization, not network or allocation.
+Two follow-ups, both deferred because they change cluster-wide behaviour:
+
+1. **Incremental hashing** — cache a per-item digest in `AndersoniCatalogItem`
+   and hash the ordered digests. Changes the hash *value*, so mixed-version
+   clusters would mismatch and churn; needs a scheme marker and a coordinated
+   rollout.
+2. **Debounced store writes** — persist at most every X seconds. Needs the
+   bootstrap gap closed by a follower-issued full-refresh request when its
+   precondition check fails, or a stale store causes reload churn.
+
+---
+
+## 7. Testing status
+
+Covered: `CatalogReplaceTest` (16), `AndersoniPatchDispatchTest` (7),
+`AndersoniReplaceTest`, `AndersoniReplaceAndSyncTest`, `SyncMessageCodecTest`
+(9), plus the transport suites. Structural sharing, view recomputation, hook
+execution, refresh-lock serialization, hash-keyed dispatch precedence, a domain
+type without `equals`, drift elsewhere in the dataset, `RefreshKind` round-trip
+and pre-patch wire payloads all have tests.
+
+Not yet covered:
+
+- **`andersoni-cluster-it` has no patch scenario.** The multi-node behaviour —
+  followers converging without a store read, a diverged follower falling back,
+  leader failover mid-patch — is currently only argued, not demonstrated. This
+  is the largest gap, and it needs Docker, which the current dev environment
+  does not have.
+- The operations of §5.1, once built.
