@@ -42,6 +42,57 @@ class SyncMessageCodecTest {
   }
 
   @Test
+  void whenRoundTrip_givenRefreshRequest_shouldPreserveKind() {
+    final RefreshEvent request = RefreshEvent.request("events", "node-1",
+        Instant.parse("2026-05-14T10:00:00Z"));
+
+    final SyncMessage decoded = SyncMessageCodec.deserialize(
+        SyncMessageCodec.serialize(request));
+
+    final RefreshEvent refresh = assertInstanceOf(RefreshEvent.class,
+        decoded);
+    assertEquals(RefreshKind.REQUEST, refresh.kind());
+    assertTrue(refresh.isRequest());
+    assertEquals(request, refresh);
+  }
+
+  @Test
+  void whenDeserialize_givenLegacyPayloadWithoutType_shouldReadAsRefresh() {
+    // Exactly what a node running the previous release puts on the wire.
+    final RefreshEvent original = new RefreshEvent("events", "node-1", 7L,
+        "abc123", Instant.parse("2026-05-14T10:00:00Z"));
+    final String legacyJson = RefreshEventCodec.serialize(original);
+
+    final SyncMessage decoded = SyncMessageCodec.deserialize(legacyJson);
+
+    assertEquals(original, assertInstanceOf(RefreshEvent.class, decoded));
+  }
+
+  @Test
+  void whenDeserialize_givenLegacyRequestWithoutType_shouldPreserveKind() {
+    final RefreshEvent request = RefreshEvent.request("events", "node-1",
+        Instant.parse("2026-05-14T10:00:00Z"));
+    final String legacyJson = RefreshEventCodec.serialize(request);
+
+    final SyncMessage decoded = SyncMessageCodec.deserialize(legacyJson);
+
+    assertTrue(assertInstanceOf(RefreshEvent.class, decoded).isRequest());
+  }
+
+  @Test
+  void whenDeserialize_givenUnknownKind_shouldFallBackToEvent() {
+    final String json = SyncMessageCodec.serialize(
+        new RefreshEvent("events", "node-1", 7L, "abc123",
+            Instant.parse("2026-05-14T10:00:00Z")))
+        .replace("\"kind\":\"EVENT\"", "\"kind\":\"FROM_THE_FUTURE\"");
+
+    final SyncMessage decoded = SyncMessageCodec.deserialize(json);
+
+    assertEquals(RefreshKind.EVENT,
+        assertInstanceOf(RefreshEvent.class, decoded).kind());
+  }
+
+  @Test
   void whenSerialize_givenPatchEvent_shouldRoundTripByteArrays() {
     final byte[] oldBytes = "old".getBytes();
     final byte[] newBytes = "new".getBytes();
