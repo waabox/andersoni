@@ -65,7 +65,13 @@ public final class SyncMessageCodec {
     Objects.requireNonNull(json, "json must not be null");
     try {
       final JSONObject node = new JSONObject(json);
-      final String type = requireString(node, "type");
+      // A payload with no discriminator predates patch support: every
+      // message on the channel was a refresh event then, so reading it as
+      // one is what keeps a mixed-version cluster working during a rolling
+      // upgrade.
+      final String type = node.has("type") && !node.isNull("type")
+          ? node.getString("type")
+          : TYPE_REFRESH;
       return switch (type) {
         case TYPE_REFRESH -> readRefresh(node);
         case TYPE_PATCH -> readPatch(node);
@@ -95,6 +101,7 @@ public final class SyncMessageCodec {
     node.put("version", event.version());
     node.put("hash", event.hash());
     node.put("timestamp", event.timestamp().toString());
+    node.put("kind", event.kind().name());
     return node.toString();
   }
 
@@ -133,7 +140,31 @@ public final class SyncMessageCodec {
         requireString(node, "sourceNodeId"),
         node.getLong("version"),
         requireString(node, "hash"),
-        Instant.parse(requireString(node, "timestamp")));
+        Instant.parse(requireString(node, "timestamp")),
+        parseKind(node));
+  }
+
+  /**
+   * Reads the {@link RefreshKind} discriminator, defaulting to
+   * {@link RefreshKind#EVENT} when the field is absent or unrecognized.
+   *
+   * <p>Mirrors the tolerance {@code RefreshEventCodec} applies, so a
+   * message from a node that predates a kind — or that adds one this
+   * version does not know — is read as a plain event rather than rejected.
+   *
+   * @param node the parsed JSON object, never null
+   *
+   * @return the kind, never null
+   */
+  private static RefreshKind parseKind(final JSONObject node) {
+    if (!node.has("kind") || node.isNull("kind")) {
+      return RefreshKind.EVENT;
+    }
+    try {
+      return RefreshKind.valueOf(node.getString("kind"));
+    } catch (final IllegalArgumentException e) {
+      return RefreshKind.EVENT;
+    }
   }
 
   /**
