@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -13,13 +14,17 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.waabox.andersoni.AmbiguousReplaceException;
 import org.waabox.andersoni.Andersoni;
 import org.waabox.andersoni.Catalog;
 import org.waabox.andersoni.RetryPolicy;
@@ -46,7 +51,16 @@ import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
  *   <li>{@code GET  /health} — liveness, always {@code 200}.</li>
  *   <li>{@code GET  /state}  — JSON: {@code nodeId, leader, version, hash,
  *       itemCount}.</li>
+ *   <li>{@code GET  /items}  — JSON array of the items currently held, so a
+ *       test can assert on content and not only on the hash.</li>
  *   <li>{@code POST /refresh} — calls {@link Andersoni#refreshAndSync}.</li>
+ *   <li>{@code POST /replace?key=&id=&name=} — calls
+ *       {@link Andersoni#replaceAndSync} against the {@code by-name} index.
+ *       Answers {@code {"applied":bool}}, or {@code 409} when the lookup is
+ *       ambiguous.</li>
+ *   <li>{@code POST /local-refresh} — calls {@link Andersoni#refresh}, which
+ *       reloads from the DataLoader <em>without</em> broadcasting. Used to
+ *       drive one node out of sync with the rest on purpose.</li>
  * </ul>
  *
  * <p>Configuration is read from environment variables: {@code NODE_ID},
@@ -90,6 +104,7 @@ public final class ClusterNode {
     final Catalog<Item> catalog = Catalog.of(Item.class)
         .named(CATALOG)
         .loadWith(() -> loadItems(jdbcUrl, jdbcUser, jdbcPassword))
+        .serializer(new ItemSerializer())
         .index("by-name").by(Item::name, Function.identity())
         .build();
 
@@ -194,6 +209,15 @@ public final class ClusterNode {
       respond(exchange, 200, json.toString());
     });
 
+    server.createContext("/items", exchange -> {
+      final JSONArray items = new JSONArray();
+      for (final Item item : catalog.currentSnapshot().data()) {
+        items.put(new JSONObject().put("id", item.id())
+            .put("name", item.name()));
+      }
+      respond(exchange, 200, items.toString());
+    });
+
     server.createContext("/refresh", exchange -> {
       if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
         respond(exchange, 405, "{\"error\":\"POST only\"}");
@@ -201,6 +225,41 @@ public final class ClusterNode {
       }
       andersoni.refreshAndSync(CATALOG);
       respond(exchange, 200, "{\"status\":\"ok\"}");
+    });
+
+    server.createContext("/local-refresh", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      andersoni.refresh(CATALOG);
+      respond(exchange, 200, "{\"status\":\"ok\"}");
+    });
+
+    server.createContext("/replace", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final Map<String, String> params =
+          queryParams(exchange.getRequestURI().getRawQuery());
+      final String key = params.get("key");
+      final String id = params.get("id");
+      final String name = params.get("name");
+      if (key == null || id == null || name == null) {
+        respond(exchange, 400,
+            "{\"error\":\"key, id and name are required\"}");
+        return;
+      }
+      try {
+        final boolean applied = andersoni.replaceAndSync(CATALOG, "by-name",
+            key, new Item(Integer.parseInt(id), name));
+        respond(exchange, 200,
+            new JSONObject().put("applied", applied).toString());
+      } catch (final AmbiguousReplaceException e) {
+        respond(exchange, 409,
+            new JSONObject().put("error", e.getMessage()).toString());
+      }
     });
 
     server.setExecutor(null);
@@ -223,6 +282,28 @@ public final class ClusterNode {
     try (OutputStream os = exchange.getResponseBody()) {
       os.write(bytes);
     }
+  }
+
+  /**
+   * Parses a raw query string into decoded name/value pairs.
+   *
+   * @param rawQuery the raw query string, may be null.
+   * @return the decoded parameters, never null.
+   */
+  private static Map<String, String> queryParams(final String rawQuery) {
+    final Map<String, String> params = new HashMap<>();
+    if (rawQuery == null || rawQuery.isBlank()) {
+      return params;
+    }
+    for (final String pair : rawQuery.split("&")) {
+      final int eq = pair.indexOf('=');
+      if (eq > 0) {
+        params.put(
+            URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8),
+            URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8));
+      }
+    }
+    return params;
   }
 
   /**

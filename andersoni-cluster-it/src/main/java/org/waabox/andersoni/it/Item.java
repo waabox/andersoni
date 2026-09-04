@@ -3,11 +3,11 @@ package org.waabox.andersoni.it;
 /**
  * A trivial catalog item used by the cluster integration test.
  *
- * <p>Being a {@code record}, its {@code toString()} is content-based and
- * deterministic. Andersoni computes a catalog's content hash over each item's
- * {@code toString()} when no serializer is configured, so two nodes that load
- * the same rows in the same order produce the same snapshot hash. That is what
- * lets the test assert convergence by comparing hashes across nodes.
+ * <p>The catalog configures an {@link ItemSerializer}, so the content hash is
+ * computed over its bytes: two nodes that hold the same items in the same
+ * order produce the same snapshot hash. That is what lets the test assert
+ * convergence by comparing hashes across nodes, and what cross-node patches
+ * use both as their precondition and to carry the patched item.
  *
  * @param id   the item identifier
  * @param name the item name, never null
