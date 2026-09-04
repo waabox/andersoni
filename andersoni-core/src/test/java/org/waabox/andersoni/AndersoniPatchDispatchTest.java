@@ -117,6 +117,17 @@ class AndersoniPatchDispatchTest {
         data, syncStrategy, leader);
   }
 
+  private static String hashOf(final List<Event> data) {
+    final Catalog<Event> probe = Catalog.of(Event.class)
+        .named("probe")
+        .data(data)
+        .serializer(new EventSerializer())
+        .index("by-id").by(Event::id, id -> id)
+        .build();
+    probe.bootstrap();
+    return probe.currentSnapshot().hash();
+  }
+
   private static PatchEvent buildEvent(final long fromVersion,
       final long toVersion, final String fromHash, final String toHash,
       final Event oldItem, final Event newItem, final String sourceNode) {
@@ -155,15 +166,15 @@ class AndersoniPatchDispatchTest {
   }
 
   @Test
-  void whenPatchArrives_givenStaleToVersion_shouldDiscard()
+  void whenPatchArrives_givenToHashAlreadyLocal_shouldDiscard()
       throws InterruptedException {
     final Event a = new Event("a", new Sport("F"), new Venue("V1"));
     final Setup setup = followerSetup(List.of(a));
 
     final Snapshot<Event> before = setup.catalog.currentSnapshot();
     final Event updated = new Event("a", new Sport("F"), new Venue("V2"));
-    final PatchEvent event = buildEvent(0L, before.version(),
-        "old", before.hash(), a, updated, "leader-1");
+    final PatchEvent event = buildEvent(0L, 99L, "someOtherHash",
+        before.hash(), a, updated, "leader-1");
 
     setup.listener.onPatch(event);
     Thread.sleep(200);
@@ -171,6 +182,66 @@ class AndersoniPatchDispatchTest {
     assertEquals(List.of(a), setup.catalog.search("by-id", "a"));
     assertEquals(before.version(),
         setup.catalog.currentSnapshot().version());
+
+    setup.andersoni.stop();
+    verify(setup.syncStrategy, setup.leader);
+  }
+
+  @Test
+  void whenPatchArrives_givenLocalVersionAheadOfEvent_shouldStillApply()
+      throws InterruptedException {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+    final Setup setup = followerSetup(List.of(a));
+
+    final Snapshot<Event> before = setup.catalog.currentSnapshot();
+    final Event updated = new Event("a", new Sport("F"), new Venue("V2"));
+
+    // A restarted leader publishes from a counter that reset to zero while
+    // this follower sits at a higher local version. Versions are per-node,
+    // so this must not be read as a stale event.
+    final PatchEvent event = buildEvent(0L, 1L, before.hash(),
+        hashOf(List.of(updated)), a, updated, "leader-1");
+    assertEquals(1L, before.version());
+
+    setup.listener.onPatch(event);
+    Thread.sleep(200);
+
+    assertEquals(List.of(updated), setup.catalog.search("by-id", "a"));
+
+    setup.andersoni.stop();
+    verify(setup.syncStrategy, setup.leader);
+  }
+
+  @Test
+  void whenTwoPatchesArriveBackToBack_givenSecondNeedsReload_shouldConverge()
+      throws InterruptedException {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+    final Event b = new Event("b", new Sport("F"), new Venue("V1"));
+    final Setup setup = followerSetup(List.of(a, b));
+
+    final Event patchedA = new Event("a", new Sport("F"), new Venue("V2"));
+    final Event patchedB = new Event("b", new Sport("F"), new Venue("V3"));
+
+    final String h0 = setup.catalog.currentSnapshot().hash();
+    final String h1 = hashOf(List.of(patchedA, b));
+    final String h2 = hashOf(List.of(patchedA, patchedB));
+
+    // The leader saved the fully-patched state before publishing, so a
+    // follower that falls back to a reload lands on it.
+    setup.loaderData.set(new ArrayList<>(List.of(patchedA, patchedB)));
+
+    // Delivered without a pause: the first applies surgically, the second
+    // cannot (its base is not local yet) and must fall back to a reload.
+    // The two paths must not share a coalescing slot, or one swallows the
+    // other and this node silently stops at the first patch.
+    setup.listener.onPatch(buildEvent(1L, 2L, h0, h1, a, patchedA,
+        "leader-1"));
+    setup.listener.onPatch(buildEvent(2L, 3L, h1, h2, b, patchedB,
+        "leader-1"));
+    Thread.sleep(600);
+
+    assertEquals(List.of(patchedA), setup.catalog.search("by-id", "a"));
+    assertEquals(List.of(patchedB), setup.catalog.search("by-id", "b"));
 
     setup.andersoni.stop();
     verify(setup.syncStrategy, setup.leader);

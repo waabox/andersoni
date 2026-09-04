@@ -36,6 +36,72 @@ class CatalogReplaceTest {
 
   record TaggedEvent(String id, List<String> tags) {}
 
+  /**
+   * A domain type that does not override equals — the shape most adopters
+   * actually register (a plain JSON-mapped POJO), where equality is
+   * identity.
+   */
+  static final class Stadium {
+    private final String code;
+    private final String venue;
+
+    Stadium(final String theCode, final String theVenue) {
+      code = theCode;
+      venue = theVenue;
+    }
+
+    String code() {
+      return code;
+    }
+
+    String venue() {
+      return venue;
+    }
+
+    @Override
+    public String toString() {
+      return code + "|" + venue;
+    }
+  }
+
+  static final class StadiumSerializer
+      implements org.waabox.andersoni.snapshot.SnapshotSerializer<Stadium> {
+    @Override
+    public byte[] serialize(final List<Stadium> items) {
+      final StringBuilder sb = new StringBuilder();
+      for (final Stadium s : items) {
+        sb.append(s.code()).append('|').append(s.venue()).append('\n');
+      }
+      return sb.toString().getBytes();
+    }
+
+    @Override
+    public List<Stadium> deserialize(final byte[] data) {
+      final String raw = new String(data).trim();
+      if (raw.isEmpty()) {
+        return List.of();
+      }
+      final List<Stadium> result = new ArrayList<>();
+      for (final String line : raw.split("\n")) {
+        final String[] parts = line.split("\\|");
+        result.add(new Stadium(parts[0], parts[1]));
+      }
+      return result;
+    }
+  }
+
+  private static Catalog<Stadium> buildStadiumCatalog(
+      final List<Stadium> data) {
+    final Catalog<Stadium> catalog = Catalog.of(Stadium.class)
+        .named("stadiums")
+        .data(data)
+        .serializer(new StadiumSerializer())
+        .index("by-code").by(Stadium::code, code -> code)
+        .build();
+    catalog.bootstrap();
+    return catalog;
+  }
+
   record EventSummary(String id, String venueName) {
     static EventSummary from(final Event e) {
       return new EventSummary(e.id(), e.venue().name());
@@ -345,5 +411,46 @@ class CatalogReplaceTest {
     assertEquals(0, raceFailures.get(),
         "refreshLock must serialize replace and refresh");
     assertNotNull(catalog.currentSnapshot());
+  }
+
+  @Test
+  void whenReplaceWithPrecondition_givenTypeWithoutEquals_shouldApply() {
+    final Stadium wembley = new Stadium("E-1", "Wembley");
+    final Catalog<Stadium> catalog = buildStadiumCatalog(
+        new ArrayList<>(List.of(wembley, new Stadium("E-2", "Camp Nou"))));
+    final String hashBefore = catalog.currentSnapshot().hash();
+
+    // What the follower does: the item arrives off the wire, so it is a
+    // different instance holding the same data. Identity equality would
+    // reject it and the surgical path would never run.
+    final Stadium fromTheWire = new Stadium("E-1", "Wembley");
+    assertNotEquals(fromTheWire, wembley);
+
+    final boolean applied = catalog.replaceWithPrecondition("by-code",
+        "E-1", hashBefore, new Stadium("E-1", "Old Trafford")).isPresent();
+
+    assertTrue(applied);
+    assertEquals("Old Trafford",
+        catalog.search("by-code", "E-1").get(0).venue());
+  }
+
+  @Test
+  void whenReplaceWithPrecondition_givenDriftedSnapshot_shouldNotApply() {
+    final Catalog<Stadium> catalog = buildStadiumCatalog(
+        new ArrayList<>(List.of(new Stadium("E-1", "Wembley"),
+            new Stadium("E-2", "Camp Nou"))));
+
+    // Drift somewhere other than the item being patched: the bucket at
+    // E-1 is still fine, so only the snapshot hash can catch this.
+    catalog.refresh(List.of(new Stadium("E-1", "Wembley"),
+        new Stadium("E-2", "Anfield")));
+
+    final boolean applied = catalog.replaceWithPrecondition("by-code",
+        "E-1", "theHashBeforeTheDrift",
+        new Stadium("E-1", "Old Trafford")).isPresent();
+
+    assertFalse(applied);
+    assertEquals("Wembley",
+        catalog.search("by-code", "E-1").get(0).venue());
   }
 }

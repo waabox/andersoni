@@ -326,15 +326,17 @@ The lookup must resolve to **exactly one item**:
 
 `replaceAndSync` only runs on the leader; on followers it returns `false`. After the local replace, the leader saves the full snapshot to the snapshot store and publishes a `PatchEvent` carrying the serialized old item, the serialized new item, and version/hash preconditions captured atomically under the catalog's refresh lock.
 
-**Follower dispatch** uses version-keyed precedence:
+**Follower dispatch** keys on content hashes:
 
 | Local state vs event | Action |
 |---|---|
-| `event.toVersion ≤ localVersion` | Discard (stale or already applied). |
-| `event.fromVersion == localVersion && event.fromHash == localHash` | Apply the patch surgically. |
+| `event.toHash == localHash` | Discard — this node already applied the patch. |
+| `event.fromHash == localHash` | Apply the patch surgically. |
 | otherwise | Fall back to a full reload via the snapshot store (or the data loader as last resort). |
 
-This means stale-patch storms collapse to **at most one full reload** per out-of-sync window. The async refresh dispatcher coalesces concurrent events, and the leader saves the latest snapshot before publishing so the fallback path always finds something useful.
+Snapshot versions are deliberately *not* preconditions. A version is a per-node counter that starts at zero in every process and is never adopted from another node, so two nodes holding identical data can report different versions — and a follower whose counter has run ahead of the leader’s (after a leader restart, say) would discard live patches as stale and silently stop converging. Hashes are derived from content, so they are comparable across nodes by construction. `fromVersion`/`toVersion` remain on the event for diagnostics.
+
+Patches are queued per catalog in arrival order and are never coalesced: a patch is a delta against one specific base state, so dropping one loses that change rather than merely delaying it. Full reloads keep their coalescing (a later reload subsumes an earlier one), on a separate path so neither can swallow the other. If the patch queue is saturated the event degrades to a full reload rather than being dropped. The leader saves the latest snapshot before publishing, so the fallback path always finds something useful.
 
 **Transport support:**
 

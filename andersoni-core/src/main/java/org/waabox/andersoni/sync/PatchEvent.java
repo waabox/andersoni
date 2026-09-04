@@ -8,10 +8,17 @@ import java.util.Objects;
  * leader-side {@code replaceAndSync}.
  *
  * <p>A patch event carries enough information for a follower to apply the
- * exact same swap that the leader applied, with optimistic-concurrency
- * preconditions ({@link #fromVersion} and {@link #fromHash}) so the
- * follower can detect divergence and fall back to a full reload from the
- * snapshot store when its local state has drifted.
+ * exact same swap that the leader applied, with {@link #fromHash} and
+ * {@link #toHash} as optimistic-concurrency preconditions so the follower
+ * can detect that it has already applied the patch, or that its local state
+ * has drifted and it must fall back to a full reload from the snapshot
+ * store.
+ *
+ * <p>{@link #fromVersion} and {@link #toVersion} are diagnostic only —
+ * never preconditions. A snapshot version is a per-node counter that starts
+ * at zero in every process and is never adopted from another node, so two
+ * nodes holding identical data may report different versions. Hashes are
+ * derived from content and are comparable across nodes.
  *
  * <p>The {@code serializedOldItem} and {@code serializedNewItem} payloads
  * are produced by the catalog's {@code SnapshotSerializer}. The follower
@@ -24,14 +31,16 @@ import java.util.Objects;
  *                           never null
  * @param sourceNodeId       the identifier of the node that produced the
  *                           patch, never null
- * @param fromVersion        the snapshot version the patch was computed
- *                           against (precondition for the surgical apply
- *                           path)
- * @param toVersion          the resulting snapshot version on the leader
- * @param fromHash           the leader's snapshot hash before the patch,
- *                           used as a precondition, never null
- * @param toHash             the leader's snapshot hash after the patch,
+ * @param fromVersion        the leader's snapshot version the patch was
+ *                           computed against; diagnostic only
+ * @param toVersion          the resulting snapshot version on the leader;
+ *                           diagnostic only
+ * @param fromHash           the leader's snapshot hash before the patch;
+ *                           the precondition for applying surgically,
  *                           never null
+ * @param toHash             the leader's snapshot hash after the patch;
+ *                           a follower already at this hash has applied
+ *                           the patch, never null
  * @param indexName          the index used for the lookup, never null
  * @param serializedOldItem  the serialized item being replaced, never null
  * @param serializedNewItem  the serialized replacement item, never null
