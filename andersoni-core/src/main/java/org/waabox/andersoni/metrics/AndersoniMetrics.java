@@ -92,6 +92,32 @@ public interface AndersoniMetrics {
   }
 
   /**
+   * Records a successful surgical patch application on the follower side.
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void patchApplied(final String catalogName) {
+  }
+
+  /**
+   * Records that an inbound patch event was discarded as stale (already
+   * applied or superseded by a newer snapshot).
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void patchDiscarded(final String catalogName) {
+  }
+
+  /**
+   * Records that a patch event triggered a full reload fallback because
+   * the local snapshot didn't satisfy the patch precondition.
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void patchFellBack(final String catalogName) {
+  }
+
+  /**
    * Called when the Andersoni engine has fully started.
    *
    * <p>Implementations can use this to begin periodic metric reporting.

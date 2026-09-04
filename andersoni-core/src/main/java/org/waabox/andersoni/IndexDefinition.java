@@ -124,6 +124,19 @@ public final class IndexDefinition<T> {
   }
 
   /**
+   * Extracts the index key for the given domain object.
+   *
+   * <p>Returns {@code null} if the key extractor produced {@code null},
+   * which mirrors how {@link #accumulate} skips null keys at build time.
+   *
+   * @param item the domain object, never null
+   * @return the extracted key, may be null
+   */
+  Object extractKey(final T item) {
+    return keyExtractor.apply(item);
+  }
+
+  /**
    * Returns the name of this index.
    *
    * @return the index name, never null
