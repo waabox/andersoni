@@ -674,6 +674,10 @@ public final class Andersoni {
 
     cancelScheduledRefreshes();
 
+    if (asyncRefreshDispatcher != null) {
+      asyncRefreshDispatcher.stop();
+    }
+
     if (syncStrategy != null) {
       syncStrategy.stop();
     }

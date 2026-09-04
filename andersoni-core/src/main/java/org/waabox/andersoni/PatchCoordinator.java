@@ -21,9 +21,10 @@ import org.waabox.andersoni.sync.SyncStrategy;
  * <ul>
  *   <li>Leader side: {@link #replaceAndSync} performs the local replace,
  *       saves the snapshot, and publishes a {@link PatchEvent}.</li>
- *   <li>Follower side: {@link #handlePatch} version-keys an inbound event
- *       (stale / surgical apply / full-reload fallback) and dispatches the
- *       resulting work through the shared {@link AsyncRefreshDispatcher}.</li>
+ *   <li>Follower side: {@link #handlePatch} hash-keys an inbound event
+ *       (already applied / surgical apply / full-reload fallback) and
+ *       dispatches the resulting work through the shared
+ *       {@link AsyncRefreshDispatcher}.</li>
  * </ul>
  *
  * <p>This class deliberately does not own the catalog registry, the
@@ -171,13 +172,26 @@ final class PatchCoordinator {
   }
 
   /**
-   * Routes an inbound {@link PatchEvent} via version-keyed precedence:
-   * stale events are discarded, events whose precondition matches the
-   * local snapshot apply surgically, and events with a gap/hash mismatch
-   * fall back to a full reload.
+   * Routes an inbound {@link PatchEvent} by comparing the event's hashes
+   * against the local snapshot: an event whose {@code toHash} the local
+   * snapshot already carries has been applied and is discarded, an event
+   * whose {@code fromHash} matches applies surgically, and anything else
+   * falls back to a full reload.
    *
-   * <p>Dispatched through {@link AsyncRefreshDispatcher} so concurrent
-   * patch events on the same catalog are coalesced.
+   * <p>Preconditions are deliberately hash-only. A snapshot version is a
+   * per-node counter — {@code Catalog.versionCounter} starts at zero in
+   * every process and no node ever adopts another's — so the versions of
+   * two nodes holding identical data are only coincidentally equal. A
+   * follower whose counter has run ahead of the leader's (after a leader
+   * restart, or simply having refreshed more often) would then discard
+   * live patches as stale and silently stop converging. Content hashes are
+   * comparable across nodes by construction, and are already the
+   * convergence signal for refresh events.
+   *
+   * <p>A surgical apply is queued through
+   * {@link AsyncRefreshDispatcher#dispatchOrdered}, never the coalescing
+   * path: patches are deltas against a specific base state, so dropping one
+   * loses that change instead of merely delaying it.
    */
   @SuppressWarnings("unchecked")
   void handlePatch(final PatchEvent event) {
@@ -194,29 +208,30 @@ final class PatchCoordinator {
       return;
     }
 
-    final Snapshot<?> snapshot = catalog.currentSnapshot();
-    if (event.toVersion() <= snapshot.version()) {
-      log.debug("Discarding stale patch for catalog '{}': toVersion={} "
-          + "<= localVersion={}", event.catalogName(),
-          event.toVersion(), snapshot.version());
+    final String localHash = catalog.currentSnapshot().hash();
+
+    if (event.toHash().equals(localHash)) {
+      log.debug("Discarding already-applied patch for catalog '{}': local "
+          + "hash is already {}", event.catalogName(), event.toHash());
       metrics.patchDiscarded(event.catalogName());
       return;
     }
 
     metrics.syncReceived(event.catalogName());
 
-    if (event.fromVersion() == snapshot.version()
-        && event.fromHash().equals(snapshot.hash())) {
-      dispatcher.dispatch(event.catalogName(),
-          () -> applyPatchLocally(event, (Catalog<Object>) catalog));
-      return;
+    if (event.fromHash().equals(localHash)) {
+      if (dispatcher.dispatchOrdered(event.catalogName(),
+          () -> applyPatchLocally(event, (Catalog<Object>) catalog))) {
+        return;
+      }
+      log.warn("Patch queue for catalog '{}' could not accept the event; "
+          + "falling back to a full reload", event.catalogName());
+    } else {
+      log.debug("Patch precondition mismatch for catalog '{}' (local hash "
+          + "{} vs event fromHash {}); falling back to a full reload",
+          event.catalogName(), localHash, event.fromHash());
     }
 
-    log.debug("Patch precondition mismatch for catalog '{}'"
-        + " (local v{}/{} vs event from v{}/{}); falling back"
-        + " to full reload", event.catalogName(),
-        snapshot.version(), snapshot.hash(),
-        event.fromVersion(), event.fromHash());
     metrics.patchFellBack(event.catalogName());
     dispatcher.dispatch(event.catalogName(),
         () -> callbacks.refreshFromEvent(event.catalogName(), catalog));
@@ -261,7 +276,7 @@ final class PatchCoordinator {
 
       final Optional<CatalogPatcher.ReplaceOutcome<Object>> outcome =
           catalog.replaceWithPrecondition(event.indexName(), key,
-              oldItem, newItem);
+              event.fromHash(), newItem);
       if (outcome.isEmpty()) {
         log.debug("Patch precondition failed at apply time for catalog"
             + " '{}'; falling back to full reload.",

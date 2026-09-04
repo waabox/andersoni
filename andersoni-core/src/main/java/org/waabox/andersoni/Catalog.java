@@ -374,9 +374,9 @@ public final class Catalog<T> {
   }
 
   /**
-   * Replaces a single item only if the local bucket at
-   * {@code (indexName, key)} matches the supplied precondition — exactly
-   * one item, equal to {@code expectedOldItem} via {@code .equals()}.
+   * Replaces a single item only if the current snapshot still hashes to
+   * {@code expectedHash} and the bucket at {@code (indexName, key)} holds
+   * exactly one item.
    *
    * <p>Used by the follower-side patch dispatch to apply a
    * {@link org.waabox.andersoni.sync.PatchEvent} surgically when the local
@@ -384,24 +384,43 @@ public final class Catalog<T> {
    * fails the caller falls back to a full reload rather than silently
    * replacing the wrong item.
    *
+   * <p>The precondition is the snapshot hash rather than an equality check
+   * against the item the leader replaced, because {@code equals} is not
+   * something a catalog can require of {@code T}: a domain class that does
+   * not override it compares by identity, so an item deserialized off the
+   * wire never matches the local one and the surgical path would silently
+   * never run. The hash is derived from content, needs nothing of {@code T}
+   * beyond the serializer the catalog already has, and is strictly stronger
+   * — it also rejects a snapshot that drifted somewhere other than the item
+   * being patched, which would otherwise apply cleanly and leave this node
+   * diverged from the leader.
+   *
    * <p>Atomically performs the precondition check and the swap under the
    * same refresh lock so there is no race window with concurrent writes.
+   *
+   * @param indexName    the index to look the item up in, never null
+   * @param key          the lookup key, never null
+   * @param expectedHash the snapshot hash the patch was computed against,
+   *                     never null
+   * @param newItem      the replacement item, never null
    *
    * @return the outcome on success, empty when the precondition failed
    *         or no item was found
    */
   Optional<ReplaceOutcome<T>> replaceWithPrecondition(
       final String indexName, final Object key,
-      final T expectedOldItem, final T newItem) {
+      final String expectedHash, final T newItem) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
-    Objects.requireNonNull(expectedOldItem,
-        "expectedOldItem must not be null");
+    Objects.requireNonNull(expectedHash, "expectedHash must not be null");
     Objects.requireNonNull(newItem, "newItem must not be null");
 
     refreshLock.lock();
     try {
       final Snapshot<T> snapshot = current.get();
+      if (!expectedHash.equals(snapshot.hash())) {
+        return Optional.empty();
+      }
       final Map<Object, List<AndersoniCatalogItem<T>>> bucketMap =
           snapshot.indicesMap().get(indexName);
       if (bucketMap == null) {
@@ -409,9 +428,6 @@ public final class Catalog<T> {
       }
       final List<AndersoniCatalogItem<T>> bucket = bucketMap.get(key);
       if (bucket == null || bucket.size() != 1) {
-        return Optional.empty();
-      }
-      if (!expectedOldItem.equals(bucket.get(0).item())) {
         return Optional.empty();
       }
       return applyPatch(indexName, key, newItem);
