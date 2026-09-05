@@ -89,6 +89,11 @@ On `feature/3/snapshot-patch-support`, green across 518 tests:
   its followers converge through the hash change at the next poll.
 - **Follower dispatch** — `PatchCoordinator`, hash-keyed (§4).
 - **Metrics** — `patchApplied`, `patchDiscarded`, `patchFellBack`.
+- **Hook safety** — `SnapshotBuildHook.supportsPatch()`, default `false`. A
+  patch runs hooks only for the item it changes, which is wrong for a hook
+  that accumulates across a build, so a catalog holding any hook that has not
+  opted in rebuilds fully on every patch instead. Correct either way;
+  `Catalog.appliesPatchesSurgically()` reports which mode applies.
 
 `AmbiguousPatchTargetException` is thrown when a lookup matches more than one item.
 
@@ -243,9 +248,11 @@ type without `equals`, drift elsewhere in the dataset, `RefreshKind` round-trip
 and pre-patch wire payloads all have tests.
 
 `ClusterPatchPropagationIT` boots Kafka, PostgreSQL and three nodes and proves
-the multi-node behaviour: a replace, an insert and a removal each converging on
-all three nodes, a no-match leaving every hash untouched, and a follower driven
-out of sync refusing the delta and reloading. Every patch is applied to the
+the multi-node behaviour: a replace, an insert, a removal and a mixed batch
+each converging on all three nodes, a no-match leaving every hash untouched,
+and a follower driven out of sync refusing the delta and reloading. The batch
+asserts that every node's version advances by exactly one, which is what
+applying it as a unit means where it counts. Every patch is applied to the
 leader's memory only and never to the database, and no snapshot store is
 configured, so the DataLoader cannot reproduce the patched state — a follower
 that converges can only have applied the delta. Verified sensitive: with the
@@ -256,7 +263,9 @@ Not yet covered:
 - **Leader failover mid-patch.** Leadership in the IT is a static environment
   variable, so promoting a new leader is not expressible without restarting a
   container with different configuration.
-- Batch apply, once built.
+- **Performance.** Everything verified so far is correctness. The IT holds four
+  items on three nodes, and nothing has been benchmarked, so the size of the
+  end-to-end win is still an estimate.
 
 Running them: `mvn verify -pl andersoni-cluster-it -am`. Without `-am` the
 module resolves `andersoni-core` from the local repository — the released jar,
