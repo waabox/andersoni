@@ -132,7 +132,7 @@ class AndersoniPatchDispatchTest {
       final long toVersion, final String fromHash, final String toHash,
       final Event oldItem, final Event newItem, final String sourceNode) {
     final EventSerializer s = new EventSerializer();
-    return new PatchEvent("events", sourceNode, fromVersion, toVersion,
+    return PatchEvent.replace("events", sourceNode, fromVersion, toVersion,
         fromHash, toHash, "by-id",
         s.serialize(List.of(oldItem)),
         s.serialize(List.of(newItem)),
@@ -305,8 +305,8 @@ class AndersoniPatchDispatchTest {
     final long versionBefore = setup.catalog.currentSnapshot().version();
 
     final EventSerializer s = new EventSerializer();
-    final PatchEvent event = new PatchEvent("unknown-catalog", "leader-1",
-        0L, 1L, "from", "to", "by-id",
+    final PatchEvent event = PatchEvent.replace("unknown-catalog",
+        "leader-1", 0L, 1L, "from", "to", "by-id",
         s.serialize(List.of(a)),
         s.serialize(List.of(new Event("a", new Sport("F"),
             new Venue("V2")))),
@@ -318,6 +318,75 @@ class AndersoniPatchDispatchTest {
     // The known catalog is untouched.
     assertEquals(versionBefore,
         setup.catalog.currentSnapshot().version());
+
+    setup.andersoni.stop();
+    verify(setup.syncStrategy, setup.leader);
+  }
+
+  @Test
+  void whenInsertPatchArrives_givenMatchingPrecondition_shouldAddTheItem()
+      throws InterruptedException {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+    final Setup setup = followerSetup(List.of(a));
+
+    final Snapshot<Event> before = setup.catalog.currentSnapshot();
+    final Event added = new Event("b", new Sport("F"), new Venue("V2"));
+    final EventSerializer serializer = new EventSerializer();
+
+    setup.listener.onPatch(PatchEvent.insert("events", "leader-1",
+        before.version(), before.version() + 1, before.hash(),
+        hashOf(List.of(a, added)), serializer.serialize(List.of(added)),
+        Instant.now()));
+    Thread.sleep(300);
+
+    assertEquals(List.of(added), setup.catalog.search("by-id", "b"));
+    assertEquals(List.of(a), setup.catalog.search("by-id", "a"));
+    assertEquals(2, setup.catalog.currentSnapshot().data().size());
+
+    setup.andersoni.stop();
+    verify(setup.syncStrategy, setup.leader);
+  }
+
+  @Test
+  void whenRemovePatchArrives_givenMatchingPrecondition_shouldDropTheItem()
+      throws InterruptedException {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+    final Event b = new Event("b", new Sport("F"), new Venue("V2"));
+    final Setup setup = followerSetup(List.of(a, b));
+
+    final Snapshot<Event> before = setup.catalog.currentSnapshot();
+    final EventSerializer serializer = new EventSerializer();
+
+    setup.listener.onPatch(PatchEvent.remove("events", "leader-1",
+        before.version(), before.version() + 1, before.hash(),
+        hashOf(List.of(b)), "by-id", serializer.serialize(List.of(a)),
+        Instant.now()));
+    Thread.sleep(300);
+
+    assertEquals(List.of(), setup.catalog.search("by-id", "a"));
+    assertEquals(List.of(b), setup.catalog.currentSnapshot().data());
+
+    setup.andersoni.stop();
+    verify(setup.syncStrategy, setup.leader);
+  }
+
+  @Test
+  void whenInsertPatchArrives_givenDriftedSnapshot_shouldFallBackToReload()
+      throws InterruptedException {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+    final Setup setup = followerSetup(List.of(a));
+
+    final Event divergent = new Event("a", new Sport("Z"), new Venue("VZ"));
+    setup.loaderData.set(new ArrayList<>(List.of(divergent)));
+
+    final Event added = new Event("b", new Sport("F"), new Venue("V2"));
+    setup.listener.onPatch(PatchEvent.insert("events", "leader-1", 0L, 1L,
+        "aHashThisNodeDoesNotHave", "toHash",
+        new EventSerializer().serialize(List.of(added)), Instant.now()));
+    Thread.sleep(400);
+
+    assertEquals(List.of(divergent), setup.catalog.currentSnapshot().data(),
+        "A drifted follower must reload rather than append blindly");
 
     setup.andersoni.stop();
     verify(setup.syncStrategy, setup.leader);

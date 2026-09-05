@@ -619,22 +619,160 @@ public final class Andersoni {
   }
 
   /**
-   * Replaces a single item in the named catalog locally, without
-   * coordinating across the cluster.
+   * Adds an item to a catalog on the leader and broadcasts the insert to
+   * the cluster.
    *
-   * <p>This is the local-only entry point — analogous to
-   * {@link #refresh(String)} vs. {@link #refreshAndSync(String)}. It does
-   * not check leadership and does not publish a sync event. It is intended
-   * for tests, single-node usage, and as the receive-side of an inbound
-   * patch event.
+   * <p>Runs only on the leader; on a follower this is a no-op returning
+   * {@code false}. No lookup is performed, so this cannot notice that an
+   * equivalent item is already present — {@link #upsertAndSync} is the
+   * operation that decides.
    *
-   * @return {@code true} if a single item was found and replaced,
-   *         {@code false} if the lookup returned no items
+   * @param catalogName the catalog to add to, never null
+   * @param newItem     the item to add, never null
    *
-   * @throws IllegalStateException        if Andersoni has been stopped
+   * @return true if this node is the leader and applied the insert
+   *
+   * @throws IllegalStateException    if stopped, or the catalog has no
+   *                                  serializer
+   * @throws IllegalArgumentException if no such catalog is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean insertAndSync(final String catalogName,
+      final Object newItem) {
+    return patchCoordinator.insertAndSync(catalogName, newItem);
+  }
+
+  /**
+   * Removes the item resolved by {@code (indexName, key)} on the leader and
+   * broadcasts the removal to the cluster.
+   *
+   * <p>Runs only on the leader; on a follower this is a no-op returning
+   * {@code false}. A lookup matching nothing also returns {@code false} and
+   * broadcasts nothing.
+   *
+   * @param catalogName the catalog to remove from, never null
+   * @param indexName   the index to look the item up in, never null
+   * @param key         the lookup key, never null
+   *
+   * @return true if this node is the leader and an item was removed
+   *
+   * @throws IllegalStateException         if stopped, or the catalog has no
+   *                                       serializer
+   * @throws IllegalArgumentException      if no such catalog is registered
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean removeAndSync(final String catalogName,
+      final String indexName, final Object key) {
+    return patchCoordinator.removeAndSync(catalogName, indexName, key);
+  }
+
+  /**
+   * Replaces the item resolved by {@code (indexName, key)} on the leader if
+   * one exists and inserts {@code newItem} otherwise, then broadcasts
+   * whichever change actually happened.
+   *
+   * <p>Runs only on the leader; on a follower this is a no-op returning
+   * {@code false}.
+   *
+   * @param catalogName the catalog to write to, never null
+   * @param indexName   the index to look the item up in, never null
+   * @param key         the lookup key, never null
+   * @param newItem     the item to store, never null
+   *
+   * @return true if this node is the leader and applied the upsert
+   *
+   * @throws IllegalStateException         if stopped, or the catalog has no
+   *                                       serializer
+   * @throws IllegalArgumentException      if no such catalog is registered
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean upsertAndSync(final String catalogName,
+      final String indexName, final Object key, final Object newItem) {
+    return patchCoordinator.upsertAndSync(catalogName, indexName, key,
+        newItem);
+  }
+
+  /**
+   * Adds an item to a catalog locally, without coordinating across the
+   * cluster.
+   *
+   * @param catalogName the catalog to add to, never null
+   * @param newItem     the item to add, never null
+   *
+   * @throws IllegalStateException        if stopped
+   * @throws IllegalArgumentException     if no such catalog is registered
    * @throws CatalogNotAvailableException if the catalog failed to bootstrap
-   * @throws AmbiguousPatchTargetException    if the lookup returned more than
-   *                                      one item
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public void insert(final String catalogName, final Object newItem) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException(
+          "Cannot insert after stop() has been called");
+    }
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    ((Catalog<Object>) catalog).insert(newItem);
+    reportIndexSizes(catalog);
+  }
+
+  /**
+   * Removes an item from a catalog locally, without coordinating across the
+   * cluster.
+   *
+   * @param catalogName the catalog to remove from, never null
+   * @param indexName   the index to look the item up in, never null
+   * @param key         the lookup key, never null
+   *
+   * @return true if an item was removed, false if nothing matched
+   *
+   * @throws IllegalStateException         if stopped
+   * @throws IllegalArgumentException      if no such catalog is registered
+   * @throws CatalogNotAvailableException  if the catalog failed to bootstrap
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean remove(final String catalogName, final String indexName,
+      final Object key) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException(
+          "Cannot remove after stop() has been called");
+    }
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    final boolean removed = catalog.remove(indexName, key);
+    if (removed) {
+      reportIndexSizes(catalog);
+    }
+    return removed;
+  }
+
+  /**
+   * Replaces an item in a catalog locally, without coordinating across the
+   * cluster.
+   *
+   * @param catalogName the catalog to replace in, never null
+   * @param indexName   the index to look the item up in, never null
+   * @param key         the lookup key, never null
+   * @param newItem     the replacement item, never null
+   *
+   * @return true if an item was replaced, false if nothing matched
    */
   @SuppressWarnings("unchecked")
   public boolean replace(final String catalogName, final String indexName,

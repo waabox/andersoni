@@ -311,18 +311,32 @@ public interface SnapshotBuildHook<T> {
 Replace a single item in a catalog without re-loading the dataset. The snapshot is rebuilt copy-on-write — only the index buckets whose keys change for the patched item are recomputed; everything else is shared by reference with the previous snapshot.
 
 ```java
-// local-only: replace within this node
+// local-only: apply within this node
 boolean replaced = catalog.replace("by-id", eventId, updatedEvent);
+catalog.insert(newEvent);
+boolean removed  = catalog.remove("by-id", eventId);
+boolean replaced = catalog.upsert("by-id", eventId, event);
 
-// cluster-wide: leader replaces locally and broadcasts a PatchEvent
-boolean replaced = andersoni.replaceAndSync("events", "by-id", eventId, updatedEvent);
+// cluster-wide: the leader applies locally and broadcasts a PatchEvent
+boolean applied = andersoni.replaceAndSync("events", "by-id", eventId, updatedEvent);
+boolean applied = andersoni.insertAndSync("events", newEvent);
+boolean applied = andersoni.removeAndSync("events", "by-id", eventId);
+boolean applied = andersoni.upsertAndSync("events", "by-id", eventId, event);
 ```
 
-The lookup must resolve to **exactly one item**:
+Every operation that locates its target does so through an ordinary index lookup, which must resolve to **exactly one item**:
 
-- `0` matches → `false` (no-op).
-- `1` match → swap, returns `true`.
-- `>1` matches → `AmbiguousPatchTargetException`. Pick a uniquely-keyed index (typically id-based) for the replace handle.
+| Matches | `replace` | `remove` | `upsert` |
+|---|---|---|---|
+| `0` | `false`, no-op | `false`, no-op | inserts |
+| `1` | swap | drop | swap |
+| `>1` | `AmbiguousPatchTargetException` | same | same |
+
+Zero matches is not an error for `remove` — removal is idempotent by nature, and with at-least-once delivery a repeated removal is ordinary. More than one match always is: guessing which item was meant would corrupt the catalog silently. Pick a uniquely-keyed index (typically id-based) as the lookup handle.
+
+`insert` performs no lookup at all, so it can neither miss nor be ambiguous — and equally cannot notice that an equivalent item is already present. `upsert` is the operation that decides, and it belongs in the library rather than being written caller-side as `if (!replace(...)) insert(...)`: that version races a concurrent refresh between the two calls and can insert a duplicate or lose a write.
+
+There is no `UPSERT` on the wire. An upsert resolves on the leader into whichever concrete change happened, and followers are told what was done rather than what was asked for — so they never repeat a decision that depends on state they may not share.
 
 `replaceAndSync` only runs on the leader; on followers it returns `false`. After the local replace, the leader saves the full snapshot to the snapshot store and publishes a `PatchEvent` carrying the serialized old item, the serialized new item, and version/hash preconditions captured atomically under the catalog's refresh lock.
 

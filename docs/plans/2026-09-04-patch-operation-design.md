@@ -145,27 +145,31 @@ falls back to a reload rather than dropping it.
 
 ## 5. What is left to build
 
-### 5.1 The other three operations
+### 5.1 Batch apply
 
-`replace` is the only operation. Still missing:
+`replace`, `insert`, `remove` and `upsert` are implemented, locally and across
+the cluster. Still missing:
 
 ```java
-void insert(T item);                                  // no lookup; appends
-boolean remove(String indexName, Object key);
-boolean upsert(String indexName, Object key, T item); // replace, else insert
-void apply(List<PatchOp<T>> ops);                     // batch
+void apply(List<PatchOp<T>> ops);   // batch
 ```
 
-`CatalogPatcher` needs a removal path (drop from the item list and from every
-bucket its key set touches) and an insert path (append, add to buckets). Both
-are the existing machinery with one side of the symmetric difference empty.
+Validate every op's lookup up front, then apply them all into a single new
+snapshot, so a batch is one `fromHash → toHash` step on the wire and one
+snapshot swap. An ambiguous lookup throws before anything is applied; a missing
+target for a `replace` op fails the whole batch and names the key.
 
-`PatchEvent` needs an operation discriminator, and the two payload fields become
-optional per operation: an insert carries only the new item, a removal only the
-old one. **`PatchListener` stays single-method** — the operation is data on the
-event, not a delivery channel. A method per operation would force all four
-transports to change every time an operation is added, and would make a batch
-mixing an insert and a removal undeliverable as one atomic unit.
+The wire is already shaped for it. `PatchEvent` carries a `PatchOperation`
+discriminator with payloads present per operation (a replace carries both
+items, an insert only the new one, a removal only the old), and
+`PatchListener` stays single-method — the operation is data on the event, not a
+delivery channel. A method per operation would force all four transports to
+change every time one is added, and would make a batch mixing an insert and a
+removal undeliverable as one atomic unit.
+
+There is no `UPSERT` on the wire: an upsert resolves on the leader into the
+concrete change that happened, so followers never repeat a decision that
+depends on state they may not share.
 
 ### 5.2 Result types and the zero-match contract
 
@@ -192,9 +196,8 @@ missing target for a `replace` op fails the whole batch and names the key.
 
 ### 5.3 Naming
 
-`AmbiguousPatchTargetException` will be thrown by removals and upserts too. Rename
-it to something operation-neutral (`AmbiguousPatchTargetException`) while it is
-still unreleased.
+Done: `AmbiguousReplaceException` is now `AmbiguousPatchTargetException`, since
+removals and upserts throw it too.
 
 ### 5.4 Documentation drift
 
@@ -237,11 +240,25 @@ execution, refresh-lock serialization, hash-keyed dispatch precedence, a domain
 type without `equals`, drift elsewhere in the dataset, `RefreshKind` round-trip
 and pre-patch wire payloads all have tests.
 
+`ClusterPatchPropagationIT` boots Kafka, PostgreSQL and three nodes and proves
+the multi-node behaviour: a replace, an insert and a removal each converging on
+all three nodes, a no-match leaving every hash untouched, and a follower driven
+out of sync refusing the delta and reloading. Every patch is applied to the
+leader's memory only and never to the database, and no snapshot store is
+configured, so the DataLoader cannot reproduce the patched state — a follower
+that converges can only have applied the delta. Verified sensitive: with the
+surgical apply path disabled the suite fails rather than passing anyway.
+
 Not yet covered:
 
-- **`andersoni-cluster-it` has no patch scenario.** The multi-node behaviour —
-  followers converging without a store read, a diverged follower falling back,
-  leader failover mid-patch — is currently only argued, not demonstrated. This
-  is the largest gap, and it needs Docker, which the current dev environment
-  does not have.
-- The operations of §5.1, once built.
+- **Leader failover mid-patch.** Leadership in the IT is a static environment
+  variable, so promoting a new leader is not expressible without restarting a
+  container with different configuration.
+- Batch apply, once built.
+
+Running them: `mvn verify -pl andersoni-cluster-it -am`. Without `-am` the
+module resolves `andersoni-core` from the local repository — the released jar,
+not the working tree — and the ITs silently verify the wrong code. Filtering
+with `-Dtest` also pulls the ITs into the `test` phase, ahead of the shade
+plugin that builds the jar the node image is made from; failsafe's filter is
+`-Dit.test`.

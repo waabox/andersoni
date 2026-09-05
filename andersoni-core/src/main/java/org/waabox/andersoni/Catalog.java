@@ -93,6 +93,18 @@ public final class Catalog<T> {
    *  collisions between concatenated toString() representations. */
   private static final byte[] ITEM_DELIMITER = new byte[]{0x00};
 
+  /**
+   * What an upsert did: the snapshot metadata, plus whether it replaced an
+   * existing item or inserted a new one.
+   *
+   * @param outcome  the snapshot metadata for the change, never null
+   * @param replaced true if an existing item was replaced, false if the
+   *                 item was inserted
+   * @param <T>      the catalog item type
+   */
+  record UpsertCapture<T>(ReplaceOutcome<T> outcome, boolean replaced) {
+  }
+
   /** The current snapshot, atomically swapped on refresh. */
   private final AtomicReference<Snapshot<T>> current;
 
@@ -539,22 +551,128 @@ public final class Catalog<T> {
     Objects.requireNonNull(expectedHash, "expectedHash must not be null");
     Objects.requireNonNull(newItem, "newItem must not be null");
 
+    return applyWithPrecondition(expectedHash,
+        snapshot -> patcher.patch(snapshot, indexName, key, newItem));
+  }
+
+  /**
+   * Adds {@code item} only if the current snapshot still hashes to
+   * {@code expectedHash}. The insert counterpart of
+   * {@link #replaceWithPrecondition}.
+   *
+   * @param expectedHash the snapshot hash the patch was computed against,
+   *                     never null
+   * @param item         the item to add, never null
+   *
+   * @return the outcome, or empty when the precondition failed
+   */
+  Optional<ReplaceOutcome<T>> insertWithPrecondition(
+      final String expectedHash, final T item) {
+    Objects.requireNonNull(expectedHash, "expectedHash must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+
+    return applyWithPrecondition(expectedHash,
+        snapshot -> Optional.of(patcher.insert(snapshot, item)));
+  }
+
+  /**
+   * Removes the item at {@code (indexName, key)} only if the current
+   * snapshot still hashes to {@code expectedHash}. The removal counterpart
+   * of {@link #replaceWithPrecondition}.
+   *
+   * @param indexName    the index to look the item up in, never null
+   * @param key          the lookup key, never null
+   * @param expectedHash the snapshot hash the patch was computed against,
+   *                     never null
+   *
+   * @return the outcome, or empty when the precondition failed or nothing
+   *         matched
+   */
+  Optional<ReplaceOutcome<T>> removeWithPrecondition(final String indexName,
+      final Object key, final String expectedHash) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(expectedHash, "expectedHash must not be null");
+
+    return applyWithPrecondition(expectedHash,
+        snapshot -> patcher.remove(snapshot, indexName, key));
+  }
+
+  /**
+   * Runs a patch computation, but only if the current snapshot still
+   * hashes to {@code expectedHash}.
+   *
+   * <p>The check and the swap happen under one hold of the refresh lock,
+   * so nothing can move the snapshot in between — which is the whole point
+   * of the precondition.
+   *
+   * @param expectedHash the required snapshot hash, never null
+   * @param computation  the patch computation, never null
+   *
+   * @return the outcome, or empty when the precondition failed or the
+   *         computation matched nothing
+   */
+  private Optional<ReplaceOutcome<T>> applyWithPrecondition(
+      final String expectedHash,
+      final Function<Snapshot<T>, Optional<PatchResult<T>>> computation) {
     refreshLock.lock();
     try {
-      final Snapshot<T> snapshot = current.get();
-      if (!expectedHash.equals(snapshot.hash())) {
+      if (!expectedHash.equals(current.get().hash())) {
         return Optional.empty();
       }
-      final Map<Object, List<AndersoniCatalogItem<T>>> bucketMap =
-          snapshot.indicesMap().get(indexName);
-      if (bucketMap == null) {
-        throw new IndexNotFoundException(indexName, name);
+      return applyPatch(computation);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Performs the same insert as {@link #insert(Object)} but additionally
+   * returns the from/to snapshot version and hash pair, for building
+   * cross-node patch events.
+   *
+   * @param item the item to add, never null
+   *
+   * @return the outcome, never empty
+   */
+  Optional<ReplaceOutcome<T>> insertAndCapture(final T item) {
+    Objects.requireNonNull(item, "item must not be null");
+    refreshLock.lock();
+    try {
+      return applyPatch(snapshot -> Optional.of(patcher.insert(snapshot, item)));
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Performs the same upsert as {@link #upsert(String, Object, Object)} and
+   * reports both the snapshot metadata and which concrete operation it
+   * resolved to, so a caller can broadcast what actually happened rather
+   * than making every node repeat a decision that depends on local state.
+   *
+   * @param indexName the index to look the item up in, never null
+   * @param key       the lookup key, never null
+   * @param item      the item to store, never null
+   *
+   * @return the capture, never null
+   */
+  UpsertCapture<T> upsertAndCapture(final String indexName, final Object key,
+      final T item) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+
+    refreshLock.lock();
+    try {
+      final Optional<ReplaceOutcome<T>> replaced =
+          applyPatch(indexName, key, item);
+      if (replaced.isPresent()) {
+        return new UpsertCapture<>(replaced.get(), true);
       }
-      final List<AndersoniCatalogItem<T>> bucket = bucketMap.get(key);
-      if (bucket == null || bucket.size() != 1) {
-        return Optional.empty();
-      }
-      return applyPatch(indexName, key, newItem);
+      final Optional<ReplaceOutcome<T>> inserted = applyPatch(
+          snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      return new UpsertCapture<>(inserted.orElseThrow(), false);
     } finally {
       refreshLock.unlock();
     }

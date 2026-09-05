@@ -58,6 +58,10 @@ import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
  *       {@link Andersoni#replaceAndSync} against the {@code by-name} index.
  *       Answers {@code {"applied":bool}}, or {@code 409} when the lookup is
  *       ambiguous.</li>
+ *   <li>{@code POST /insert?id=&name=} — calls
+ *       {@link Andersoni#insertAndSync}.</li>
+ *   <li>{@code POST /remove?key=} — calls {@link Andersoni#removeAndSync}
+ *       against the {@code by-name} index.</li>
  *   <li>{@code POST /local-refresh} — calls {@link Andersoni#refresh}, which
  *       reloads from the DataLoader <em>without</em> broadcasting. Used to
  *       drive one node out of sync with the rest on purpose.</li>
@@ -225,6 +229,48 @@ public final class ClusterNode {
       }
       andersoni.refreshAndSync(CATALOG);
       respond(exchange, 200, "{\"status\":\"ok\"}");
+    });
+
+    server.createContext("/insert", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final Map<String, String> params =
+          queryParams(exchange.getRequestURI().getRawQuery());
+      final String id = params.get("id");
+      final String name = params.get("name");
+      if (id == null || name == null) {
+        respond(exchange, 400, "{\"error\":\"id and name are required\"}");
+        return;
+      }
+      final boolean applied = andersoni.insertAndSync(CATALOG,
+          new Item(Integer.parseInt(id), name));
+      respond(exchange, 200,
+          new JSONObject().put("applied", applied).toString());
+    });
+
+    server.createContext("/remove", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final Map<String, String> params =
+          queryParams(exchange.getRequestURI().getRawQuery());
+      final String key = params.get("key");
+      if (key == null) {
+        respond(exchange, 400, "{\"error\":\"key is required\"}");
+        return;
+      }
+      try {
+        final boolean applied =
+            andersoni.removeAndSync(CATALOG, "by-name", key);
+        respond(exchange, 200,
+            new JSONObject().put("applied", applied).toString());
+      } catch (final AmbiguousPatchTargetException e) {
+        respond(exchange, 409,
+            new JSONObject().put("error", e.getMessage()).toString());
+      }
     });
 
     server.createContext("/local-refresh", exchange -> {

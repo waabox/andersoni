@@ -3,6 +3,8 @@ package org.waabox.andersoni.sync;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -96,7 +98,7 @@ class SyncMessageCodecTest {
   void whenSerialize_givenPatchEvent_shouldRoundTripByteArrays() {
     final byte[] oldBytes = "old".getBytes();
     final byte[] newBytes = "new".getBytes();
-    final PatchEvent original = new PatchEvent("events", "node-1", 7L,
+    final PatchEvent original = PatchEvent.replace("events", "node-1", 7L,
         8L, "fromHash", "toHash", "by-id", oldBytes, newBytes,
         Instant.parse("2026-05-14T10:00:00Z"));
 
@@ -127,5 +129,70 @@ class SyncMessageCodecTest {
   void whenDeserialize_givenMalformedJson_shouldThrow() {
     assertThrows(IllegalArgumentException.class,
         () -> SyncMessageCodec.deserialize("{not json"));
+  }
+
+  @Test
+  void whenRoundTrip_givenInsertPatch_shouldOmitTheUnusedPayloads() {
+    final PatchEvent original = PatchEvent.insert("events", "node-1", 7L, 8L,
+        "fromHash", "toHash", "added".getBytes(),
+        Instant.parse("2026-05-14T10:00:00Z"));
+
+    final String json = SyncMessageCodec.serialize(original);
+    assertTrue(json.contains("\"operation\":\"INSERT\""));
+    assertFalse(json.contains("oldItem"));
+    assertFalse(json.contains("indexName"));
+
+    final PatchEvent decoded = assertInstanceOf(PatchEvent.class,
+        SyncMessageCodec.deserialize(json));
+    assertEquals(PatchOperation.INSERT, decoded.operation());
+    assertNull(decoded.serializedOldItem());
+    assertNull(decoded.indexName());
+    assertArrayEquals("added".getBytes(), decoded.serializedNewItem());
+  }
+
+  @Test
+  void whenRoundTrip_givenRemovePatch_shouldOmitTheNewItem() {
+    final PatchEvent original = PatchEvent.remove("events", "node-1", 7L, 8L,
+        "fromHash", "toHash", "by-id", "gone".getBytes(),
+        Instant.parse("2026-05-14T10:00:00Z"));
+
+    final String json = SyncMessageCodec.serialize(original);
+    assertTrue(json.contains("\"operation\":\"REMOVE\""));
+    assertFalse(json.contains("newItem"));
+
+    final PatchEvent decoded = assertInstanceOf(PatchEvent.class,
+        SyncMessageCodec.deserialize(json));
+    assertEquals(PatchOperation.REMOVE, decoded.operation());
+    assertNull(decoded.serializedNewItem());
+    assertArrayEquals("gone".getBytes(), decoded.serializedOldItem());
+  }
+
+  @Test
+  void whenDeserialize_givenPatchWithoutOperation_shouldReadAsReplace() {
+    // What a node that predates insert and remove puts on the wire: a patch
+    // payload with both items and no operation field.
+    final String json = SyncMessageCodec.serialize(
+            PatchEvent.replace("events", "node-1", 7L, 8L, "fromHash",
+                "toHash", "by-id", "old".getBytes(), "new".getBytes(),
+                Instant.parse("2026-05-14T10:00:00Z")))
+        .replace(",\"operation\":\"REPLACE\"", "");
+
+    final PatchEvent decoded = assertInstanceOf(PatchEvent.class,
+        SyncMessageCodec.deserialize(json));
+
+    assertEquals(PatchOperation.REPLACE, decoded.operation());
+    assertArrayEquals("old".getBytes(), decoded.serializedOldItem());
+  }
+
+  @Test
+  void whenDeserialize_givenUnknownOperation_shouldRejectRatherThanGuess() {
+    final String json = SyncMessageCodec.serialize(
+            PatchEvent.insert("events", "node-1", 7L, 8L, "fromHash",
+                "toHash", "added".getBytes(),
+                Instant.parse("2026-05-14T10:00:00Z")))
+        .replace("\"operation\":\"INSERT\"", "\"operation\":\"FROM_THE_FUTURE\"");
+
+    assertThrows(IllegalArgumentException.class,
+        () -> SyncMessageCodec.deserialize(json));
   }
 }

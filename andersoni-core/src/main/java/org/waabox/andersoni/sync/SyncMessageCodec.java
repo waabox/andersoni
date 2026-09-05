@@ -121,9 +121,10 @@ public final class SyncMessageCodec {
     node.put("toVersion", event.toVersion());
     node.put("fromHash", event.fromHash());
     node.put("toHash", event.toHash());
-    node.put("indexName", event.indexName());
-    node.put("oldItem", encode(event.serializedOldItem()));
-    node.put("newItem", encode(event.serializedNewItem()));
+    node.put("operation", event.operation().name());
+    putIfPresent(node, "indexName", event.indexName());
+    putIfPresent(node, "oldItem", encode(event.serializedOldItem()));
+    putIfPresent(node, "newItem", encode(event.serializedNewItem()));
     node.put("timestamp", event.timestamp().toString());
     return node.toString();
   }
@@ -181,10 +182,70 @@ public final class SyncMessageCodec {
         node.getLong("toVersion"),
         requireString(node, "fromHash"),
         requireString(node, "toHash"),
-        requireString(node, "indexName"),
-        decode(requireString(node, "oldItem")),
-        decode(requireString(node, "newItem")),
+        parseOperation(node),
+        optionalString(node, "indexName"),
+        decode(optionalString(node, "oldItem")),
+        decode(optionalString(node, "newItem")),
         Instant.parse(requireString(node, "timestamp")));
+  }
+
+  /**
+   * Reads the {@link PatchOperation} discriminator, defaulting to
+   * {@link PatchOperation#REPLACE} when absent.
+   *
+   * <p>Replace was the only operation before insert and remove existed, so
+   * a payload without the field can only be one — which is what keeps a
+   * mixed-version cluster working while a rolling upgrade is in flight.
+   * An operation this version does not recognise is a different matter: it
+   * cannot be applied, and guessing would corrupt the follower, so it is
+   * rejected and the caller falls back to a full reload.
+   *
+   * @param node the parsed JSON object, never null
+   *
+   * @return the operation, never null
+   *
+   * @throws IllegalArgumentException if the operation is unrecognised
+   */
+  private static PatchOperation parseOperation(final JSONObject node) {
+    if (!node.has("operation") || node.isNull("operation")) {
+      return PatchOperation.REPLACE;
+    }
+    final String raw = node.getString("operation");
+    try {
+      return PatchOperation.valueOf(raw);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Unknown patch operation: " + raw, e);
+    }
+  }
+
+  /**
+   * Writes a value only when it is present, so an operation's unused
+   * payloads stay absent from the JSON rather than appearing as nulls.
+   *
+   * @param node  the object to write into, never null
+   * @param name  the field name, never null
+   * @param value the value, may be null
+   */
+  private static void putIfPresent(final JSONObject node, final String name,
+      final String value) {
+    if (value != null) {
+      node.put(name, value);
+    }
+  }
+
+  /**
+   * Returns a string field, or null when absent.
+   *
+   * @param node the parsed JSON object, never null
+   * @param name the field name, never null
+   *
+   * @return the value, or null when the field is absent or null
+   */
+  private static String optionalString(final JSONObject node,
+      final String name) {
+    return node.has(name) && !node.isNull(name)
+        ? node.getString(name) : null;
   }
 
   /**
@@ -211,7 +272,7 @@ public final class SyncMessageCodec {
    * @return the base64 string, never null
    */
   private static String encode(final byte[] bytes) {
-    return Base64.getEncoder().encodeToString(bytes);
+    return bytes == null ? null : Base64.getEncoder().encodeToString(bytes);
   }
 
   /**
@@ -221,6 +282,6 @@ public final class SyncMessageCodec {
    * @return the decoded bytes, never null
    */
   private static byte[] decode(final String value) {
-    return Base64.getDecoder().decode(value);
+    return value == null ? null : Base64.getDecoder().decode(value);
   }
 }
