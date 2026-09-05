@@ -163,8 +163,8 @@ class CatalogReplaceTest {
 
     final Event replacement = new Event("c", new Sport("F"),
         new Venue("V2"));
-    final AmbiguousReplaceException ex = assertThrows(
-        AmbiguousReplaceException.class,
+    final AmbiguousPatchTargetException ex = assertThrows(
+        AmbiguousPatchTargetException.class,
         () -> catalog.replace("by-venue", "V1", replacement));
 
     assertTrue(ex.getMessage().contains("events"));
@@ -363,6 +363,16 @@ class CatalogReplaceTest {
 
     assertEquals(bucketBSportBefore, bucketBSportAfter);
     assertEquals(List.of(b), bucketBSportAfter);
+
+    // Equality alone would pass even if the whole index were rebuilt, which
+    // is what "shared" has to mean here: the untouched bucket must be the
+    // very same list instance the previous snapshot holds.
+    assertSame(before.indicesMap().get("by-sport").get("G"),
+        after.indicesMap().get("by-sport").get("G"),
+        "An untouched bucket must be shared by reference, not copied");
+    assertSame(before.indicesMap().get("by-id").get("b"),
+        after.indicesMap().get("by-id").get("b"),
+        "An untouched bucket in another index must be shared too");
   }
 
   @Test

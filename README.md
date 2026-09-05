@@ -322,7 +322,7 @@ The lookup must resolve to **exactly one item**:
 
 - `0` matches → `false` (no-op).
 - `1` match → swap, returns `true`.
-- `>1` matches → `AmbiguousReplaceException`. Pick a uniquely-keyed index (typically id-based) for the replace handle.
+- `>1` matches → `AmbiguousPatchTargetException`. Pick a uniquely-keyed index (typically id-based) for the replace handle.
 
 `replaceAndSync` only runs on the leader; on followers it returns `false`. After the local replace, the leader saves the full snapshot to the snapshot store and publishes a `PatchEvent` carrying the serialized old item, the serialized new item, and version/hash preconditions captured atomically under the catalog's refresh lock.
 

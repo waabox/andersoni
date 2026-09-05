@@ -112,7 +112,7 @@ class AndersoniReplaceTest {
     andersoni.register(eventsCatalog(List.of(a, b)));
     andersoni.start();
 
-    assertThrows(AmbiguousReplaceException.class,
+    assertThrows(AmbiguousPatchTargetException.class,
         () -> andersoni.replace("events", "by-venue", "V1",
             new Event("c", new Sport("F"), new Venue("V1"))));
 

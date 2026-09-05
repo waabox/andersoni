@@ -90,7 +90,7 @@ On `feature/3/snapshot-patch-support`, green across 518 tests:
 - **Follower dispatch** — `PatchCoordinator`, hash-keyed (§4).
 - **Metrics** — `patchApplied`, `patchDiscarded`, `patchFellBack`.
 
-`AmbiguousReplaceException` is thrown when a lookup matches more than one item.
+`AmbiguousPatchTargetException` is thrown when a lookup matches more than one item.
 
 ---
 
@@ -192,7 +192,7 @@ missing target for a `replace` op fails the whole batch and names the key.
 
 ### 5.3 Naming
 
-`AmbiguousReplaceException` will be thrown by removals and upserts too. Rename
+`AmbiguousPatchTargetException` will be thrown by removals and upserts too. Rename
 it to something operation-neutral (`AmbiguousPatchTargetException`) while it is
 still unreleased.
 

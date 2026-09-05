@@ -257,6 +257,59 @@ public final class Snapshot<T> {
   }
 
   /**
+   * Creates a snapshot from components that are <strong>already
+   * immutable</strong>, storing them as given instead of copying.
+   *
+   * <p>{@link #ofWithItems} defensively copies every index, every bucket
+   * and every sorted map. That is the right default for a caller handing
+   * over mutable accumulators, but it is exactly wrong for the patch path:
+   * {@code CatalogPatcher} rebuilds only the buckets a change touches and
+   * shares every other one by reference with the previous snapshot, and a
+   * blanket copy at construction throws that away — turning a patch back
+   * into work proportional to the whole index rather than to the change.
+   *
+   * <p>The caller must therefore guarantee that the maps, the navigable
+   * maps and every bucket inside them are unmodifiable and will not be
+   * mutated afterwards. {@code items} is wrapped here because the caller
+   * builds it fresh and does not retain it.
+   *
+   * @param items              the catalog items, never null
+   * @param indices            immutable indices, never null
+   * @param sortedIndices      immutable sorted indices, never null
+   * @param reversedKeyIndices immutable reversed-key indices, never null
+   * @param version            the version number
+   * @param hash               the content hash, never null
+   * @param <T>                the type of data items
+   *
+   * @return a new snapshot sharing the given structures, never null
+   *
+   * @throws NullPointerException if any argument is null
+   */
+  static <T> Snapshot<T> ofPatched(
+      final List<AndersoniCatalogItem<T>> items,
+      final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> indices,
+      final Map<String, NavigableMap<Comparable<?>,
+          List<AndersoniCatalogItem<T>>>> sortedIndices,
+      final Map<String, NavigableMap<String,
+          List<AndersoniCatalogItem<T>>>> reversedKeyIndices,
+      final long version, final String hash) {
+
+    Objects.requireNonNull(items, "items must not be null");
+    Objects.requireNonNull(indices, "indices must not be null");
+    Objects.requireNonNull(sortedIndices, "sortedIndices must not be null");
+    Objects.requireNonNull(reversedKeyIndices,
+        "reversedKeyIndices must not be null");
+    Objects.requireNonNull(hash, "hash must not be null");
+
+    final List<AndersoniCatalogItem<T>> immutableItems =
+        Collections.unmodifiableList(items);
+
+    return new Snapshot<>(immutableItems, extractItems(immutableItems),
+        indices, sortedIndices, reversedKeyIndices, version, hash,
+        Instant.now());
+  }
+
+  /**
    * Creates an empty snapshot with version 0, an empty hash, no data,
    * and no indices.
    *
