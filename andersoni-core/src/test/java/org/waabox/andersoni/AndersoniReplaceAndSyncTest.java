@@ -128,14 +128,16 @@ class AndersoniReplaceAndSyncTest {
     final PatchEvent event = patchCapture.getValue();
     assertEquals("events", event.catalogName());
     assertEquals("leader-1", event.sourceNodeId());
-    assertEquals("by-id", event.indexName());
+    assertEquals(1, event.operations().size());
+    final PatchEvent.Op op = event.operations().get(0);
+    assertEquals("by-id", op.indexName());
     assertNotEquals(event.fromHash(), event.toHash());
     assertTrue(event.toVersion() > event.fromVersion());
     final Event deserializedOld = new EventSerializer()
-        .deserialize(event.serializedOldItem()).get(0);
+        .deserialize(op.oldItem()).get(0);
     assertEquals(a, deserializedOld);
     final Event deserializedNew = new EventSerializer()
-        .deserialize(event.serializedNewItem()).get(0);
+        .deserialize(op.newItem()).get(0);
     assertEquals(updated, deserializedNew);
 
     andersoni.stop();

@@ -619,6 +619,36 @@ public final class Andersoni {
   }
 
   /**
+   * Applies a batch of changes on the leader and broadcasts them as one
+   * event.
+   *
+   * <p>Runs only on the leader; on a follower this is a no-op returning
+   * {@code false}. The batch is one snapshot swap and one message, and
+   * followers apply it atomically: the whole batch lands or none of it
+   * does, so no node is ever seen holding half of it.
+   *
+   * @param catalogName the catalog to write to, never null
+   * @param ops         the operations to apply in order, never null
+   * @param <T>         the catalog item type
+   *
+   * @return true if this node is the leader and something changed
+   *
+   * @throws IllegalStateException         if stopped, or the catalog has no
+   *                                       serializer
+   * @throws IllegalArgumentException      if no such catalog is registered
+   * @throws AmbiguousPatchTargetException if a lookup matched more than one
+   * @throws PatchTargetNotFoundException  if a replace matched nothing
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> boolean applyAndSync(final String catalogName,
+      final List<PatchOp<T>> ops) {
+    return patchCoordinator.applyAndSync(catalogName,
+        (List<PatchOp<Object>>) (List<?>) ops);
+  }
+
+  /**
    * Adds an item to a catalog on the leader and broadcasts the insert to
    * the cluster.
    *

@@ -1,9 +1,12 @@
 package org.waabox.andersoni.sync;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.Objects;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -121,10 +124,16 @@ public final class SyncMessageCodec {
     node.put("toVersion", event.toVersion());
     node.put("fromHash", event.fromHash());
     node.put("toHash", event.toHash());
-    node.put("operation", event.operation().name());
-    putIfPresent(node, "indexName", event.indexName());
-    putIfPresent(node, "oldItem", encode(event.serializedOldItem()));
-    putIfPresent(node, "newItem", encode(event.serializedNewItem()));
+    final JSONArray ops = new JSONArray();
+    for (final PatchEvent.Op op : event.operations()) {
+      final JSONObject opNode = new JSONObject();
+      opNode.put("operation", op.operation().name());
+      putIfPresent(opNode, "indexName", op.indexName());
+      putIfPresent(opNode, "oldItem", encode(op.oldItem()));
+      putIfPresent(opNode, "newItem", encode(op.newItem()));
+      ops.put(opNode);
+    }
+    node.put("ops", ops);
     node.put("timestamp", event.timestamp().toString());
     return node.toString();
   }
@@ -182,11 +191,47 @@ public final class SyncMessageCodec {
         node.getLong("toVersion"),
         requireString(node, "fromHash"),
         requireString(node, "toHash"),
+        readOps(node),
+        Instant.parse(requireString(node, "timestamp")));
+  }
+
+  /**
+   * Reads the operations of a patch payload.
+   *
+   * <p>A payload with no {@code ops} array carries its single operation in
+   * flat fields, which is the shape that predates batching; reading it as a
+   * one-operation list is what lets a mixed-version cluster keep working
+   * through a rolling upgrade.
+   *
+   * @param node the parsed JSON object, never null
+   *
+   * @return the operations, never null or empty
+   */
+  private static List<PatchEvent.Op> readOps(final JSONObject node) {
+    if (!node.has("ops") || node.isNull("ops")) {
+      return List.of(readOp(node));
+    }
+    final JSONArray array = node.getJSONArray("ops");
+    final List<PatchEvent.Op> ops = new ArrayList<>(array.length());
+    for (int i = 0; i < array.length(); i++) {
+      ops.add(readOp(array.getJSONObject(i)));
+    }
+    return ops;
+  }
+
+  /**
+   * Reads one operation from the object holding its fields.
+   *
+   * @param node the object carrying the operation's fields, never null
+   *
+   * @return the operation, never null
+   */
+  private static PatchEvent.Op readOp(final JSONObject node) {
+    return new PatchEvent.Op(
         parseOperation(node),
         optionalString(node, "indexName"),
         decode(optionalString(node, "oldItem")),
-        decode(optionalString(node, "newItem")),
-        Instant.parse(requireString(node, "timestamp")));
+        decode(optionalString(node, "newItem")));
   }
 
   /**
