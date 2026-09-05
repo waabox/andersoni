@@ -35,7 +35,10 @@ final class CatalogPatcher<T> {
       long toVersion, String toHash) {
   }
 
-  /** The patched components of a snapshot, plus the replaced item. */
+  /**
+   * The patched components of a snapshot, plus the item that was displaced.
+   * {@code oldItem} is null for an insert, which displaces nothing.
+   */
   record PatchResult<T>(
       T oldItem,
       List<AndersoniCatalogItem<T>> newItems,
@@ -75,7 +78,7 @@ final class CatalogPatcher<T> {
    * item resolved by {@code (indexName, key)} with {@code newItem}.
    *
    * <p>Returns empty when the bucket is empty (no-op). Throws
-   * {@link AmbiguousReplaceException} when the bucket holds more than one
+   * {@link AmbiguousPatchTargetException} when the bucket holds more than one
    * item, {@link IndexNotFoundException} when the index is not declared.
    *
    * @param snapshot  the current snapshot, never null
@@ -87,6 +90,96 @@ final class CatalogPatcher<T> {
    */
   Optional<PatchResult<T>> patch(final Snapshot<T> snapshot,
       final String indexName, final Object key, final T newItem) {
+    final Optional<AndersoniCatalogItem<T>> found =
+        resolveSingle(snapshot, indexName, key);
+    if (found.isEmpty()) {
+      return Optional.empty();
+    }
+
+    final AndersoniCatalogItem<T> oldWrapped = found.get();
+    final AndersoniCatalogItem<T> newWrapped = wrapWithViews(newItem);
+    runHooks(newItem);
+
+    return Optional.of(build(snapshot, oldWrapped, newWrapped,
+        swapItemInList(snapshot.items(), oldWrapped, newWrapped)));
+  }
+
+  /**
+   * Computes a surgical patch on {@code snapshot} that appends
+   * {@code newItem}, indexing it under every key its definitions yield.
+   *
+   * <p>An insert performs no lookup, so it cannot be ambiguous and cannot
+   * miss. It also cannot detect that the item is already present: the
+   * caller decides that, through {@code upsert} or its own check.
+   *
+   * @param snapshot the current snapshot, never null
+   * @param newItem  the item to add, never null
+   *
+   * @return the patched components, never null
+   */
+  PatchResult<T> insert(final Snapshot<T> snapshot, final T newItem) {
+    final AndersoniCatalogItem<T> newWrapped = wrapWithViews(newItem);
+    runHooks(newItem);
+
+    final List<AndersoniCatalogItem<T>> newItemsList =
+        new ArrayList<>(snapshot.items());
+    newItemsList.add(newWrapped);
+
+    return build(snapshot, null, newWrapped, newItemsList);
+  }
+
+  /**
+   * Computes a surgical patch on {@code snapshot} that drops the single
+   * item resolved by {@code (indexName, key)} from the item list and from
+   * every bucket its key sets touch.
+   *
+   * <p>Returns empty when the lookup matches nothing, which is a no-op
+   * rather than an error: removal is idempotent by nature, and at-least-once
+   * sync delivery makes a repeated removal ordinary.
+   *
+   * @param snapshot  the current snapshot, never null
+   * @param indexName the index used for the lookup, never null
+   * @param key       the lookup key, never null
+   *
+   * @return the patched components, or empty when nothing matched
+   *
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   * @throws IndexNotFoundException        if the index is not declared
+   */
+  Optional<PatchResult<T>> remove(final Snapshot<T> snapshot,
+      final String indexName, final Object key) {
+    final Optional<AndersoniCatalogItem<T>> found =
+        resolveSingle(snapshot, indexName, key);
+    if (found.isEmpty()) {
+      return Optional.empty();
+    }
+
+    final AndersoniCatalogItem<T> oldWrapped = found.get();
+    final List<AndersoniCatalogItem<T>> newItemsList =
+        new ArrayList<>(snapshot.items().size() - 1);
+    for (final AndersoniCatalogItem<T> existing : snapshot.items()) {
+      if (existing != oldWrapped) {
+        newItemsList.add(existing);
+      }
+    }
+
+    return Optional.of(build(snapshot, oldWrapped, null, newItemsList));
+  }
+
+  /**
+   * Resolves {@code (indexName, key)} to the single item it must identify.
+   *
+   * @param snapshot  the snapshot to look in, never null
+   * @param indexName the index name, never null
+   * @param key       the lookup key, never null
+   *
+   * @return the single matching item, or empty when nothing matched
+   *
+   * @throws AmbiguousPatchTargetException if more than one item matched
+   * @throws IndexNotFoundException        if the index is not declared
+   */
+  private Optional<AndersoniCatalogItem<T>> resolveSingle(
+      final Snapshot<T> snapshot, final String indexName, final Object key) {
     final Map<Object, List<AndersoniCatalogItem<T>>> bucketMap =
         snapshot.indicesMap().get(indexName);
     if (bucketMap == null) {
@@ -97,26 +190,44 @@ final class CatalogPatcher<T> {
       return Optional.empty();
     }
     if (bucket.size() > 1) {
-      throw new AmbiguousReplaceException(catalogName, indexName, key,
+      throw new AmbiguousPatchTargetException(catalogName, indexName, key,
           bucket.size());
     }
+    return Optional.of(bucket.get(0));
+  }
 
-    final AndersoniCatalogItem<T> oldWrapped = bucket.get(0);
-    final T oldItem = oldWrapped.item();
-    final AndersoniCatalogItem<T> newWrapped = wrapWithViews(newItem);
+  /**
+   * Assembles a {@link PatchResult} from the already-decided item list and
+   * the pair being exchanged.
+   *
+   * <p>The three operations differ only in which side of that pair is
+   * present: a replace has both, an insert has no old item, a removal has
+   * no new one. Everything downstream — the per-index key sets, the bucket
+   * rewrites, the sorted and reversed maps — treats an absent side as an
+   * empty key set, so one code path serves all three.
+   *
+   * @param snapshot     the snapshot being patched, never null
+   * @param oldWrapped   the item leaving the snapshot, null for an insert
+   * @param newWrapped   the item entering the snapshot, null for a removal
+   * @param newItemsList the already-computed item list, never null
+   *
+   * @return the patched components, never null
+   */
+  private PatchResult<T> build(final Snapshot<T> snapshot,
+      final AndersoniCatalogItem<T> oldWrapped,
+      final AndersoniCatalogItem<T> newWrapped,
+      final List<AndersoniCatalogItem<T>> newItemsList) {
 
-    runHooks(newItem);
+    final T oldItem = oldWrapped == null ? null : oldWrapped.item();
+    final T newItem = newWrapped == null ? null : newWrapped.item();
 
-    final List<AndersoniCatalogItem<T>> newItemsList =
-        swapItemInList(snapshot.items(), oldWrapped, newWrapped);
-
-    return Optional.of(new PatchResult<>(
+    return new PatchResult<>(
         oldItem,
         newItemsList,
         patchIndices(snapshot, oldItem, newItem, oldWrapped, newWrapped),
         patchSortedIndices(snapshot, oldItem, newItem, oldWrapped, newWrapped),
         patchReversedIndices(snapshot, oldItem, newItem,
-            oldWrapped, newWrapped)));
+            oldWrapped, newWrapped));
   }
 
   /**
@@ -192,22 +303,37 @@ final class CatalogPatcher<T> {
   private Map<String, Set<Object>> keysByIndexName(final T item) {
     final Map<String, Set<Object>> result = new HashMap<>();
     for (final IndexDefinition<T> def : indexDefinitions) {
-      final Object key = def.extractKey(item);
+      final Object key = item == null ? null : def.extractKey(item);
       result.put(def.name(),
           key == null ? Collections.emptySet() : Set.of(key));
     }
     for (final SortedIndexDefinition<T> def : sortedIndexDefinitions) {
-      final Object key = def.extractKey(item);
+      final Object key = item == null ? null : def.extractKey(item);
       result.put(def.name(),
           key == null ? Collections.emptySet() : Set.of(key));
     }
     for (final MultiKeyIndexDefinition<T> def : multiKeyIndexDefinitions) {
-      result.put(def.name(), def.extractKeys(item));
+      result.put(def.name(),
+          item == null ? Collections.emptySet() : def.extractKeys(item));
     }
     for (final GraphIndexDefinition<T> def : graphIndexDefinitions) {
-      result.put(def.name(), def.extractKeys(item));
+      result.put(def.name(),
+          item == null ? Collections.emptySet() : def.extractKeys(item));
     }
     return result;
+  }
+
+  /**
+   * Extracts a sorted index's key for an item that may be absent.
+   *
+   * @param def  the sorted index definition, never null
+   * @param item the item, or null for the absent side of the exchange
+   *
+   * @return the key, or null when the item is absent or yields no key
+   */
+  private Object sortedKeyOf(final SortedIndexDefinition<T> def,
+      final T item) {
+    return item == null ? null : def.extractKey(item);
   }
 
   /**
@@ -291,8 +417,8 @@ final class CatalogPatcher<T> {
     final Map<String, NavigableMap<Comparable<?>,
         List<AndersoniCatalogItem<T>>>> result = new HashMap<>(oldSorted);
     for (final SortedIndexDefinition<T> def : sortedIndexDefinitions) {
-      final Object oldKey = def.extractKey(oldItem);
-      final Object newKey = def.extractKey(newItem);
+      final Object oldKey = sortedKeyOf(def, oldItem);
+      final Object newKey = sortedKeyOf(def, newItem);
       if (Objects.equals(oldKey, newKey) && oldKey == null) {
         continue;
       }
@@ -363,8 +489,8 @@ final class CatalogPatcher<T> {
       if (!oldReversed.containsKey(def.name())) {
         continue;
       }
-      final Object oldKey = def.extractKey(oldItem);
-      final Object newKey = def.extractKey(newItem);
+      final Object oldKey = sortedKeyOf(def, oldItem);
+      final Object newKey = sortedKeyOf(def, newItem);
       if (!(oldKey == null || oldKey instanceof String)
           || !(newKey == null || newKey instanceof String)) {
         continue;

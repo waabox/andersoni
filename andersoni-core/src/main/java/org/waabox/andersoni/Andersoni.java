@@ -633,7 +633,7 @@ public final class Andersoni {
    *
    * @throws IllegalStateException        if Andersoni has been stopped
    * @throws CatalogNotAvailableException if the catalog failed to bootstrap
-   * @throws AmbiguousReplaceException    if the lookup returned more than
+   * @throws AmbiguousPatchTargetException    if the lookup returned more than
    *                                      one item
    */
   @SuppressWarnings("unchecked")

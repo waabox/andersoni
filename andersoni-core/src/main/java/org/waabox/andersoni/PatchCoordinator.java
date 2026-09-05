@@ -99,7 +99,7 @@ final class PatchCoordinator {
    * @throws NullPointerException        if any argument is null
    * @throws IllegalStateException       if Andersoni has been stopped or
    *                                     the catalog has no serializer
-   * @throws AmbiguousReplaceException   if the lookup returned more than
+   * @throws AmbiguousPatchTargetException   if the lookup returned more than
    *                                     one item
    */
   @SuppressWarnings("unchecked")

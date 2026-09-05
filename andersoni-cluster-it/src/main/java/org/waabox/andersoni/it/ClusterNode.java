@@ -24,7 +24,7 @@ import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.waabox.andersoni.AmbiguousReplaceException;
+import org.waabox.andersoni.AmbiguousPatchTargetException;
 import org.waabox.andersoni.Andersoni;
 import org.waabox.andersoni.Catalog;
 import org.waabox.andersoni.RetryPolicy;
@@ -256,7 +256,7 @@ public final class ClusterNode {
             key, new Item(Integer.parseInt(id), name));
         respond(exchange, 200,
             new JSONObject().put("applied", applied).toString());
-      } catch (final AmbiguousReplaceException e) {
+      } catch (final AmbiguousPatchTargetException e) {
         respond(exchange, 409,
             new JSONObject().put("error", e.getMessage()).toString());
       }

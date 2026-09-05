@@ -305,7 +305,7 @@ public final class Catalog<T> {
    *       buckets affected by the change; all other buckets are shared
    *       by reference with the previous snapshot.</li>
    *   <li>If the bucket contains more than one item, the operation is
-   *       ambiguous and an {@link AmbiguousReplaceException} is thrown.
+   *       ambiguous and an {@link AmbiguousPatchTargetException} is thrown.
    *       The caller should pick an index whose keys are unique for the
    *       intended item (typically an id-based index).</li>
    * </ul>
@@ -328,12 +328,136 @@ public final class Catalog<T> {
    * @throws NullPointerException        if any argument is null
    * @throws IndexNotFoundException      if no index with the given name is
    *                                     registered on this catalog
-   * @throws AmbiguousReplaceException   if the lookup returned more than
+   * @throws AmbiguousPatchTargetException   if the lookup returned more than
    *                                     one item
    */
   public boolean replace(final String indexName, final Object key,
       final T newItem) {
     return replaceAndCapture(indexName, key, newItem).isPresent();
+  }
+
+  /**
+   * Adds an item to the catalog, indexing it under every key its index
+   * definitions yield, without touching anything already present.
+   *
+   * <p>No lookup is performed, so an insert cannot be ambiguous and cannot
+   * miss — and equally cannot notice that an equivalent item is already
+   * there. Inserting the same item twice yields two items. When the caller
+   * does not know whether the item exists, {@link #upsert} is the operation
+   * that decides.
+   *
+   * <p>Views are computed and build hooks run for the new item, matching
+   * the build path. Serialized against {@link #refresh()} by the refresh
+   * lock; reads stay lock-free.
+   *
+   * @param item the item to add, never null
+   *
+   * @throws NullPointerException if item is null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void insert(final T item) {
+    Objects.requireNonNull(item, "item must not be null");
+    refreshLock.lock();
+    try {
+      applyPatch(snapshot -> Optional.of(patcher.insert(snapshot, item)));
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Removes the single item resolved by {@code (indexName, key)} from the
+   * catalog and from every index it appears in.
+   *
+   * <p>A lookup that matches nothing is a no-op returning {@code false},
+   * not an error: removal is idempotent by nature, and with at-least-once
+   * sync delivery a repeated removal is ordinary rather than exceptional.
+   * A lookup matching more than one item throws, because guessing which to
+   * drop would corrupt the catalog silently.
+   *
+   * @param indexName the index to look the item up in, never null
+   * @param key       the lookup key, never null
+   *
+   * @return true if an item was removed, false if nothing matched
+   *
+   * @throws NullPointerException          if any argument is null
+   * @throws IndexNotFoundException        if the index is not declared
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean remove(final String indexName, final Object key) {
+    return removeAndCapture(indexName, key).isPresent();
+  }
+
+  /**
+   * Replaces the item resolved by {@code (indexName, key)} when one exists,
+   * and inserts {@code item} when none does.
+   *
+   * <p>The lookup and the write happen under one hold of the refresh lock,
+   * which is the reason this exists rather than leaving callers to write
+   * {@code if (!replace(...)) insert(...)}: that version races a concurrent
+   * refresh between the two calls, and can insert a duplicate or lose a
+   * write.
+   *
+   * @param indexName the index to look the item up in, never null
+   * @param key       the lookup key, never null
+   * @param item      the item to store, never null
+   *
+   * @return true if an existing item was replaced, false if the item was
+   *         inserted
+   *
+   * @throws NullPointerException          if any argument is null
+   * @throws IndexNotFoundException        if the index is not declared
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean upsert(final String indexName, final Object key,
+      final T item) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+
+    refreshLock.lock();
+    try {
+      final boolean replaced = applyPatch(indexName, key, item).isPresent();
+      if (!replaced) {
+        applyPatch(snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      }
+      return replaced;
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Performs the same removal as {@link #remove(String, Object)} but
+   * additionally returns metadata about the operation — the removed item
+   * and the from/to snapshot version and hash pair — for building
+   * cross-node patch events.
+   *
+   * @param indexName the index name, never null
+   * @param key       the lookup key, never null
+   *
+   * @return the outcome, or empty when the lookup matched nothing
+   *
+   * @throws NullPointerException          if any argument is null
+   * @throws IndexNotFoundException        if the index is not declared
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   */
+  Optional<ReplaceOutcome<T>> removeAndCapture(final String indexName,
+      final Object key) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+
+    refreshLock.lock();
+    try {
+      return applyPatch(snapshot -> patcher.remove(snapshot, indexName, key));
+    } finally {
+      refreshLock.unlock();
+    }
   }
 
   /**
@@ -345,7 +469,7 @@ public final class Catalog<T> {
    *
    * <p>Returns an empty optional when the lookup found no items (a no-op
    * leaves the snapshot untouched). Throws
-   * {@link AmbiguousReplaceException} on a multi-element bucket exactly
+   * {@link AmbiguousPatchTargetException} on a multi-element bucket exactly
    * like {@link #replace}.
    *
    * @param indexName the index name, never null
@@ -357,7 +481,7 @@ public final class Catalog<T> {
    *
    * @throws NullPointerException        if any argument is null
    * @throws IndexNotFoundException      if the index is not declared
-   * @throws AmbiguousReplaceException   on a multi-element bucket
+   * @throws AmbiguousPatchTargetException   on a multi-element bucket
    */
   Optional<ReplaceOutcome<T>> replaceAndCapture(final String indexName,
       final Object key, final T newItem) {
@@ -454,9 +578,27 @@ public final class Catalog<T> {
    */
   private Optional<ReplaceOutcome<T>> applyPatch(final String indexName,
       final Object key, final T newItem) {
+    return applyPatch(snapshot -> patcher.patch(snapshot, indexName, key,
+        newItem));
+  }
+
+  /**
+   * Runs a patch computation against the current snapshot and, when it
+   * yields a result, swaps in the derived snapshot.
+   *
+   * <p>The three operations differ only in how they derive the patched
+   * components; versioning, hashing and the atomic swap are identical, so
+   * they live here once. Must be called while holding the refresh lock.
+   *
+   * @param computation derives the patched components from the snapshot it
+   *                    is given, or empty when nothing matched, never null
+   *
+   * @return the outcome, or empty when the computation matched nothing
+   */
+  private Optional<ReplaceOutcome<T>> applyPatch(
+      final Function<Snapshot<T>, Optional<PatchResult<T>>> computation) {
     final Snapshot<T> snapshot = current.get();
-    final Optional<PatchResult<T>> patched =
-        patcher.patch(snapshot, indexName, key, newItem);
+    final Optional<PatchResult<T>> patched = computation.apply(snapshot);
     if (patched.isEmpty()) {
       return Optional.empty();
     }
@@ -467,7 +609,7 @@ public final class Catalog<T> {
     }
     final long newVersion = versionCounter.incrementAndGet();
     final String newHash = computeHash(newData);
-    final Snapshot<T> newSnapshot = Snapshot.ofWithItems(result.newItems(),
+    final Snapshot<T> newSnapshot = Snapshot.ofPatched(result.newItems(),
         result.newIndices(), result.newSorted(), result.newReversed(),
         newVersion, newHash);
     current.set(newSnapshot);
