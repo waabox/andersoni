@@ -189,6 +189,43 @@ class ClusterPatchPropagationIT {
           "Leader and drifted follower must disagree: the leader's state "
               + "exists only in memory and no snapshot store can carry it");
       LOG.info("Drifted follower refused the delta and fell back cleanly");
+
+      // 6) Re-converge everyone on the database before exercising the other
+      //    two operations, since node-2 was deliberately left behind.
+      warmUpLeaderRefresh(nodes, 4);
+      final String reconverged = hashOf(leader);
+
+      // 7) An insert of an item the database has never held. Only a
+      //    surgical apply can produce it on a follower.
+      assertTrue(insert(leader, 99, "item-99-INSERTED"),
+          "The leader must report the insert as applied");
+      await(Duration.ofSeconds(45), () -> allConverged(nodes, 5)
+          && allHold(nodes, "item-99-INSERTED"));
+      assertNotEquals(reconverged, hashOf(leader),
+          "An insert must move the snapshot hash");
+      for (final GenericContainer<?> node : nodes) {
+        assertTrue(namesOf(node).contains("item-99-INSERTED"),
+            "Every node must hold the inserted item");
+      }
+      LOG.info("Insert propagated surgically across {} nodes", NODE_COUNT);
+
+      // 8) A removal of an item the database still holds. A follower that
+      //    reloaded would bring it straight back, so convergence without it
+      //    is what proves the removal was applied and not reloaded around.
+      assertTrue(remove(leader, "item-2-DBCHANGED"),
+          "The leader must report the removal as applied");
+      await(Duration.ofSeconds(45), () -> allConverged(nodes, 4));
+      for (final GenericContainer<?> node : nodes) {
+        final List<String> names = namesOf(node);
+        assertFalse(names.contains("item-2-DBCHANGED"),
+            "Every node must have dropped the removed item");
+        assertTrue(names.contains("item-99-INSERTED"),
+            "The earlier insert must survive the removal");
+      }
+      assertEquals("item-2-DBCHANGED", nameInDatabase(postgres, 2),
+          "The database must still hold the removed row: convergence "
+              + "without it is only reachable by applying the removal");
+      LOG.info("Removal propagated surgically across {} nodes", NODE_COUNT);
     } finally {
       for (final GenericContainer<?> node : nodes) {
         quietStop(node);
@@ -260,6 +297,61 @@ class ClusterPatchPropagationIT {
         http.send(request, HttpResponse.BodyHandlers.ofString());
     assertEquals(200, response.statusCode(),
         "Replace failed: " + response.body());
+    return new JSONObject(response.body()).getBoolean("applied");
+  }
+
+  /**
+   * Asks a node to insert a new item.
+   *
+   * @param node the node container, never null.
+   * @param id   the new item's id.
+   * @param name the new item's name, never null.
+   *
+   * @return whether the node reported the insert as applied.
+   *
+   * @throws Exception if the request fails.
+   */
+  private boolean insert(final GenericContainer<?> node, final int id,
+      final String name) throws Exception {
+    return applied(node, "/insert?id=" + id + "&name=" + name);
+  }
+
+  /**
+   * Asks a node to remove the item found through the {@code by-name} index.
+   *
+   * @param node the node container, never null.
+   * @param key  the name to look the item up by, never null.
+   *
+   * @return whether the node reported the removal as applied.
+   *
+   * @throws Exception if the request fails.
+   */
+  private boolean remove(final GenericContainer<?> node, final String key)
+      throws Exception {
+    return applied(node, "/remove?key=" + key);
+  }
+
+  /**
+   * POSTs to a node path and reads the {@code applied} flag it answers.
+   *
+   * @param node the node container, never null.
+   * @param path the request path, never null.
+   *
+   * @return the reported flag.
+   *
+   * @throws Exception if the request fails.
+   */
+  private boolean applied(final GenericContainer<?> node, final String path)
+      throws Exception {
+    final HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(baseUrl(node) + path))
+        .timeout(Duration.ofSeconds(15))
+        .POST(HttpRequest.BodyPublishers.noBody())
+        .build();
+    final HttpResponse<String> response =
+        http.send(request, HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, response.statusCode(),
+        "Request " + path + " failed: " + response.body());
     return new JSONObject(response.body()).getBoolean("applied");
   }
 

@@ -183,7 +183,7 @@ class HttpSyncStrategyTest {
     try {
       assertTrue(node1.supportsPatches());
       final Instant now = Instant.now();
-      final PatchEvent event = new PatchEvent(
+      final PatchEvent event = PatchEvent.replace(
           "events", "node-1", 7L, 8L, "fromHash", "toHash", "by-id",
           new byte[]{1, 2, 3}, new byte[]{4, 5, 6}, now);
 
