@@ -160,6 +160,14 @@ public final class Catalog<T> {
   /** The build hooks sorted by priority, never null. */
   private final List<PrioritizedHook<T>> hooks;
 
+  /**
+   * Whether a patch may derive the next snapshot surgically, or has to
+   * rebuild it. False when any registered hook has not opted in via
+   * {@link SnapshotBuildHook#supportsPatch()}, because a patch runs hooks
+   * only for the item it changes.
+   */
+  private final boolean surgicalPatchAllowed;
+
   /** The surgical snapshot patcher (lazy-initialized once defs are frozen). */
   private final CatalogPatcher<T> patcher;
 
@@ -228,13 +236,19 @@ public final class Catalog<T> {
         new ArrayList<>(hooks));
     this.serializer = serializer;
     this.refreshInterval = refreshInterval;
+    this.surgicalPatchAllowed = hooks.stream()
+        .allMatch(hook -> hook.hook().supportsPatch());
     this.current = new AtomicReference<>(Snapshot.empty());
     this.refreshLock = new ReentrantLock();
     this.versionCounter = new AtomicLong(0);
+    // When a patch has to rebuild, the rebuild runs every hook for every
+    // item — so the patcher must not also run them for the patched one, or
+    // a hook that counts would count it twice.
     this.patcher = new CatalogPatcher<>(this.name,
         this.indexDefinitions, this.sortedIndexDefinitions,
         this.multiKeyIndexDefinitions, this.graphIndexDefinitions,
-        this.viewDefinitions, this.hooks);
+        this.viewDefinitions,
+        this.surgicalPatchAllowed ? this.hooks : List.of());
   }
 
   /**
@@ -585,6 +599,12 @@ public final class Catalog<T> {
     for (final AndersoniCatalogItem<T> item : last.newItems()) {
       newData.add(item.item());
     }
+    if (!surgicalPatchAllowed) {
+      return Optional.of(new BatchCapture<>(
+          rebuildAfterPatch(start, newData, applied.get(0).oldItem()),
+          List.copyOf(applied)));
+    }
+
     final long newVersion = versionCounter.incrementAndGet();
     final String newHash = computeHash(newData);
     current.set(Snapshot.ofPatched(last.newItems(), last.newIndices(),
@@ -876,6 +896,11 @@ public final class Catalog<T> {
     for (final AndersoniCatalogItem<T> item : result.newItems()) {
       newData.add(item.item());
     }
+    if (!surgicalPatchAllowed) {
+      return Optional.of(rebuildAfterPatch(snapshot, newData,
+          result.oldItem()));
+    }
+
     final long newVersion = versionCounter.incrementAndGet();
     final String newHash = computeHash(newData);
     final Snapshot<T> newSnapshot = Snapshot.ofPatched(result.newItems(),
@@ -1219,6 +1244,47 @@ public final class Catalog<T> {
     final Snapshot<T> snapshot = Snapshot.ofWithItems(wrappedItems,
         finalIndices, finalSortedIndices, finalReversedKeyIndices, version, hash);
     current.set(snapshot);
+  }
+
+  /**
+   * Rebuilds the whole snapshot from the patched data, for catalogs whose
+   * hooks have not opted into per-item execution.
+   *
+   * <p>The patched item list is already computed, so this skips the
+   * DataLoader entirely — it is a rebuild, not a refresh — but it runs
+   * every hook for every item, which is what a hook that accumulates
+   * across a build needs in order to stay correct.
+   *
+   * <p>Must be called while holding the refresh lock.
+   *
+   * @param before   the snapshot the patch was computed against, never null
+   * @param newData  the patched data, never null
+   * @param displaced the item the patch displaced, may be null
+   *
+   * @return the outcome describing the swap, never null
+   */
+  private ReplaceOutcome<T> rebuildAfterPatch(final Snapshot<T> before,
+      final List<T> newData, final T displaced) {
+    buildAndSwapSnapshot(newData);
+    final Snapshot<T> rebuilt = current.get();
+    return new ReplaceOutcome<>(displaced, before.version(), before.hash(),
+        rebuilt.version(), rebuilt.hash());
+  }
+
+  /**
+   * Returns whether patches on this catalog derive the next snapshot
+   * surgically, or rebuild it because a registered hook has not opted into
+   * per-item execution via {@link SnapshotBuildHook#supportsPatch()}.
+   *
+   * <p>Patches behave identically either way; this reports how much work
+   * they cost.
+   *
+   * @return true if patches are applied surgically
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean appliesPatchesSurgically() {
+    return surgicalPatchAllowed;
   }
 
   /**

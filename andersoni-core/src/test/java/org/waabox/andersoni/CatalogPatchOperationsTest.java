@@ -101,9 +101,17 @@ class CatalogPatchOperationsTest {
         .data(new ArrayList<>(List.of(A, B)))
         .index("by-id").by(Event::id, id -> id)
         .view(EventSummary.class, EventSummary::from)
-        .hook(item -> {
-          hookCalls.incrementAndGet();
-          return item;
+        .hook(new SnapshotBuildHook<Event>() {
+          @Override
+          public Event process(final Event item) {
+            hookCalls.incrementAndGet();
+            return item;
+          }
+
+          @Override
+          public boolean supportsPatch() {
+            return true;
+          }
         })
         .build();
     catalog.bootstrap();

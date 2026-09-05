@@ -357,6 +357,19 @@ A batch is atomic, and that changes one contract: a `Replace` that matches nothi
 
 A batch in which nothing changed swaps no snapshot, so it neither bumps the version nor moves the hash.
 
+### Hooks and patches
+
+A patch runs `SnapshotBuildHook`s only for the item it changes, because that is the only item it builds. That suits a hook which observes one item at a time, and breaks a hook which accumulates across a build — a count, a sum, an index of its own — since it would see a single delta and conclude the catalog holds one item.
+
+A catalog cannot inspect a lambda to tell which kind it has, so `supportsPatch()` defaults to `false` and any catalog holding a hook that has not opted in **rebuilds fully on every patch**. Still correct, and still cheaper than a refresh because the data is not re-loaded, but without the surgical index work. `catalog.appliesPatchesSurgically()` reports which mode a catalog is in.
+
+```java
+.hook(new SnapshotBuildHook<Event>() {
+    @Override public Event process(final Event item) { metrics.observe(item); return item; }
+    @Override public boolean supportsPatch() { return true; }   // per-item effect only
+})
+```
+
 `replaceAndSync` only runs on the leader; on followers it returns `false`. After the local replace, the leader saves the full snapshot to the snapshot store and publishes a `PatchEvent` carrying the serialized old item, the serialized new item, and version/hash preconditions captured atomically under the catalog's refresh lock.
 
 **Follower dispatch** keys on content hashes:
