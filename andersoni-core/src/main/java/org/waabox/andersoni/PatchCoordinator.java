@@ -1,6 +1,7 @@
 package org.waabox.andersoni;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -234,6 +235,66 @@ final class PatchCoordinator {
   }
 
   /**
+   * Applies a batch on the leader and broadcasts it as one event.
+   *
+   * <p>The batch is one snapshot swap and one message, so followers apply
+   * it atomically too: the whole batch lands or none of it does.
+   *
+   * @param catalogName the catalog to write to, never null
+   * @param ops         the operations to apply in order, never null
+   *
+   * @return true when this node is the leader and something changed
+   */
+  @SuppressWarnings("unchecked")
+  boolean applyAndSync(final String catalogName,
+      final List<PatchOp<Object>> ops) {
+    Objects.requireNonNull(ops, "ops must not be null");
+
+    final LeaderContext context = leaderContext(catalogName);
+    if (context == null) {
+      return false;
+    }
+    final Optional<Catalog.BatchCapture<Object>> captureOpt =
+        context.catalog().applyAndCapture(ops);
+    if (captureOpt.isEmpty()) {
+      return false;
+    }
+    final Catalog.BatchCapture<Object> capture = captureOpt.get();
+    final CatalogPatcher.ReplaceOutcome<Object> outcome = capture.outcome();
+
+    publish(context, catalogName, () -> PatchEvent.batch(catalogName, nodeId,
+        outcome.fromVersion(), outcome.toVersion(), outcome.fromHash(),
+        outcome.toHash(), toWireOps(context, capture.applied()),
+        Instant.now()));
+    return true;
+  }
+
+  /**
+   * Serializes the operations a batch actually applied into wire form.
+   *
+   * <p>Only what each operation needs travels: a replace carries both
+   * items, an insert only the new one, a removal only the item it dropped —
+   * which is also how the follower re-derives the lookup key.
+   *
+   * @param context the leader context, never null
+   * @param applied the operations that changed something, never null
+   *
+   * @return the wire operations, never null
+   */
+  private List<PatchEvent.Op> toWireOps(final LeaderContext context,
+      final List<Catalog.AppliedOp<Object>> applied) {
+    final List<PatchEvent.Op> ops = new ArrayList<>(applied.size());
+    for (final Catalog.AppliedOp<Object> op : applied) {
+      ops.add(new PatchEvent.Op(op.operation(), op.indexName(),
+          op.oldItem() == null ? null
+              : context.serializer().serialize(List.of(op.oldItem())),
+          op.newItem() == null ? null
+              : context.serializer().serialize(List.of(op.newItem()))));
+    }
+    return ops;
+  }
+
+  /**
    * The leader-side state a patch operation needs: the catalog it writes
    * to and the serializer that puts items on the wire.
    *
@@ -401,27 +462,26 @@ final class PatchCoordinator {
         return;
       }
 
-      final Optional<CatalogPatcher.ReplaceOutcome<Object>> outcome =
-          switch (event.operation()) {
-            case INSERT -> catalog.insertWithPrecondition(event.fromHash(),
-                serializer.deserialize(event.serializedNewItem()).get(0));
-            case REPLACE, REMOVE -> applyLookupBased(event, catalog,
-                serializer);
-          };
-      if (outcome == null) {
+      final List<PatchOp<Object>> ops =
+          toPatchOps(event, catalog, serializer);
+      if (ops == null) {
         callbacks.refreshFromEvent(event.catalogName(), catalog);
         return;
       }
-      if (outcome.isEmpty()) {
+
+      // One path for a single patch and a batch alike: the batch applies
+      // atomically against the hash the leader computed it from, so a
+      // follower can never end up holding half of one.
+      if (catalog.applyWithPrecondition(ops, event.fromHash()).isEmpty()) {
         log.debug("Patch precondition failed at apply time for catalog"
-            + " '{}'; falling back to full reload.",
-            event.catalogName());
+            + " '{}'; falling back to full reload.", event.catalogName());
         callbacks.refreshFromEvent(event.catalogName(), catalog);
         return;
       }
-      log.info("Applied {} surgically for catalog '{}' (leader v{} -> v{})",
-          event.operation(), event.catalogName(), event.fromVersion(),
-          event.toVersion());
+
+      log.info("Applied {} operation(s) surgically for catalog '{}' "
+          + "(leader v{} -> v{})", ops.size(), event.catalogName(),
+          event.fromVersion(), event.toVersion());
       metrics.patchApplied(event.catalogName());
       callbacks.reportIndexSizes(catalog);
     } catch (final Exception e) {
@@ -433,37 +493,45 @@ final class PatchCoordinator {
   }
 
   /**
-   * Applies the operations that locate their target through an index: a
-   * replace and a removal both re-derive the lookup key locally from the
-   * deserialized old item, so no key ever crosses the wire.
+   * Converts an event's wire operations into the catalog's own operation
+   * type, deserializing the items and re-deriving each lookup key locally.
    *
-   * @param catalog    the catalog to patch, never null
    * @param event      the inbound event, never null
+   * @param catalog    the catalog to patch, never null
    * @param serializer the catalog's serializer, never null
    *
-   * @return the outcome, empty when the precondition failed, or null when
-   *         the key could not be derived and the caller must reload
+   * @return the operations, or null when a key could not be derived and the
+   *         caller must fall back to a full reload
    */
-  private Optional<CatalogPatcher.ReplaceOutcome<Object>> applyLookupBased(
-      final PatchEvent event, final Catalog<Object> catalog,
+  private List<PatchOp<Object>> toPatchOps(final PatchEvent event,
+      final Catalog<Object> catalog,
       final SnapshotSerializer<Object> serializer) {
 
-    final Object oldItem =
-        serializer.deserialize(event.serializedOldItem()).get(0);
-    final Object key = catalog.extractKeyFor(event.indexName(), oldItem);
-    if (key == null) {
-      log.warn("Patch oldItem for catalog '{}' has no key under index"
-          + " '{}'; falling back to full reload.",
-          event.catalogName(), event.indexName());
-      return null;
-    }
+    final List<PatchOp<Object>> ops =
+        new ArrayList<>(event.operations().size());
 
-    if (event.operation() == PatchOperation.REMOVE) {
-      return catalog.removeWithPrecondition(event.indexName(), key,
-          event.fromHash());
+    for (final PatchEvent.Op op : event.operations()) {
+      if (op.operation() == PatchOperation.INSERT) {
+        ops.add(new PatchOp.Insert<>(
+            serializer.deserialize(op.newItem()).get(0)));
+        continue;
+      }
+
+      final Object oldItem = serializer.deserialize(op.oldItem()).get(0);
+      final Object key = catalog.extractKeyFor(op.indexName(), oldItem);
+      if (key == null) {
+        log.warn("Patch oldItem for catalog '{}' has no key under index"
+            + " '{}'; falling back to full reload.",
+            event.catalogName(), op.indexName());
+        return null;
+      }
+
+      ops.add(op.operation() == PatchOperation.REMOVE
+          ? new PatchOp.Remove<>(op.indexName(), key)
+          : new PatchOp.Replace<>(op.indexName(), key,
+              serializer.deserialize(op.newItem()).get(0)));
     }
-    return catalog.replaceWithPrecondition(event.indexName(), key,
-        event.fromHash(),
-        serializer.deserialize(event.serializedNewItem()).get(0));
+    return ops;
   }
+
 }

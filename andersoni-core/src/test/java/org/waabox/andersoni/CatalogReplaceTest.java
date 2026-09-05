@@ -436,8 +436,9 @@ class CatalogReplaceTest {
     final Stadium fromTheWire = new Stadium("E-1", "Wembley");
     assertNotEquals(fromTheWire, wembley);
 
-    final boolean applied = catalog.replaceWithPrecondition("by-code",
-        "E-1", hashBefore, new Stadium("E-1", "Old Trafford")).isPresent();
+    final boolean applied = catalog.applyWithPrecondition(
+        List.of(new PatchOp.Replace<>("by-code", "E-1",
+            new Stadium("E-1", "Old Trafford"))), hashBefore).isPresent();
 
     assertTrue(applied);
     assertEquals("Old Trafford",
@@ -455,9 +456,10 @@ class CatalogReplaceTest {
     catalog.refresh(List.of(new Stadium("E-1", "Wembley"),
         new Stadium("E-2", "Anfield")));
 
-    final boolean applied = catalog.replaceWithPrecondition("by-code",
-        "E-1", "theHashBeforeTheDrift",
-        new Stadium("E-1", "Old Trafford")).isPresent();
+    final boolean applied = catalog.applyWithPrecondition(
+        List.of(new PatchOp.Replace<>("by-code", "E-1",
+            new Stadium("E-1", "Old Trafford"))),
+        "theHashBeforeTheDrift").isPresent();
 
     assertFalse(applied);
     assertEquals("Wembley",

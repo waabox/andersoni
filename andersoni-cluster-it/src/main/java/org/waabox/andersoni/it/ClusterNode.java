@@ -27,6 +27,7 @@ import org.slf4j.LoggerFactory;
 import org.waabox.andersoni.AmbiguousPatchTargetException;
 import org.waabox.andersoni.Andersoni;
 import org.waabox.andersoni.Catalog;
+import org.waabox.andersoni.PatchOp;
 import org.waabox.andersoni.RetryPolicy;
 import org.waabox.andersoni.Snapshot;
 import org.waabox.andersoni.sync.kafka.KafkaSyncConfig;
@@ -62,6 +63,9 @@ import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
  *       {@link Andersoni#insertAndSync}.</li>
  *   <li>{@code POST /remove?key=} — calls {@link Andersoni#removeAndSync}
  *       against the {@code by-name} index.</li>
+ *   <li>{@code POST /batch?insertId=&insertName=&removeKey=} — calls
+ *       {@link Andersoni#applyAndSync} with one insert and one removal, so
+ *       a test can observe a multi-operation patch landing as a unit.</li>
  *   <li>{@code POST /local-refresh} — calls {@link Andersoni#refresh}, which
  *       reloads from the DataLoader <em>without</em> broadcasting. Used to
  *       drive one node out of sync with the rest on purpose.</li>
@@ -271,6 +275,29 @@ public final class ClusterNode {
         respond(exchange, 409,
             new JSONObject().put("error", e.getMessage()).toString());
       }
+    });
+
+    server.createContext("/batch", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final Map<String, String> params =
+          queryParams(exchange.getRequestURI().getRawQuery());
+      final String insertId = params.get("insertId");
+      final String insertName = params.get("insertName");
+      final String removeKey = params.get("removeKey");
+      if (insertId == null || insertName == null || removeKey == null) {
+        respond(exchange, 400, "{\"error\":\"insertId, insertName and "
+            + "removeKey are required\"}");
+        return;
+      }
+      final boolean applied = andersoni.applyAndSync(CATALOG, List.of(
+          new PatchOp.Insert<>(
+              new Item(Integer.parseInt(insertId), insertName)),
+          new PatchOp.Remove<>("by-name", removeKey)));
+      respond(exchange, 200,
+          new JSONObject().put("applied", applied).toString());
     });
 
     server.createContext("/local-refresh", exchange -> {

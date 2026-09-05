@@ -145,31 +145,33 @@ falls back to a reload rather than dropping it.
 
 ## 5. What is left to build
 
-### 5.1 Batch apply
+### 5.1 Operations
 
-`replace`, `insert`, `remove` and `upsert` are implemented, locally and across
-the cluster. Still missing:
+All of them are implemented, locally and across the cluster: `replace`,
+`insert`, `remove`, `upsert`, and `apply(List<PatchOp<T>>)` for batches.
 
-```java
-void apply(List<PatchOp<T>> ops);   // batch
-```
+A batch is one snapshot swap, one version bump, one hash and one message.
+Operations apply in order against the accumulating state, so a later one sees
+what an earlier one did. Atomicity costs nothing to implement: each operation
+is computed against a candidate snapshot that is never published, so abandoning
+a batch means not swapping — there is nothing to unwind, and no reader can
+observe a half-applied batch on any node.
 
-Validate every op's lookup up front, then apply them all into a single new
-snapshot, so a batch is one `fromHash → toHash` step on the wire and one
-snapshot swap. An ambiguous lookup throws before anything is applied; a missing
-target for a `replace` op fails the whole batch and names the key.
+The one contract that changes inside a batch is a `Replace` that matches
+nothing: it throws rather than reporting `false`, because partial success is
+not a state the caller can act on. A `Remove` that matches nothing is still
+skipped, keeping removal idempotent.
 
-The wire is already shaped for it. `PatchEvent` carries a `PatchOperation`
-discriminator with payloads present per operation (a replace carries both
-items, an insert only the new one, a removal only the old), and
-`PatchListener` stays single-method — the operation is data on the event, not a
-delivery channel. A method per operation would force all four transports to
-change every time one is added, and would make a batch mixing an insert and a
-removal undeliverable as one atomic unit.
+`PatchEvent` carries a list of operations, so a single patch is a batch of one
+and there is a single shape for the codec, the transports and the follower to
+handle. **`PatchListener` stays single-method** — the operation is data on the
+event, not a delivery channel. There is no `UPSERT` on the wire: an upsert
+resolves on the leader into the concrete change that happened, so followers
+never repeat a decision that depends on state they may not share.
 
-There is no `UPSERT` on the wire: an upsert resolves on the leader into the
-concrete change that happened, so followers never repeat a decision that
-depends on state they may not share.
+The follower has one apply path, `Catalog.applyWithPrecondition`, used for one
+operation and for many alike — so there is no second code path that could drift
+from it.
 
 ### 5.2 Result types and the zero-match contract
 

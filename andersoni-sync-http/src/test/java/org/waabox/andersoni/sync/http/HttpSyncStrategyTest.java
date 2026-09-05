@@ -196,7 +196,8 @@ class HttpSyncStrategyTest {
       final PatchEvent receivedEvent = received.get();
       assertNotNull(receivedEvent);
       assertEquals("events", receivedEvent.catalogName());
-      assertEquals("by-id", receivedEvent.indexName());
+      assertEquals("by-id",
+          receivedEvent.operations().get(0).indexName());
       assertEquals(7L, receivedEvent.fromVersion());
       assertEquals(8L, receivedEvent.toVersion());
     } finally {

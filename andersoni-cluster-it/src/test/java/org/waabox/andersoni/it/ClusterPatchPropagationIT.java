@@ -226,6 +226,29 @@ class ClusterPatchPropagationIT {
           "The database must still hold the removed row: convergence "
               + "without it is only reachable by applying the removal");
       LOG.info("Removal propagated surgically across {} nodes", NODE_COUNT);
+
+      // 9) A batch: one insert and one removal, applied as a unit. Each
+      //    node's version must advance by exactly one, which is what "as a
+      //    unit" means where it counts — no node is ever seen holding half.
+      final List<Long> versionsBefore = versionsOf(nodes);
+      assertTrue(batch(leader, 100, "item-100-BATCHED", "item-3"),
+          "The leader must report the batch as applied");
+
+      await(Duration.ofSeconds(45), () -> allConverged(nodes, 4)
+          && allHold(nodes, "item-100-BATCHED"));
+
+      final List<Long> versionsAfter = versionsOf(nodes);
+      for (int i = 0; i < NODE_COUNT; i++) {
+        assertEquals(versionsBefore.get(i) + 1, versionsAfter.get(i),
+            "A batch must land as a single snapshot swap on every node, "
+                + "not one swap per operation");
+        final List<String> names = namesOf(nodes.get(i));
+        assertTrue(names.contains("item-100-BATCHED"),
+            "Every node must hold the inserted item");
+        assertFalse(names.contains("item-3"),
+            "Every node must have dropped the removed item");
+      }
+      LOG.info("Batch propagated as one swap across {} nodes", NODE_COUNT);
     } finally {
       for (final GenericContainer<?> node : nodes) {
         quietStop(node);
@@ -329,6 +352,42 @@ class ClusterPatchPropagationIT {
   private boolean remove(final GenericContainer<?> node, final String key)
       throws Exception {
     return applied(node, "/remove?key=" + key);
+  }
+
+  /**
+   * Asks a node to apply a batch of one insert and one removal.
+   *
+   * @param node       the node container, never null.
+   * @param insertId   the inserted item's id.
+   * @param insertName the inserted item's name, never null.
+   * @param removeKey  the name of the item to remove, never null.
+   *
+   * @return whether the node reported the batch as applied.
+   *
+   * @throws Exception if the request fails.
+   */
+  private boolean batch(final GenericContainer<?> node, final int insertId,
+      final String insertName, final String removeKey) throws Exception {
+    return applied(node, "/batch?insertId=" + insertId
+        + "&insertName=" + insertName + "&removeKey=" + removeKey);
+  }
+
+  /**
+   * Returns the current snapshot versions of every node, in order.
+   *
+   * @param nodes the node containers, never null.
+   *
+   * @return the versions, never null.
+   *
+   * @throws Exception if a node cannot be queried.
+   */
+  private List<Long> versionsOf(final List<GenericContainer<?>> nodes)
+      throws Exception {
+    final List<Long> versions = new ArrayList<>();
+    for (final GenericContainer<?> node : nodes) {
+      versions.add(state(node).getLong("version"));
+    }
+    return versions;
   }
 
   /**

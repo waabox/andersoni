@@ -338,6 +338,25 @@ Zero matches is not an error for `remove` — removal is idempotent by nature, a
 
 There is no `UPSERT` on the wire. An upsert resolves on the leader into whichever concrete change happened, and followers are told what was done rather than what was asked for — so they never repeat a decision that depends on state they may not share.
 
+### Batches
+
+Several changes can be applied as one unit — one snapshot swap, one version bump, one content hash, one sync message:
+
+```java
+catalog.apply(List.of(
+    new PatchOp.Replace<>("by-id", "a", updatedEvent),
+    new PatchOp.Insert<>(newEvent),
+    new PatchOp.Remove<>("by-id", "b")));
+
+andersoni.applyAndSync("events", ops);   // leader-only, broadcasts once
+```
+
+Operations apply in order against the accumulating state, so a later one sees what an earlier one did — inserting an item and replacing it in the same batch works.
+
+A batch is atomic, and that changes one contract: a `Replace` that matches nothing throws `PatchTargetNotFoundException` instead of reporting `false`, because "operation 37 did nothing while the rest applied" is not a state a caller can act on. A `Remove` that matches nothing is still skipped, keeping removal idempotent. Failure costs nothing to unwind: the batch is computed against candidate snapshots and only the last one is published, so abandoning it means not swapping — readers never see a half-applied batch, on the leader or on a follower.
+
+A batch in which nothing changed swaps no snapshot, so it neither bumps the version nor moves the hash.
+
 `replaceAndSync` only runs on the leader; on followers it returns `false`. After the local replace, the leader saves the full snapshot to the snapshot store and publishes a `PatchEvent` carrying the serialized old item, the serialized new item, and version/hash preconditions captured atomically under the catalog's refresh lock.
 
 **Follower dispatch** keys on content hashes:

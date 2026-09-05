@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.Base64;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
@@ -111,9 +113,10 @@ class SyncMessageCodecTest {
     assertEquals(original.toVersion(), patch.toVersion());
     assertEquals(original.fromHash(), patch.fromHash());
     assertEquals(original.toHash(), patch.toHash());
-    assertEquals(original.indexName(), patch.indexName());
-    assertArrayEquals(oldBytes, patch.serializedOldItem());
-    assertArrayEquals(newBytes, patch.serializedNewItem());
+    assertEquals(original.operations().get(0).indexName(),
+        patch.operations().get(0).indexName());
+    assertArrayEquals(oldBytes, patch.operations().get(0).oldItem());
+    assertArrayEquals(newBytes, patch.operations().get(0).newItem());
     assertEquals(original.timestamp(), patch.timestamp());
   }
 
@@ -144,10 +147,11 @@ class SyncMessageCodecTest {
 
     final PatchEvent decoded = assertInstanceOf(PatchEvent.class,
         SyncMessageCodec.deserialize(json));
-    assertEquals(PatchOperation.INSERT, decoded.operation());
-    assertNull(decoded.serializedOldItem());
-    assertNull(decoded.indexName());
-    assertArrayEquals("added".getBytes(), decoded.serializedNewItem());
+    final PatchEvent.Op op = decoded.operations().get(0);
+    assertEquals(PatchOperation.INSERT, op.operation());
+    assertNull(op.oldItem());
+    assertNull(op.indexName());
+    assertArrayEquals("added".getBytes(), op.newItem());
   }
 
   @Test
@@ -162,26 +166,33 @@ class SyncMessageCodecTest {
 
     final PatchEvent decoded = assertInstanceOf(PatchEvent.class,
         SyncMessageCodec.deserialize(json));
-    assertEquals(PatchOperation.REMOVE, decoded.operation());
-    assertNull(decoded.serializedNewItem());
-    assertArrayEquals("gone".getBytes(), decoded.serializedOldItem());
+    final PatchEvent.Op op = decoded.operations().get(0);
+    assertEquals(PatchOperation.REMOVE, op.operation());
+    assertNull(op.newItem());
+    assertArrayEquals("gone".getBytes(), op.oldItem());
   }
 
   @Test
   void whenDeserialize_givenPatchWithoutOperation_shouldReadAsReplace() {
-    // What a node that predates insert and remove puts on the wire: a patch
-    // payload with both items and no operation field.
-    final String json = SyncMessageCodec.serialize(
-            PatchEvent.replace("events", "node-1", 7L, 8L, "fromHash",
-                "toHash", "by-id", "old".getBytes(), "new".getBytes(),
-                Instant.parse("2026-05-14T10:00:00Z")))
-        .replace(",\"operation\":\"REPLACE\"", "");
+    // What a node that predates batching puts on the wire: one operation in
+    // flat fields, with no ops array and no operation discriminator.
+    final String json = "{\"type\":\"patch\",\"catalogName\":\"events\","
+        + "\"sourceNodeId\":\"node-1\",\"fromVersion\":7,"
+        + "\"toVersion\":8,\"fromHash\":\"fromHash\","
+        + "\"toHash\":\"toHash\",\"indexName\":\"by-id\","
+        + "\"oldItem\":\"" + Base64.getEncoder().encodeToString(
+            "old".getBytes()) + "\","
+        + "\"newItem\":\"" + Base64.getEncoder().encodeToString(
+            "new".getBytes()) + "\","
+        + "\"timestamp\":\"2026-05-14T10:00:00Z\"}";
 
     final PatchEvent decoded = assertInstanceOf(PatchEvent.class,
         SyncMessageCodec.deserialize(json));
 
-    assertEquals(PatchOperation.REPLACE, decoded.operation());
-    assertArrayEquals("old".getBytes(), decoded.serializedOldItem());
+    assertEquals(PatchOperation.REPLACE,
+        decoded.operations().get(0).operation());
+    assertArrayEquals("old".getBytes(),
+        decoded.operations().get(0).oldItem());
   }
 
   @Test
@@ -190,9 +201,45 @@ class SyncMessageCodecTest {
             PatchEvent.insert("events", "node-1", 7L, 8L, "fromHash",
                 "toHash", "added".getBytes(),
                 Instant.parse("2026-05-14T10:00:00Z")))
-        .replace("\"operation\":\"INSERT\"", "\"operation\":\"FROM_THE_FUTURE\"");
+        .replace("\"INSERT\"", "\"FROM_THE_FUTURE\"");
 
     assertThrows(IllegalArgumentException.class,
         () -> SyncMessageCodec.deserialize(json));
+  }
+
+  @Test
+  void whenRoundTrip_givenBatch_shouldPreserveOperationsInOrder() {
+    final PatchEvent original = PatchEvent.batch("events", "node-1", 7L, 8L,
+        "fromHash", "toHash",
+        List.of(
+            new PatchEvent.Op(PatchOperation.REPLACE, "by-id",
+                "old".getBytes(), "new".getBytes()),
+            new PatchEvent.Op(PatchOperation.INSERT, null, null,
+                "added".getBytes()),
+            new PatchEvent.Op(PatchOperation.REMOVE, "by-venue",
+                "gone".getBytes(), null)),
+        Instant.parse("2026-05-14T10:00:00Z"));
+
+    final PatchEvent decoded = assertInstanceOf(PatchEvent.class,
+        SyncMessageCodec.deserialize(SyncMessageCodec.serialize(original)));
+
+    assertEquals(3, decoded.operations().size());
+    assertEquals(PatchOperation.REPLACE,
+        decoded.operations().get(0).operation());
+    assertEquals(PatchOperation.INSERT,
+        decoded.operations().get(1).operation());
+    assertEquals(PatchOperation.REMOVE,
+        decoded.operations().get(2).operation());
+    assertArrayEquals("added".getBytes(),
+        decoded.operations().get(1).newItem());
+    assertEquals("by-venue", decoded.operations().get(2).indexName());
+    assertNull(decoded.operations().get(2).newItem());
+  }
+
+  @Test
+  void whenBuild_givenNoOperations_shouldReject() {
+    assertThrows(IllegalArgumentException.class,
+        () -> PatchEvent.batch("events", "node-1", 7L, 8L, "from", "to",
+            List.of(), Instant.parse("2026-05-14T10:00:00Z")));
   }
 }

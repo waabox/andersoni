@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.waabox.andersoni.leader.LeaderElectionStrategy;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.sync.PatchEvent;
+import org.waabox.andersoni.sync.PatchOperation;
 import org.waabox.andersoni.sync.PatchListener;
 import org.waabox.andersoni.sync.RefreshListener;
 import org.waabox.andersoni.sync.SyncStrategy;
@@ -387,6 +388,76 @@ class AndersoniPatchDispatchTest {
 
     assertEquals(List.of(divergent), setup.catalog.currentSnapshot().data(),
         "A drifted follower must reload rather than append blindly");
+
+    setup.andersoni.stop();
+    verify(setup.syncStrategy, setup.leader);
+  }
+
+  @Test
+  void whenBatchArrives_givenMatchingPrecondition_shouldApplyEveryOperation()
+      throws InterruptedException {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+    final Event b = new Event("b", new Sport("F"), new Venue("V2"));
+    final Setup setup = followerSetup(List.of(a, b));
+
+    final Snapshot<Event> before = setup.catalog.currentSnapshot();
+    final Event movedA = new Event("a", new Sport("F"), new Venue("V9"));
+    final Event c = new Event("c", new Sport("G"), new Venue("V3"));
+    final EventSerializer serializer = new EventSerializer();
+
+    setup.listener.onPatch(PatchEvent.batch("events", "leader-1",
+        before.version(), before.version() + 1, before.hash(),
+        hashOf(List.of(movedA, c)),
+        List.of(
+            new PatchEvent.Op(PatchOperation.REPLACE, "by-id",
+                serializer.serialize(List.of(a)),
+                serializer.serialize(List.of(movedA))),
+            new PatchEvent.Op(PatchOperation.REMOVE, "by-id",
+                serializer.serialize(List.of(b)), null),
+            new PatchEvent.Op(PatchOperation.INSERT, null, null,
+                serializer.serialize(List.of(c)))),
+        Instant.now()));
+    Thread.sleep(400);
+
+    assertEquals(List.of(movedA), setup.catalog.search("by-id", "a"));
+    assertEquals(List.of(), setup.catalog.search("by-id", "b"));
+    assertEquals(List.of(c), setup.catalog.search("by-id", "c"));
+    assertEquals(before.version() + 1,
+        setup.catalog.currentSnapshot().version(),
+        "A batch must land as one snapshot swap on the follower too");
+
+    setup.andersoni.stop();
+    verify(setup.syncStrategy, setup.leader);
+  }
+
+  @Test
+  void whenBatchArrives_givenAnUnsatisfiableOp_shouldNotApplyAnyOfIt()
+      throws InterruptedException {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+    final Setup setup = followerSetup(List.of(a));
+    setup.loaderData.set(new ArrayList<>(List.of(a)));
+
+    final Snapshot<Event> before = setup.catalog.currentSnapshot();
+    final Event c = new Event("c", new Sport("G"), new Venue("V3"));
+    final Event ghost = new Event("ghost", new Sport("G"), new Venue("V4"));
+    final EventSerializer serializer = new EventSerializer();
+
+    // The insert is satisfiable, the replace is not: this follower has no
+    // item under "ghost". Neither may be visible afterwards.
+    setup.listener.onPatch(PatchEvent.batch("events", "leader-1",
+        before.version(), before.version() + 1, before.hash(), "toHash",
+        List.of(
+            new PatchEvent.Op(PatchOperation.INSERT, null, null,
+                serializer.serialize(List.of(c))),
+            new PatchEvent.Op(PatchOperation.REPLACE, "by-id",
+                serializer.serialize(List.of(ghost)),
+                serializer.serialize(List.of(ghost)))),
+        Instant.now()));
+    Thread.sleep(400);
+
+    assertEquals(List.of(a), setup.catalog.currentSnapshot().data(),
+        "A batch that cannot be satisfied must leave no trace of the "
+            + "operations that could have applied");
 
     setup.andersoni.stop();
     verify(setup.syncStrategy, setup.leader);
