@@ -619,7 +619,7 @@ public final class Andersoni {
    *         {@code false} if no item matched, this node is not the leader,
    *         or Andersoni has been stopped
    */
-  public boolean replaceAndSync(final String catalogName,
+  public PatchOutcome replaceAndSync(final String catalogName,
       final String indexName, final Object key, final Object newItem) {
     return patchCoordinator.replaceAndSync(catalogName, indexName, key,
         newItem);
@@ -630,7 +630,7 @@ public final class Andersoni {
    * event.
    *
    * <p>Runs only on the leader; on a follower this is a no-op returning
-   * {@code false}. The batch is one snapshot swap and one message, and
+   * {@link PatchOutcome#NOT_LEADER}. The batch is one snapshot swap and one message, and
    * followers apply it atomically: the whole batch lands or none of it
    * does, so no node is ever seen holding half of it.
    *
@@ -638,7 +638,9 @@ public final class Andersoni {
    * @param ops         the operations to apply in order, never null
    * @param <T>         the catalog item type
    *
-   * @return true if this node is the leader and something changed
+   * @return {@link PatchOutcome#APPLIED} when something changed,
+   *         {@link PatchOutcome#NOT_FOUND} when no operation matched,
+   *         {@link PatchOutcome#NOT_LEADER} on a follower
    *
    * @throws IllegalStateException         if stopped, or the catalog has no
    *                                       serializer
@@ -649,7 +651,7 @@ public final class Andersoni {
    * @author waabox(waabox[at]gmail[dot]com)
    */
   @SuppressWarnings("unchecked")
-  public <T> boolean applyAndSync(final String catalogName,
+  public <T> PatchOutcome applyAndSync(final String catalogName,
       final List<PatchOp<T>> ops) {
     return patchCoordinator.applyAndSync(catalogName,
         (List<PatchOp<Object>>) (List<?>) ops);
@@ -660,14 +662,15 @@ public final class Andersoni {
    * the cluster.
    *
    * <p>Runs only on the leader; on a follower this is a no-op returning
-   * {@code false}. No lookup is performed, so this cannot notice that an
+   * {@link PatchOutcome#NOT_LEADER}. No lookup is performed, so this cannot notice that an
    * equivalent item is already present — {@link #upsertAndSync} is the
    * operation that decides.
    *
    * @param catalogName the catalog to add to, never null
    * @param newItem     the item to add, never null
    *
-   * @return true if this node is the leader and applied the insert
+   * @return {@link PatchOutcome#APPLIED} when this node is the leader,
+   *         {@link PatchOutcome#NOT_LEADER} otherwise
    *
    * @throws IllegalStateException    if stopped, or the catalog has no
    *                                  serializer
@@ -675,7 +678,7 @@ public final class Andersoni {
    *
    * @author waabox(waabox[at]gmail[dot]com)
    */
-  public boolean insertAndSync(final String catalogName,
+  public PatchOutcome insertAndSync(final String catalogName,
       final Object newItem) {
     return patchCoordinator.insertAndSync(catalogName, newItem);
   }
@@ -685,14 +688,16 @@ public final class Andersoni {
    * broadcasts the removal to the cluster.
    *
    * <p>Runs only on the leader; on a follower this is a no-op returning
-   * {@code false}. A lookup matching nothing also returns {@code false} and
+   * {@link PatchOutcome#NOT_LEADER}. A lookup matching nothing also returns {@code false} and
    * broadcasts nothing.
    *
    * @param catalogName the catalog to remove from, never null
    * @param indexName   the index to look the item up in, never null
    * @param key         the lookup key, never null
    *
-   * @return true if this node is the leader and an item was removed
+   * @return {@link PatchOutcome#APPLIED} when an item was removed,
+   *         {@link PatchOutcome#NOT_FOUND} when the lookup matched nothing,
+   *         {@link PatchOutcome#NOT_LEADER} on a follower
    *
    * @throws IllegalStateException         if stopped, or the catalog has no
    *                                       serializer
@@ -701,7 +706,7 @@ public final class Andersoni {
    *
    * @author waabox(waabox[at]gmail[dot]com)
    */
-  public boolean removeAndSync(final String catalogName,
+  public PatchOutcome removeAndSync(final String catalogName,
       final String indexName, final Object key) {
     return patchCoordinator.removeAndSync(catalogName, indexName, key);
   }
@@ -712,14 +717,15 @@ public final class Andersoni {
    * whichever change actually happened.
    *
    * <p>Runs only on the leader; on a follower this is a no-op returning
-   * {@code false}.
+   * {@link PatchOutcome#NOT_LEADER}.
    *
    * @param catalogName the catalog to write to, never null
    * @param indexName   the index to look the item up in, never null
    * @param key         the lookup key, never null
    * @param newItem     the item to store, never null
    *
-   * @return true if this node is the leader and applied the upsert
+   * @return {@link PatchOutcome#APPLIED} when this node is the leader,
+   *         {@link PatchOutcome#NOT_LEADER} otherwise
    *
    * @throws IllegalStateException         if stopped, or the catalog has no
    *                                       serializer
@@ -728,7 +734,7 @@ public final class Andersoni {
    *
    * @author waabox(waabox[at]gmail[dot]com)
    */
-  public boolean upsertAndSync(final String catalogName,
+  public PatchOutcome upsertAndSync(final String catalogName,
       final String indexName, final Object key, final Object newItem) {
     return patchCoordinator.upsertAndSync(catalogName, indexName, key,
         newItem);

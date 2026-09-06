@@ -185,6 +185,10 @@ from it.
 
 ### 5.2 Result types and the zero-match contract
 
+**Done.** `PatchOutcome { APPLIED, NOT_FOUND, NOT_LEADER }` is returned by the
+cluster-coordinated calls; the local ones keep `boolean`. The rest of this
+section records the reasoning.
+
 `replaceAndSync` returns `false` for three unrelated outcomes: not leader, no
 match, and stopped. A caller cannot tell "I am a follower, this was someone
 else's job" from "that entity is not in the catalog", and the second is usually
