@@ -89,6 +89,11 @@ On `feature/3/snapshot-patch-support`, green across 518 tests:
   its followers converge through the hash change at the next poll.
 - **Follower dispatch** — `PatchCoordinator`, hash-keyed (§4).
 - **Metrics** — `patchApplied`, `patchDiscarded`, `patchFellBack`.
+- **Payload ceiling** — `Andersoni.Builder.maxPatchPayloadBytes`, default
+  256 KB. A patch whose encoded payload exceeds it is published as a plain
+  refresh event instead. A message the transport refuses is worse than a slow
+  one: the leader has applied the change and nothing would tell the followers,
+  so they would stay silently stale.
 - **Hook safety** — `SnapshotBuildHook.supportsPatch()`, default `false`. A
   patch runs hooks only for the item it changes, which is wrong for a hook
   that accumulates across a build, so a catalog holding any hook that has not

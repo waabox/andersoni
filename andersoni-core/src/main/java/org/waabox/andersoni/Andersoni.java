@@ -69,6 +69,12 @@ public final class Andersoni {
   /** The class logger. */
   private static final Logger log = LoggerFactory.getLogger(Andersoni.class);
 
+  /**
+   * Default ceiling for an encoded patch payload: 256 KB, comfortably
+   * under Kafka's 1 MB default message limit.
+   */
+  public static final int DEFAULT_MAX_PATCH_PAYLOAD_BYTES = 256 * 1024;
+
   /** The unique identifier for this node. */
   private final String nodeId;
 
@@ -128,7 +134,8 @@ public final class Andersoni {
       final LeaderElectionStrategy leaderElection,
       final SnapshotStore snapshotStore,
       final RetryPolicy retryPolicy,
-      final AndersoniMetrics metrics) {
+      final AndersoniMetrics metrics,
+      final int maxPatchPayloadBytes) {
     this.nodeId = nodeId;
     this.syncStrategy = syncStrategy;
     this.leaderElection = leaderElection;
@@ -139,7 +146,7 @@ public final class Andersoni {
     this.failedCatalogs = ConcurrentHashMap.newKeySet();
     this.scheduledFutures = new ConcurrentHashMap<>();
     this.patchCoordinator = new PatchCoordinator(nodeId, syncStrategy,
-        leaderElection, metrics, catalogsByName,
+        leaderElection, metrics, catalogsByName, maxPatchPayloadBytes,
         new PatchCoordinator.Callbacks() {
           @Override public boolean isStopped() {
             return stopped.get();
@@ -1505,6 +1512,9 @@ public final class Andersoni {
     /** The optional metrics reporter. */
     private AndersoniMetrics metrics;
 
+    /** The patch payload ceiling, defaulting to {@link #DEFAULT_MAX_PATCH_PAYLOAD_BYTES}. */
+    private int maxPatchPayloadBytes = DEFAULT_MAX_PATCH_PAYLOAD_BYTES;
+
     /** Creates a new builder with default settings. */
     private Builder() {
     }
@@ -1606,15 +1616,41 @@ public final class Andersoni {
     }
 
     /**
-     * Sets the metrics reporter for operational metrics collection.
+     * Sets the largest encoded patch payload this node will broadcast.
      *
-     * <p>If not set, {@link NoopAndersoniMetrics} is used.
+     * <p>A patch carries the changed items, so an unusually large entity —
+     * or a large batch — can produce a message the transport refuses.
+     * Kafka's default {@code max.message.bytes} is 1 MB, and a refused
+     * publish is worse than a slow one: the leader has applied the change
+     * and nothing tells the followers, so they stay silently stale.
+     * Exceeding this limit publishes a full-refresh event instead, which
+     * carries no payload and therefore always fits.
      *
-     * @param theMetrics the metrics reporter, never null
+     * <p>Defaults to {@value #DEFAULT_MAX_PATCH_PAYLOAD_BYTES} bytes,
+     * comfortably under Kafka's default. Raise it if the transport is
+     * configured for larger messages.
+     *
+     * @param bytes the ceiling in bytes, must be positive
      *
      * @return this builder for chaining, never null
      *
-     * @throws NullPointerException if theMetrics is null
+     * @throws IllegalArgumentException if bytes is not positive
+     */
+    public Builder maxPatchPayloadBytes(final int bytes) {
+      if (bytes <= 0) {
+        throw new IllegalArgumentException(
+            "maxPatchPayloadBytes must be positive, got " + bytes);
+      }
+      this.maxPatchPayloadBytes = bytes;
+      return this;
+    }
+
+    /**
+     * Sets the metrics implementation.
+     *
+     * @param theMetrics the metrics, never null
+     *
+     * @return this builder, never null
      */
     public Builder metrics(final AndersoniMetrics theMetrics) {
       Objects.requireNonNull(theMetrics, "metrics must not be null");
@@ -1663,7 +1699,8 @@ public final class Andersoni {
           resolvedLeader,
           snapshotStore,
           resolvedRetry,
-          resolvedMetrics);
+          resolvedMetrics,
+          maxPatchPayloadBytes);
     }
   }
 }

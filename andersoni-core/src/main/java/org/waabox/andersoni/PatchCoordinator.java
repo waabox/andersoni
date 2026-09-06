@@ -1,5 +1,6 @@
 package org.waabox.andersoni;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,6 +15,8 @@ import org.waabox.andersoni.leader.LeaderElectionStrategy;
 import org.waabox.andersoni.metrics.AndersoniMetrics;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.sync.PatchEvent;
+import org.waabox.andersoni.sync.RefreshEvent;
+import org.waabox.andersoni.sync.SyncMessageCodec;
 import org.waabox.andersoni.sync.PatchOperation;
 import org.waabox.andersoni.sync.SyncStrategy;
 
@@ -55,6 +58,7 @@ final class PatchCoordinator {
   private final AndersoniMetrics metrics;
   private final Map<String, Catalog<?>> catalogsByName;
   private final Callbacks callbacks;
+  private final int maxPayloadBytes;
   private AsyncRefreshDispatcher dispatcher;
 
   PatchCoordinator(final String nodeId,
@@ -62,6 +66,7 @@ final class PatchCoordinator {
       final LeaderElectionStrategy leaderElection,
       final AndersoniMetrics metrics,
       final Map<String, Catalog<?>> catalogsByName,
+      final int maxPayloadBytes,
       final Callbacks callbacks) {
     this.nodeId = nodeId;
     this.syncStrategy = syncStrategy;
@@ -69,6 +74,7 @@ final class PatchCoordinator {
     this.metrics = metrics;
     this.catalogsByName = catalogsByName;
     this.callbacks = callbacks;
+    this.maxPayloadBytes = maxPayloadBytes;
   }
 
   void setDispatcher(final AsyncRefreshDispatcher theDispatcher) {
@@ -362,8 +368,27 @@ final class PatchCoordinator {
           + "periodic refresh.", catalogName);
       return;
     }
+    final PatchEvent patch = event.get();
+    final int payloadBytes = SyncMessageCodec.serialize(patch)
+        .getBytes(StandardCharsets.UTF_8).length;
+
     try {
-      syncStrategy.publishPatch(event.get());
+      if (payloadBytes > maxPayloadBytes) {
+        // Publishing it would be refused by the transport -- Kafka's
+        // default message limit is 1 MB -- and a refused publish leaves
+        // followers silently stale, since nothing else would tell them the
+        // leader moved. A refresh event carries no payload, so it always
+        // fits, and it lands them on the snapshot saved just above.
+        log.warn("Patch payload for catalog '{}' is {} bytes, over the {} "
+            + "byte limit; publishing a full-refresh event instead",
+            catalogName, payloadBytes, maxPayloadBytes);
+        metrics.patchOversized(catalogName, payloadBytes);
+        final Snapshot<?> snapshot = context.catalog().currentSnapshot();
+        syncStrategy.publish(new RefreshEvent(catalogName, nodeId,
+            snapshot.version(), snapshot.hash(), Instant.now()));
+      } else {
+        syncStrategy.publishPatch(patch);
+      }
       metrics.syncPublished(catalogName);
     } catch (final Exception e) {
       log.error("Failed to publish patch event for catalog '{}': {}",
