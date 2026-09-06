@@ -318,11 +318,21 @@ boolean removed  = catalog.remove("by-id", eventId);
 boolean replaced = catalog.upsert("by-id", eventId, event);
 
 // cluster-wide: the leader applies locally and broadcasts a PatchEvent
-boolean applied = andersoni.replaceAndSync("events", "by-id", eventId, updatedEvent);
-boolean applied = andersoni.insertAndSync("events", newEvent);
-boolean applied = andersoni.removeAndSync("events", "by-id", eventId);
-boolean applied = andersoni.upsertAndSync("events", "by-id", eventId, event);
+PatchOutcome outcome = andersoni.replaceAndSync("events", "by-id", eventId, updatedEvent);
+PatchOutcome outcome = andersoni.insertAndSync("events", newEvent);
+PatchOutcome outcome = andersoni.removeAndSync("events", "by-id", eventId);
+PatchOutcome outcome = andersoni.upsertAndSync("events", "by-id", eventId, event);
 ```
+
+The cluster-coordinated calls return a `PatchOutcome` rather than a boolean, because "nothing happened" has two unrelated causes worth telling apart:
+
+| Outcome | Meaning |
+|---|---|
+| `APPLIED` | this node is the leader and the change went in |
+| `NOT_FOUND` | leader, but the lookup matched nothing — usually a wrong key or a missed create |
+| `NOT_LEADER` | this node is a follower; the leader owns the write |
+
+On a five-pod cluster four pods see `NOT_LEADER` on every call and should ignore it, while `NOT_FOUND` is normally worth logging. A single boolean forces you to alert on both or on neither. `outcome.applied()` is there for call sites that only need the one bit. The local, uncoordinated methods keep returning `boolean`, since without a leader question only found and not-found are possible.
 
 Every operation that locates its target does so through an ordinary index lookup, which must resolve to **exactly one item**:
 

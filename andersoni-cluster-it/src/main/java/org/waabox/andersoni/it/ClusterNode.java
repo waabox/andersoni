@@ -28,6 +28,7 @@ import org.waabox.andersoni.AmbiguousPatchTargetException;
 import org.waabox.andersoni.Andersoni;
 import org.waabox.andersoni.Catalog;
 import org.waabox.andersoni.PatchOp;
+import org.waabox.andersoni.PatchOutcome;
 import org.waabox.andersoni.RetryPolicy;
 import org.waabox.andersoni.Snapshot;
 import org.waabox.andersoni.sync.kafka.KafkaSyncConfig;
@@ -248,10 +249,11 @@ public final class ClusterNode {
         respond(exchange, 400, "{\"error\":\"id and name are required\"}");
         return;
       }
-      final boolean applied = andersoni.insertAndSync(CATALOG,
+      final PatchOutcome outcome = andersoni.insertAndSync(CATALOG,
           new Item(Integer.parseInt(id), name));
-      respond(exchange, 200,
-          new JSONObject().put("applied", applied).toString());
+      respond(exchange, 200, new JSONObject()
+          .put("applied", outcome.applied())
+          .put("outcome", outcome.name()).toString());
     });
 
     server.createContext("/remove", exchange -> {
@@ -267,10 +269,11 @@ public final class ClusterNode {
         return;
       }
       try {
-        final boolean applied =
+        final PatchOutcome outcome =
             andersoni.removeAndSync(CATALOG, "by-name", key);
-        respond(exchange, 200,
-            new JSONObject().put("applied", applied).toString());
+        respond(exchange, 200, new JSONObject()
+            .put("applied", outcome.applied())
+            .put("outcome", outcome.name()).toString());
       } catch (final AmbiguousPatchTargetException e) {
         respond(exchange, 409,
             new JSONObject().put("error", e.getMessage()).toString());
@@ -292,12 +295,13 @@ public final class ClusterNode {
             + "removeKey are required\"}");
         return;
       }
-      final boolean applied = andersoni.applyAndSync(CATALOG, List.of(
+      final PatchOutcome outcome = andersoni.applyAndSync(CATALOG, List.of(
           new PatchOp.Insert<>(
               new Item(Integer.parseInt(insertId), insertName)),
           new PatchOp.Remove<>("by-name", removeKey)));
-      respond(exchange, 200,
-          new JSONObject().put("applied", applied).toString());
+      respond(exchange, 200, new JSONObject()
+          .put("applied", outcome.applied())
+          .put("outcome", outcome.name()).toString());
     });
 
     server.createContext("/local-refresh", exchange -> {
@@ -325,10 +329,11 @@ public final class ClusterNode {
         return;
       }
       try {
-        final boolean applied = andersoni.replaceAndSync(CATALOG, "by-name",
-            key, new Item(Integer.parseInt(id), name));
-        respond(exchange, 200,
-            new JSONObject().put("applied", applied).toString());
+        final PatchOutcome outcome = andersoni.replaceAndSync(CATALOG,
+            "by-name", key, new Item(Integer.parseInt(id), name));
+        respond(exchange, 200, new JSONObject()
+            .put("applied", outcome.applied())
+            .put("outcome", outcome.name()).toString());
       } catch (final AmbiguousPatchTargetException e) {
         respond(exchange, 409,
             new JSONObject().put("error", e.getMessage()).toString());

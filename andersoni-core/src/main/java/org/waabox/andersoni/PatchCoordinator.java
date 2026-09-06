@@ -101,9 +101,9 @@ final class PatchCoordinator {
    * <p>The catalog must have a {@link SnapshotSerializer} configured —
    * cross-node patch events cannot be built otherwise.
    *
-   * @return {@code true} on a successful local replace; {@code false} when
-   *         no item matched, this node is not the leader, or Andersoni has
-   *         been stopped
+   * @return {@link PatchOutcome#APPLIED} when the item was replaced,
+   *         {@link PatchOutcome#NOT_FOUND} when the lookup matched nothing,
+   *         {@link PatchOutcome#NOT_LEADER} on a follower
    *
    * @throws NullPointerException        if any argument is null
    * @throws IllegalStateException       if Andersoni has been stopped or
@@ -112,7 +112,7 @@ final class PatchCoordinator {
    *                                     one item
    */
   @SuppressWarnings("unchecked")
-  boolean replaceAndSync(final String catalogName, final String indexName,
+  PatchOutcome replaceAndSync(final String catalogName, final String indexName,
       final Object key, final Object newItem) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
@@ -120,12 +120,12 @@ final class PatchCoordinator {
 
     final LeaderContext context = leaderContext(catalogName);
     if (context == null) {
-      return false;
+      return PatchOutcome.NOT_LEADER;
     }
     final Optional<CatalogPatcher.ReplaceOutcome<Object>> outcomeOpt =
         context.catalog().replaceAndCapture(indexName, key, newItem);
     if (outcomeOpt.isEmpty()) {
-      return false;
+      return PatchOutcome.NOT_FOUND;
     }
     final CatalogPatcher.ReplaceOutcome<Object> outcome = outcomeOpt.get();
 
@@ -134,7 +134,7 @@ final class PatchCoordinator {
         outcome.fromHash(), outcome.toHash(), indexName,
         context.serializer().serialize(List.of(outcome.oldItem())),
         context.serializer().serialize(List.of(newItem)), Instant.now()));
-    return true;
+    return PatchOutcome.APPLIED;
   }
 
   /**
@@ -143,15 +143,16 @@ final class PatchCoordinator {
    * @param catalogName the catalog to add to, never null
    * @param newItem     the item to add, never null
    *
-   * @return true when this node is the leader and applied the insert
+   * @return {@link PatchOutcome#APPLIED} when this node is the leader,
+   *         {@link PatchOutcome#NOT_LEADER} otherwise
    */
   @SuppressWarnings("unchecked")
-  boolean insertAndSync(final String catalogName, final Object newItem) {
+  PatchOutcome insertAndSync(final String catalogName, final Object newItem) {
     Objects.requireNonNull(newItem, "newItem must not be null");
 
     final LeaderContext context = leaderContext(catalogName);
     if (context == null) {
-      return false;
+      return PatchOutcome.NOT_LEADER;
     }
     final CatalogPatcher.ReplaceOutcome<Object> outcome =
         context.catalog().insertAndCapture(newItem).orElseThrow();
@@ -160,7 +161,7 @@ final class PatchCoordinator {
         nodeId, outcome.fromVersion(), outcome.toVersion(),
         outcome.fromHash(), outcome.toHash(),
         context.serializer().serialize(List.of(newItem)), Instant.now()));
-    return true;
+    return PatchOutcome.APPLIED;
   }
 
   /**
@@ -170,22 +171,24 @@ final class PatchCoordinator {
    * @param indexName   the index to look the item up in, never null
    * @param key         the lookup key, never null
    *
-   * @return true when this node is the leader and an item was removed
+   * @return {@link PatchOutcome#APPLIED} when an item was removed,
+   *         {@link PatchOutcome#NOT_FOUND} when the lookup matched
+   *         nothing, {@link PatchOutcome#NOT_LEADER} on a follower
    */
   @SuppressWarnings("unchecked")
-  boolean removeAndSync(final String catalogName, final String indexName,
+  PatchOutcome removeAndSync(final String catalogName, final String indexName,
       final Object key) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
 
     final LeaderContext context = leaderContext(catalogName);
     if (context == null) {
-      return false;
+      return PatchOutcome.NOT_LEADER;
     }
     final Optional<CatalogPatcher.ReplaceOutcome<Object>> outcomeOpt =
         context.catalog().removeAndCapture(indexName, key);
     if (outcomeOpt.isEmpty()) {
-      return false;
+      return PatchOutcome.NOT_FOUND;
     }
     final CatalogPatcher.ReplaceOutcome<Object> outcome = outcomeOpt.get();
 
@@ -194,7 +197,7 @@ final class PatchCoordinator {
         outcome.fromHash(), outcome.toHash(), indexName,
         context.serializer().serialize(List.of(outcome.oldItem())),
         Instant.now()));
-    return true;
+    return PatchOutcome.APPLIED;
   }
 
   /**
@@ -210,10 +213,11 @@ final class PatchCoordinator {
    * @param key         the lookup key, never null
    * @param newItem     the item to store, never null
    *
-   * @return true when this node is the leader and applied the upsert
+   * @return {@link PatchOutcome#APPLIED} when this node is the leader,
+   *         {@link PatchOutcome#NOT_LEADER} otherwise
    */
   @SuppressWarnings("unchecked")
-  boolean upsertAndSync(final String catalogName, final String indexName,
+  PatchOutcome upsertAndSync(final String catalogName, final String indexName,
       final Object key, final Object newItem) {
     Objects.requireNonNull(indexName, "indexName must not be null");
     Objects.requireNonNull(key, "key must not be null");
@@ -221,7 +225,7 @@ final class PatchCoordinator {
 
     final LeaderContext context = leaderContext(catalogName);
     if (context == null) {
-      return false;
+      return PatchOutcome.NOT_LEADER;
     }
     final Catalog.UpsertCapture<Object> capture =
         context.catalog().upsertAndCapture(indexName, key, newItem);
@@ -237,7 +241,7 @@ final class PatchCoordinator {
             outcome.toVersion(), outcome.fromHash(), outcome.toHash(),
             context.serializer().serialize(List.of(newItem)),
             Instant.now()));
-    return true;
+    return PatchOutcome.APPLIED;
   }
 
   /**
@@ -249,21 +253,23 @@ final class PatchCoordinator {
    * @param catalogName the catalog to write to, never null
    * @param ops         the operations to apply in order, never null
    *
-   * @return true when this node is the leader and something changed
+   * @return {@link PatchOutcome#APPLIED} when something changed,
+   *         {@link PatchOutcome#NOT_FOUND} when no operation matched,
+   *         {@link PatchOutcome#NOT_LEADER} on a follower
    */
   @SuppressWarnings("unchecked")
-  boolean applyAndSync(final String catalogName,
+  PatchOutcome applyAndSync(final String catalogName,
       final List<PatchOp<Object>> ops) {
     Objects.requireNonNull(ops, "ops must not be null");
 
     final LeaderContext context = leaderContext(catalogName);
     if (context == null) {
-      return false;
+      return PatchOutcome.NOT_LEADER;
     }
     final Optional<Catalog.BatchCapture<Object>> captureOpt =
         context.catalog().applyAndCapture(ops);
     if (captureOpt.isEmpty()) {
-      return false;
+      return PatchOutcome.NOT_FOUND;
     }
     final Catalog.BatchCapture<Object> capture = captureOpt.get();
     final CatalogPatcher.ReplaceOutcome<Object> outcome = capture.outcome();
@@ -272,7 +278,7 @@ final class PatchCoordinator {
         outcome.fromVersion(), outcome.toVersion(), outcome.fromHash(),
         outcome.toHash(), toWireOps(context, capture.applied()),
         Instant.now()));
-    return true;
+    return PatchOutcome.APPLIED;
   }
 
   /**

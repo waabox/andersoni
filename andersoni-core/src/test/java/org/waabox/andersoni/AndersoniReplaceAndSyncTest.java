@@ -121,10 +121,11 @@ class AndersoniReplaceAndSyncTest {
     andersoni.start();
 
     final Event updated = new Event("a", new Sport("F"), new Venue("V2"));
-    final boolean replaced = andersoni.replaceAndSync("events", "by-id",
+    final PatchOutcome outcome = andersoni.replaceAndSync("events", "by-id",
         "a", updated);
 
-    assertTrue(replaced);
+    assertEquals(PatchOutcome.APPLIED, outcome);
+    assertTrue(outcome.applied());
 
     final PatchEvent event = patchCapture.getValue();
     assertEquals("events", event.catalogName());
@@ -146,7 +147,7 @@ class AndersoniReplaceAndSyncTest {
   }
 
   @Test
-  void whenReplaceAndSync_givenNotLeader_shouldReturnFalseAndSkipPublish() {
+  void whenReplaceAndSync_givenNotLeader_shouldReportNotLeaderAndSkipPublish() {
     final Event a = new Event("a", new Sport("F"), new Venue("V1"));
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
@@ -180,17 +181,18 @@ class AndersoniReplaceAndSyncTest {
     andersoni.register(eventsCatalog(List.of(a)));
     andersoni.start();
 
-    final boolean replaced = andersoni.replaceAndSync("events", "by-id",
+    final PatchOutcome outcome = andersoni.replaceAndSync("events", "by-id",
         "a", new Event("a", new Sport("F"), new Venue("V2")));
 
-    assertFalse(replaced);
+    assertEquals(PatchOutcome.NOT_LEADER, outcome);
+    assertFalse(outcome.applied());
 
     andersoni.stop();
     verify(syncStrategy, leader);
   }
 
   @Test
-  void whenReplaceAndSync_givenNoMatch_shouldReturnFalseAndSkipPublish() {
+  void whenReplaceAndSync_givenNoMatch_shouldReportNotFoundAndSkipPublish() {
     final Event a = new Event("a", new Sport("F"), new Venue("V1"));
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
@@ -223,10 +225,11 @@ class AndersoniReplaceAndSyncTest {
     andersoni.register(eventsCatalog(List.of(a)));
     andersoni.start();
 
-    final boolean replaced = andersoni.replaceAndSync("events", "by-id",
+    final PatchOutcome outcome = andersoni.replaceAndSync("events", "by-id",
         "missing", new Event("missing", new Sport("F"), new Venue("V1")));
 
-    assertFalse(replaced);
+    assertEquals(PatchOutcome.NOT_FOUND, outcome);
+    assertFalse(outcome.applied());
 
     andersoni.stop();
     verify(syncStrategy, leader);
@@ -285,10 +288,8 @@ class AndersoniReplaceAndSyncTest {
     andersoni.register(eventsCatalog(List.of(a)));
     andersoni.start();
 
-    final boolean replaced = andersoni.replaceAndSync("events", "by-id",
-        "a", new Event("a", new Sport("F"), new Venue("V2")));
-
-    assertTrue(replaced);
+    assertEquals(PatchOutcome.APPLIED, andersoni.replaceAndSync("events",
+        "by-id", "a", new Event("a", new Sport("F"), new Venue("V2"))));
 
     andersoni.stop();
     verify(syncStrategy, leader);
@@ -334,7 +335,8 @@ class AndersoniReplaceAndSyncTest {
 
     final Event updated = new Event("a", new Sport("F"),
         new Venue("a-venue-name-long-enough-to-blow-the-limit"));
-    assertTrue(andersoni.replaceAndSync("events", "by-id", "a", updated));
+    assertEquals(PatchOutcome.APPLIED,
+        andersoni.replaceAndSync("events", "by-id", "a", updated));
 
     // The leader still applied it locally: only the broadcast degraded.
     assertEquals(List.of(updated),
@@ -388,7 +390,8 @@ class AndersoniReplaceAndSyncTest {
     andersoni.register(eventsCatalog(List.of(a)));
     andersoni.start();
 
-    assertTrue(andersoni.replaceAndSync("events", "by-id", "a",
+    assertEquals(PatchOutcome.APPLIED,
+        andersoni.replaceAndSync("events", "by-id", "a",
         new Event("a", new Sport("F"), new Venue("V2"))));
 
     assertEquals("events", patchCapture.getValue().catalogName());
