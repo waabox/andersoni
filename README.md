@@ -392,6 +392,12 @@ Patches are queued per catalog in arrival order and are never coalesced: a patch
 
 The catalog must have a `SnapshotSerializer` configured — cross-node patches cannot be built without one.
 
+**Payload ceiling.** A patch carries the changed items, so an unusually large entity or a big batch can produce a message the transport refuses — Kafka's default `max.message.bytes` is 1MB. A refused publish is worse than a slow one: the leader has applied the change and nothing tells the followers, so they stay silently stale. Exceeding the ceiling therefore publishes a full-refresh event instead, which carries no payload and always fits; followers reload onto the snapshot the leader saved just before. The limit defaults to 256KB and is configurable:
+
+```java
+Andersoni.builder().maxPatchPayloadBytes(512 * 1024).build();
+```
+
 ## How It Compares
 
 Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.

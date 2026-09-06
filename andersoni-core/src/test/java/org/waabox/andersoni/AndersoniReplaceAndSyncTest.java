@@ -26,6 +26,7 @@ import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.snapshot.SnapshotStore;
 import org.waabox.andersoni.sync.PatchEvent;
 import org.waabox.andersoni.sync.PatchListener;
+import org.waabox.andersoni.sync.RefreshEvent;
 import org.waabox.andersoni.sync.RefreshListener;
 import org.waabox.andersoni.sync.SyncStrategy;
 
@@ -291,5 +292,116 @@ class AndersoniReplaceAndSyncTest {
 
     andersoni.stop();
     verify(syncStrategy, leader);
+  }
+
+  @Test
+  void whenReplaceAndSync_givenPayloadOverTheLimit_shouldPublishRefreshInstead() {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(true).anyTimes();
+    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    expectLastCall().once();
+    syncStrategy.subscribePatch(anyObject(PatchListener.class));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    // The patch must not go out; a full-refresh event must go out instead.
+    final Capture<RefreshEvent> refreshCapture = newCapture();
+    syncStrategy.publish(capture(refreshCapture));
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+
+    final LeaderElectionStrategy leader = createMock(
+        LeaderElectionStrategy.class);
+    leader.start();
+    expectLastCall().anyTimes();
+    expect(leader.isLeader()).andReturn(true).anyTimes();
+    leader.stop();
+    expectLastCall().anyTimes();
+
+    replay(syncStrategy, leader);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("leader-1")
+        .syncStrategy(syncStrategy)
+        .leaderElection(leader)
+        .maxPatchPayloadBytes(32)
+        .build();
+    andersoni.register(eventsCatalog(List.of(a)));
+    andersoni.start();
+
+    final Event updated = new Event("a", new Sport("F"),
+        new Venue("a-venue-name-long-enough-to-blow-the-limit"));
+    assertTrue(andersoni.replaceAndSync("events", "by-id", "a", updated));
+
+    // The leader still applied it locally: only the broadcast degraded.
+    assertEquals(List.of(updated),
+        andersoni.catalog("events", Event.class).search("by-id", "a"));
+
+    final RefreshEvent published = refreshCapture.getValue();
+    assertEquals("events", published.catalogName());
+    assertEquals(andersoni.catalog("events", Event.class)
+        .currentSnapshot().hash(), published.hash(),
+        "The refresh event must carry the post-patch hash, so followers "
+            + "reload onto the state the leader just saved");
+
+    andersoni.stop();
+    verify(syncStrategy, leader);
+  }
+
+  @Test
+  void whenReplaceAndSync_givenPayloadUnderTheLimit_shouldPublishThePatch() {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(true).anyTimes();
+    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    expectLastCall().once();
+    syncStrategy.subscribePatch(anyObject(PatchListener.class));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    final Capture<PatchEvent> patchCapture = newCapture();
+    syncStrategy.publishPatch(capture(patchCapture));
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+
+    final LeaderElectionStrategy leader = createMock(
+        LeaderElectionStrategy.class);
+    leader.start();
+    expectLastCall().anyTimes();
+    expect(leader.isLeader()).andReturn(true).anyTimes();
+    leader.stop();
+    expectLastCall().anyTimes();
+
+    replay(syncStrategy, leader);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("leader-1")
+        .syncStrategy(syncStrategy)
+        .leaderElection(leader)
+        .maxPatchPayloadBytes(64 * 1024)
+        .build();
+    andersoni.register(eventsCatalog(List.of(a)));
+    andersoni.start();
+
+    assertTrue(andersoni.replaceAndSync("events", "by-id", "a",
+        new Event("a", new Sport("F"), new Venue("V2"))));
+
+    assertEquals("events", patchCapture.getValue().catalogName());
+
+    andersoni.stop();
+    verify(syncStrategy, leader);
+  }
+
+  @Test
+  void whenBuilding_givenNonPositivePayloadLimit_shouldReject() {
+    assertThrows(IllegalArgumentException.class,
+        () -> Andersoni.builder().maxPatchPayloadBytes(0));
+    assertThrows(IllegalArgumentException.class,
+        () -> Andersoni.builder().maxPatchPayloadBytes(-1));
   }
 }

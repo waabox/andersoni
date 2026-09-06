@@ -118,6 +118,18 @@ public interface AndersoniMetrics {
   }
 
   /**
+   * Records that a patch was not broadcast because its encoded payload
+   * exceeded the configured limit, and a full-refresh event was published
+   * in its place.
+   *
+   * @param catalogName  the name of the catalog, never null
+   * @param payloadBytes the encoded size that exceeded the limit
+   */
+  default void patchOversized(final String catalogName,
+      final int payloadBytes) {
+  }
+
+  /**
    * Called when the Andersoni engine has fully started.
    *
    * <p>Implementations can use this to begin periodic metric reporting.
