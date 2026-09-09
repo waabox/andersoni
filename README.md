@@ -306,7 +306,7 @@ public interface SnapshotBuildHook<T> {
 
 ## Snapshot Patches
 
-> **Since 1.10.0**
+> **Since 1.12.0**
 
 Replace a single item in a catalog without re-loading the dataset. The snapshot is rebuilt copy-on-write — only the index buckets whose keys change for the patched item are recomputed; everything else is shared by reference with the previous snapshot.
 
