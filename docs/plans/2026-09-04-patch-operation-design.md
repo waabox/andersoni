@@ -215,10 +215,14 @@ missing target for a `replace` op fails the whole batch and names the key.
 Done: `AmbiguousReplaceException` is now `AmbiguousPatchTargetException`, since
 removals and upserts throw it too.
 
-### 5.4 Documentation drift
+### 5.4 Target version
 
-`README.md` marks the feature "Since 1.10.0"; the pom is at 1.11.0 and the
-release this lands in is later still.
+`README.md` marks the feature "Since 1.12.0", matching the release
+`2026-07-28-incremental-refresh-design.md` targets. It was "Since 1.10.0",
+written when the branch started in May; 1.10.0, 1.10.1, 1.10.2 and 1.11.0 have
+all been released since, none carrying this feature. The number is a
+placeholder until §1 is settled — if this design is not the one that ships, or
+slips a release, it moves with it.
 
 ---
 
