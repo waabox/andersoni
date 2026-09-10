@@ -402,6 +402,20 @@ Patches are queued per catalog in arrival order and are never coalesced: a patch
 
 The catalog must have a `SnapshotSerializer` configured — cross-node patches cannot be built without one.
 
+> ### ⚠️ Every node must be upgraded before you patch
+>
+> A patch is a new kind of sync message. A node running **1.11.0 or earlier cannot decode it**: the payload carries `fromHash`/`toHash` rather than the `version`/`hash` an older codec requires, so parsing fails.
+>
+> Nothing crashes. The Kafka consumer logs an error per message and keeps polling; the HTTP endpoint answers `500` and stays up. But an old node never learns the leader patched, so **it goes on serving stale data** until some later full refresh happens to correct it — which looks like a mysteriously stale pod rather than an obvious failure. The symptom to grep for is a deserialization error naming a `refresh event`.
+>
+> Upgrading is safe on its own: **installing this version changes nothing until you call a patch method.** A fleet on the new version that still calls only `refreshAndSync` behaves exactly as before. So the safe order is:
+>
+> 1. Deploy the new version everywhere, keeping every call site on `refreshAndSync`.
+> 2. Confirm the fleet is fully upgraded.
+> 3. Switch call sites to the patch operations.
+>
+> Rolling back step 3 is a code change. Rolling back step 1 after patches are in flight is not: old nodes will not catch up on their own.
+
 **Payload ceiling.** A patch carries the changed items, so an unusually large entity or a big batch can produce a message the transport refuses — Kafka's default `max.message.bytes` is 1MB. A refused publish is worse than a slow one: the leader has applied the change and nothing tells the followers, so they stay silently stale. Exceeding the ceiling therefore publishes a full-refresh event instead, which carries no payload and always fits; followers reload onto the snapshot the leader saved just before. The limit defaults to 256KB and is configurable:
 
 ```java
