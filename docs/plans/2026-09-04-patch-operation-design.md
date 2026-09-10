@@ -249,9 +249,15 @@ median, on one developer machine:
 
 | items | rebuild | patch | batch/10 | patch (hook opted out) | hash only |
 |---|---|---|---|---|---|
-| 10,000 | 5.3 | 0.9 | 5.7 | 6.4 | 0.5 |
-| 100,000 | 84 | 19 | 91 | 153 | 9 |
-| 500,000 | 586 | 130 | 611 | 620 | 60 |
+| 10,000 | 5.3 | 1.0 | 2.6 | ~8 | 0.5 |
+| 100,000 | ~110 | 27 | 50 | ~100–160 | 13 |
+| 500,000 | ~575 | 130 | 305 | ~570 | 60 |
+
+Run-to-run variance is wide at 10k and 100k — the harness runs in one JVM
+without isolation, so a GC in the wrong place moves a row by half. The 500k
+row is the most trustworthy, and ratios are more meaningful than absolutes.
+The hook-opted-out column tracks the rebuild column within that variance,
+which is what it should do: that path rebuilds.
 
 Three things the numbers say that the table above does not.
 
@@ -268,12 +274,15 @@ persistent map would, and that is a much larger change.
 hash serializes the whole dataset, which makes incremental hashing (below) the
 highest-value follow-up rather than a nicety.
 
-**Batching is currently no cheaper than rebuilding.** A batch of ten costs
-about what a full rebuild costs, because each operation is computed against an
-intermediate candidate snapshot and each of those pays the O(N) map copies
-again. The batch saves the hash — one instead of ten — and nothing else. It is
-still worth having for its atomicity, but its performance claim does not hold
-until the operations accumulate into one set of structures rather than ten.
+**Batching is about twice as fast as rebuilding, but only after the map
+copies were shared.** As first written, a batch of ten cost about what a full
+rebuild cost: each operation was computed against an intermediate snapshot and
+each paid the O(N) map copies again, so the batch saved the hash — one instead
+of ten — and nothing else. Operations now share a `PatchScope`: the first one
+to touch an index copies its map, the rest mutate that copy, and the batch
+freezes once at the end. A batch of ten went from ~611 ms to ~305 ms at 500k
+items, against ~575 ms to rebuild. The remaining cost is one map copy per
+index plus the single hash, which is the floor for any number of operations.
 
 The end-to-end picture in production is still strongly in the patch's favour,
 because the cost this benchmark excludes — reloading the dataset from its

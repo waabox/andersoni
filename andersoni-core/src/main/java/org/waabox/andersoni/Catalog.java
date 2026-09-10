@@ -414,7 +414,14 @@ public final class Catalog<T> {
     Objects.requireNonNull(item, "item must not be null");
     refreshLock.lock();
     try {
-      applyPatch(snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      if (surgicalPatchAllowed) {
+        applyPatch(snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      } else {
+        final Snapshot<T> snapshot = current.get();
+        final List<T> data = new ArrayList<>(snapshot.data());
+        data.add(item);
+        rebuildAfterPatch(snapshot, data, null);
+      }
     } finally {
       refreshLock.unlock();
     }
@@ -575,8 +582,14 @@ public final class Catalog<T> {
     PatchResult<T> last = null;
     final List<AppliedOp<T>> applied = new ArrayList<>(ops.size());
 
+    // One scope for the whole batch: the first operation to touch an index
+    // copies its map, the rest mutate that copy. Without this a batch of K
+    // pays K map copies per index and costs about what a full rebuild does.
+    final CatalogPatcher.PatchScope scope = new CatalogPatcher.PatchScope();
+    scope.openBatch();
+
     for (final PatchOp<T> op : ops) {
-      final Optional<Computed<T>> computed = computeOne(working, op);
+      final Optional<Computed<T>> computed = computeOne(working, op, scope);
       if (computed.isEmpty()) {
         continue;
       }
@@ -584,8 +597,9 @@ public final class Catalog<T> {
       applied.add(new AppliedOp<>(computed.get().operation(),
           computed.get().indexName(), last.oldItem(),
           computed.get().newItem()));
-      // A candidate, never published: the version and hash are placeholders
-      // and only the final swap computes the real ones.
+      // A candidate, never published: the version and hash are placeholders,
+      // and its index maps are still mutable because the batch is not
+      // finished with them.
       working = Snapshot.ofPatched(last.newItems(), last.newIndices(),
           last.newSorted(), last.newReversed(), start.version(),
           start.hash());
@@ -594,6 +608,9 @@ public final class Catalog<T> {
     if (last == null) {
       return Optional.empty();
     }
+
+    scope.closeBatch();
+    last = patcher.freeze(last);
 
     final List<T> newData = new ArrayList<>(last.newItems().size());
     for (final AndersoniCatalogItem<T> item : last.newItems()) {
@@ -643,33 +660,33 @@ public final class Catalog<T> {
    * @throws PatchTargetNotFoundException if a replace matched nothing
    */
   private Optional<Computed<T>> computeOne(final Snapshot<T> snapshot,
-      final PatchOp<T> op) {
+      final PatchOp<T> op, final CatalogPatcher.PatchScope scope) {
     return switch (op) {
       case PatchOp.Insert<T> insert -> Optional.of(new Computed<>(
-          patcher.insert(snapshot, insert.item()),
+          patcher.insert(snapshot, insert.item(), scope),
           org.waabox.andersoni.sync.PatchOperation.INSERT, null,
           insert.item()));
       case PatchOp.Remove<T> remove ->
-          patcher.remove(snapshot, remove.indexName(), remove.key())
+          patcher.remove(snapshot, remove.indexName(), remove.key(), scope)
               .map(result -> new Computed<>(result,
                   org.waabox.andersoni.sync.PatchOperation.REMOVE,
                   remove.indexName(), null));
       case PatchOp.Replace<T> replace -> Optional.of(new Computed<>(
           patcher.patch(snapshot, replace.indexName(), replace.key(),
-                  replace.item())
+                  replace.item(), scope)
               .orElseThrow(() -> new PatchTargetNotFoundException(name,
                   replace.indexName(), replace.key())),
           org.waabox.andersoni.sync.PatchOperation.REPLACE,
           replace.indexName(), replace.item()));
       case PatchOp.Upsert<T> upsert -> {
         final Optional<PatchResult<T>> replaced = patcher.patch(snapshot,
-            upsert.indexName(), upsert.key(), upsert.item());
+            upsert.indexName(), upsert.key(), upsert.item(), scope);
         yield Optional.of(replaced
             .map(result -> new Computed<>(result,
                 org.waabox.andersoni.sync.PatchOperation.REPLACE,
                 upsert.indexName(), upsert.item()))
             .orElseGet(() -> new Computed<>(
-                patcher.insert(snapshot, upsert.item()),
+                patcher.insert(snapshot, upsert.item(), scope),
                 org.waabox.andersoni.sync.PatchOperation.INSERT, null,
                 upsert.item())));
       }
@@ -726,7 +743,11 @@ public final class Catalog<T> {
 
     refreshLock.lock();
     try {
-      return applyPatch(snapshot -> patcher.remove(snapshot, indexName, key));
+      if (surgicalPatchAllowed) {
+        return applyPatch(
+            snapshot -> patcher.remove(snapshot, indexName, key));
+      }
+      return replaceByRebuild(indexName, key, null);
     } finally {
       refreshLock.unlock();
     }
@@ -810,7 +831,14 @@ public final class Catalog<T> {
     Objects.requireNonNull(item, "item must not be null");
     refreshLock.lock();
     try {
-      return applyPatch(snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      if (surgicalPatchAllowed) {
+        return applyPatch(
+            snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      }
+      final Snapshot<T> snapshot = current.get();
+      final List<T> data = new ArrayList<>(snapshot.data());
+      data.add(item);
+      return Optional.of(rebuildAfterPatch(snapshot, data, null));
     } finally {
       refreshLock.unlock();
     }
@@ -867,8 +895,48 @@ public final class Catalog<T> {
    */
   private Optional<ReplaceOutcome<T>> applyPatch(final String indexName,
       final Object key, final T newItem) {
-    return applyPatch(snapshot -> patcher.patch(snapshot, indexName, key,
-        newItem));
+    if (surgicalPatchAllowed) {
+      return applyPatch(snapshot -> patcher.patch(snapshot, indexName, key,
+          newItem));
+    }
+    return replaceByRebuild(indexName, key, newItem);
+  }
+
+  /**
+   * Replaces one item on a catalog whose hooks force a rebuild.
+   *
+   * <p>Going through the patcher here would compute every affected bucket
+   * and then discard all of it, so this resolves the lookup, derives the
+   * new item list, and rebuilds — measurably cheaper than a plain rebuild's
+   * worth of wasted work on top of the rebuild itself.
+   *
+   * <p>Must be called while holding the refresh lock.
+   *
+   * @param indexName the index to look the item up in, never null
+   * @param key       the lookup key, never null
+   * @param newItem   the replacement, or null to remove the item
+   *
+   * @return the outcome, or empty when the lookup matched nothing
+   */
+  private Optional<ReplaceOutcome<T>> replaceByRebuild(final String indexName,
+      final Object key, final T newItem) {
+    final Snapshot<T> snapshot = current.get();
+    final Optional<AndersoniCatalogItem<T>> found =
+        patcher.resolveSingle(snapshot, indexName, key);
+    if (found.isEmpty()) {
+      return Optional.empty();
+    }
+
+    final AndersoniCatalogItem<T> target = found.get();
+    final List<T> data = new ArrayList<>(snapshot.items().size());
+    for (final AndersoniCatalogItem<T> existing : snapshot.items()) {
+      if (existing != target) {
+        data.add(existing.item());
+      } else if (newItem != null) {
+        data.add(newItem);
+      }
+    }
+    return Optional.of(rebuildAfterPatch(snapshot, data, target.item()));
   }
 
   /**
