@@ -238,7 +238,49 @@ slips a release, it moves with it.
 | Content hash | O(N) serialize | O(N) serialize — unchanged |
 | Store write (leader) | O(N) serialize + upload | O(N) serialize + upload — unchanged |
 
-The residual O(N) work is CPU-bound serialization, not network or allocation.
+### Measured
+
+`PatchBenchmark` (in `andersoni-core` test sources) times one change against a
+full rebuild from data already in memory. It excludes the DataLoader on
+purpose: a real refresh also re-reads the whole dataset, which is the dominant
+cost in production and which a patch avoids entirely, so including it would
+flatter the patch without saying anything new. Milliseconds per operation,
+median, on one developer machine:
+
+| items | rebuild | patch | batch/10 | patch (hook opted out) | hash only |
+|---|---|---|---|---|---|
+| 10,000 | 5.3 | 0.9 | 5.7 | 6.4 | 0.5 |
+| 100,000 | 84 | 19 | 91 | 153 | 9 |
+| 500,000 | 586 | 130 | 611 | 620 | 60 |
+
+Three things the numbers say that the table above does not.
+
+**A patch is roughly 4–5× a rebuild, not orders of magnitude, and it scales
+with N.** "Only the affected buckets are rebuilt" is true of the buckets and
+false of the maps holding them: replacing one entry in an immutable map means
+copying the map, so a `by-id` index over N items costs an N-entry `HashMap`
+copy per patch. The surgical work is real — the extractors, views and bucket
+lists are not rebuilt — but it does not make the operation sub-linear. Only a
+persistent map would, and that is a much larger change.
+
+**The hash is the floor.** It is about half a patch's cost at 10k and 45% at
+500k. No amount of index cleverness gets below that line while the content
+hash serializes the whole dataset, which makes incremental hashing (below) the
+highest-value follow-up rather than a nicety.
+
+**Batching is currently no cheaper than rebuilding.** A batch of ten costs
+about what a full rebuild costs, because each operation is computed against an
+intermediate candidate snapshot and each of those pays the O(N) map copies
+again. The batch saves the hash — one instead of ten — and nothing else. It is
+still worth having for its atomicity, but its performance claim does not hold
+until the operations accumulate into one set of structures rather than ten.
+
+The end-to-end picture in production is still strongly in the patch's favour,
+because the cost this benchmark excludes — reloading the dataset from its
+source, and every follower deserializing a snapshot — is the one that actually
+dominates. But the in-memory win is a small multiple, not a transformation.
+
+The residual O(N) work is CPU-bound serialization and map copying, not network.
 Two follow-ups, both deferred because they change cluster-wide behaviour:
 
 1. **Incremental hashing** — cache a per-item digest in `AndersoniCatalogItem`
