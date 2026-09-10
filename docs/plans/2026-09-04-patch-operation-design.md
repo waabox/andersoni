@@ -153,6 +153,37 @@ falls back to a reload rather than dropping it.
 
 ---
 
+## 4b. Upgrading a running cluster
+
+A patch is a new sync message type, and it is **not readable by a node running
+1.11.0 or earlier**. The payload carries `fromHash`/`toHash` where the older
+`RefreshEventCodec` requires `version` and `hash`, so it throws.
+
+Neither transport fails loudly enough to notice. `KafkaSyncStrategy` catches
+per record, logs an error and keeps polling; the HTTP handler logs and answers
+`500`. The node stays up, stays healthy to any liveness check, and serves data
+that silently stops advancing — the failure mode this design works hard to
+avoid everywhere else, arriving instead through the version skew.
+
+What makes it manageable is that **the version is inert until it is used**.
+Patches are only emitted when an application calls a patch operation, so a
+fleet upgraded to this version that still calls `refreshAndSync` behaves
+exactly as it did before. The safe order is therefore:
+
+1. deploy the new version everywhere, all call sites still on `refreshAndSync`;
+2. confirm no node is left on an older version;
+3. switch call sites to the patch operations.
+
+Step 3 is reversible by reverting a code change. Step 1 is not reversible once
+patches are in flight: a node rolled back to 1.11.0 cannot read them and will
+not catch up on its own.
+
+This is the same staged shape as §7 of
+`2026-07-28-incremental-refresh-design.md`, and for the same reason, though
+that document reaches it from a wire format that stayed decodable by old nodes.
+
+---
+
 ## 5. What is left to build
 
 ### 5.1 Operations
