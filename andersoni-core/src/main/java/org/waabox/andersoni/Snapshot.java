@@ -273,6 +273,13 @@ public final class Snapshot<T> {
    * mutated afterwards. {@code items} is wrapped here because the caller
    * builds it fresh and does not retain it.
    *
+   * <p>One exception, and only one: while a batch is being computed its
+   * intermediate snapshots deliberately hold maps that are still mutable,
+   * because the next operation of the batch mutates them instead of copying
+   * them again. Those snapshots exist only to carry state from one
+   * operation to the next and are never published — the batch freezes its
+   * structures before the final swap.
+   *
    * @param items              the catalog items, never null
    * @param indices            immutable indices, never null
    * @param sortedIndices      immutable sorted indices, never null

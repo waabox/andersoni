@@ -3,6 +3,7 @@ package org.waabox.andersoni;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
@@ -49,6 +50,53 @@ final class CatalogPatcher<T> {
           List<AndersoniCatalogItem<T>>>> newReversed) {
   }
 
+  /**
+   * Tracks which index maps a computation already owns, and whether its
+   * result is about to be published.
+   *
+   * <p>A patch replaces one entry of an immutable map, which means copying
+   * the map — the dominant cost of the operation. Within a batch, the map
+   * an operation would copy was created by the operation before it and is
+   * referenced by nothing else yet, so copying it again is pure waste. The
+   * first operation to touch an index copies it and records ownership here;
+   * later ones mutate it directly.
+   *
+   * <p>{@code freeze} is false while a batch is still being computed, so
+   * intermediate results are left mutable and are wrapped once at the end.
+   * A single operation runs with an empty scope and {@code freeze} true,
+   * which is exactly the old behaviour.
+   */
+  static final class PatchScope {
+
+    /** Index names whose maps this computation owns and may mutate. */
+    private final Set<String> owned = new HashSet<>();
+
+    /** Whether the result is final and should be made unmodifiable. */
+    private boolean freeze = true;
+
+    /** Marks the scope as mid-batch, so results stay mutable. */
+    void openBatch() {
+      freeze = false;
+    }
+
+    /** Marks the batch finished, so the next result is frozen. */
+    void closeBatch() {
+      freeze = true;
+    }
+
+    /**
+     * Returns whether this computation may mutate the named index's map,
+     * recording ownership if it may not yet.
+     *
+     * @param name the index name, never null
+     *
+     * @return true if the map is already owned and safe to mutate
+     */
+    private boolean claim(final String name) {
+      return !owned.add(name);
+    }
+  }
+
   private final String catalogName;
   private final List<IndexDefinition<T>> indexDefinitions;
   private final List<SortedIndexDefinition<T>> sortedIndexDefinitions;
@@ -90,6 +138,25 @@ final class CatalogPatcher<T> {
    */
   Optional<PatchResult<T>> patch(final Snapshot<T> snapshot,
       final String indexName, final Object key, final T newItem) {
+    return patch(snapshot, indexName, key, newItem, new PatchScope());
+  }
+
+  /**
+   * As {@link #patch(Snapshot, String, Object, Object)}, sharing a scope
+   * with the other operations of a batch so each index map is copied once
+   * for the batch rather than once per operation.
+   *
+   * @param snapshot  the state this operation applies to, never null
+   * @param indexName the index used for the lookup, never null
+   * @param key       the lookup key, never null
+   * @param newItem   the replacement item, never null
+   * @param scope     the batch's ownership scope, never null
+   *
+   * @return the patched components on success, empty on no-match
+   */
+  Optional<PatchResult<T>> patch(final Snapshot<T> snapshot,
+      final String indexName, final Object key, final T newItem,
+      final PatchScope scope) {
     final Optional<AndersoniCatalogItem<T>> found =
         resolveSingle(snapshot, indexName, key);
     if (found.isEmpty()) {
@@ -101,7 +168,7 @@ final class CatalogPatcher<T> {
     runHooks(newItem);
 
     return Optional.of(build(snapshot, oldWrapped, newWrapped,
-        swapItemInList(snapshot.items(), oldWrapped, newWrapped)));
+        swapItemInList(snapshot.items(), oldWrapped, newWrapped), scope));
   }
 
   /**
@@ -118,6 +185,20 @@ final class CatalogPatcher<T> {
    * @return the patched components, never null
    */
   PatchResult<T> insert(final Snapshot<T> snapshot, final T newItem) {
+    return insert(snapshot, newItem, new PatchScope());
+  }
+
+  /**
+   * As {@link #insert(Snapshot, Object)}, sharing a batch's scope.
+   *
+   * @param snapshot the state this operation applies to, never null
+   * @param newItem  the item to add, never null
+   * @param scope    the batch's ownership scope, never null
+   *
+   * @return the patched components, never null
+   */
+  PatchResult<T> insert(final Snapshot<T> snapshot, final T newItem,
+      final PatchScope scope) {
     final AndersoniCatalogItem<T> newWrapped = wrapWithViews(newItem);
     runHooks(newItem);
 
@@ -125,7 +206,7 @@ final class CatalogPatcher<T> {
         new ArrayList<>(snapshot.items());
     newItemsList.add(newWrapped);
 
-    return build(snapshot, null, newWrapped, newItemsList);
+    return build(snapshot, null, newWrapped, newItemsList, scope);
   }
 
   /**
@@ -148,6 +229,21 @@ final class CatalogPatcher<T> {
    */
   Optional<PatchResult<T>> remove(final Snapshot<T> snapshot,
       final String indexName, final Object key) {
+    return remove(snapshot, indexName, key, new PatchScope());
+  }
+
+  /**
+   * As {@link #remove(Snapshot, String, Object)}, sharing a batch's scope.
+   *
+   * @param snapshot  the state this operation applies to, never null
+   * @param indexName the index used for the lookup, never null
+   * @param key       the lookup key, never null
+   * @param scope     the batch's ownership scope, never null
+   *
+   * @return the patched components, or empty when nothing matched
+   */
+  Optional<PatchResult<T>> remove(final Snapshot<T> snapshot,
+      final String indexName, final Object key, final PatchScope scope) {
     final Optional<AndersoniCatalogItem<T>> found =
         resolveSingle(snapshot, indexName, key);
     if (found.isEmpty()) {
@@ -163,7 +259,8 @@ final class CatalogPatcher<T> {
       }
     }
 
-    return Optional.of(build(snapshot, oldWrapped, null, newItemsList));
+    return Optional.of(build(snapshot, oldWrapped, null, newItemsList,
+        scope));
   }
 
   /**
@@ -178,7 +275,7 @@ final class CatalogPatcher<T> {
    * @throws AmbiguousPatchTargetException if more than one item matched
    * @throws IndexNotFoundException        if the index is not declared
    */
-  private Optional<AndersoniCatalogItem<T>> resolveSingle(
+  Optional<AndersoniCatalogItem<T>> resolveSingle(
       final Snapshot<T> snapshot, final String indexName, final Object key) {
     final Map<Object, List<AndersoniCatalogItem<T>>> bucketMap =
         snapshot.indicesMap().get(indexName);
@@ -216,7 +313,8 @@ final class CatalogPatcher<T> {
   private PatchResult<T> build(final Snapshot<T> snapshot,
       final AndersoniCatalogItem<T> oldWrapped,
       final AndersoniCatalogItem<T> newWrapped,
-      final List<AndersoniCatalogItem<T>> newItemsList) {
+      final List<AndersoniCatalogItem<T>> newItemsList,
+      final PatchScope scope) {
 
     final T oldItem = oldWrapped == null ? null : oldWrapped.item();
     final T newItem = newWrapped == null ? null : newWrapped.item();
@@ -224,10 +322,12 @@ final class CatalogPatcher<T> {
     return new PatchResult<>(
         oldItem,
         newItemsList,
-        patchIndices(snapshot, oldItem, newItem, oldWrapped, newWrapped),
-        patchSortedIndices(snapshot, oldItem, newItem, oldWrapped, newWrapped),
+        patchIndices(snapshot, oldItem, newItem, oldWrapped, newWrapped,
+            scope),
+        patchSortedIndices(snapshot, oldItem, newItem, oldWrapped, newWrapped,
+            scope),
         patchReversedIndices(snapshot, oldItem, newItem,
-            oldWrapped, newWrapped));
+            oldWrapped, newWrapped, scope));
   }
 
   /**
@@ -241,6 +341,48 @@ final class CatalogPatcher<T> {
    * key separately on the wire.
    *
    * @throws IndexNotFoundException if no index with that name exists
+   */
+  PatchResult<T> freeze(final PatchResult<T> result) {
+    final Map<String, Map<Object, List<AndersoniCatalogItem<T>>>> indices =
+        new HashMap<>();
+    for (final Map.Entry<String, Map<Object, List<AndersoniCatalogItem<T>>>>
+        entry : result.newIndices().entrySet()) {
+      indices.put(entry.getKey(),
+          Collections.unmodifiableMap(entry.getValue()));
+    }
+
+    final Map<String, NavigableMap<Comparable<?>,
+        List<AndersoniCatalogItem<T>>>> sorted = new HashMap<>();
+    for (final Map.Entry<String, NavigableMap<Comparable<?>,
+        List<AndersoniCatalogItem<T>>>> entry
+        : result.newSorted().entrySet()) {
+      sorted.put(entry.getKey(),
+          Collections.unmodifiableNavigableMap(entry.getValue()));
+    }
+
+    final Map<String, NavigableMap<String,
+        List<AndersoniCatalogItem<T>>>> reversed = new HashMap<>();
+    for (final Map.Entry<String, NavigableMap<String,
+        List<AndersoniCatalogItem<T>>>> entry
+        : result.newReversed().entrySet()) {
+      reversed.put(entry.getKey(),
+          Collections.unmodifiableNavigableMap(entry.getValue()));
+    }
+
+    return new PatchResult<>(result.oldItem(), result.newItems(),
+        Collections.unmodifiableMap(indices),
+        Collections.unmodifiableMap(sorted),
+        Collections.unmodifiableMap(reversed));
+  }
+
+  /**
+   * Extracts a lookup key for {@code item} under the named index, picking
+   * any one of the keys for multi-keyed indexes.
+   *
+   * @param indexName the index name, never null
+   * @param item      the item, never null
+   *
+   * @return the key, or null when the item would not be indexed there
    */
   Object extractKeyFor(final String indexName, final T item) {
     for (final IndexDefinition<T> def : indexDefinitions) {
@@ -343,7 +485,8 @@ final class CatalogPatcher<T> {
   private Map<String, Map<Object, List<AndersoniCatalogItem<T>>>>
       patchIndices(final Snapshot<T> snapshot, final T oldItem,
           final T newItem, final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
+          final AndersoniCatalogItem<T> newWrapped,
+          final PatchScope scope) {
 
     final Map<String, Set<Object>> oldKeysByIndex = keysByIndexName(oldItem);
     final Map<String, Set<Object>> newKeysByIndex = keysByIndexName(newItem);
@@ -360,10 +503,11 @@ final class CatalogPatcher<T> {
       }
       final Map<Object, List<AndersoniCatalogItem<T>>> rebuiltInner =
           patchInnerMap(oldIndices.get(idx), oldKeys, newKeys,
-              oldWrapped, newWrapped);
-      result.put(idx, Collections.unmodifiableMap(rebuiltInner));
+              oldWrapped, newWrapped, scope.claim(idx));
+      result.put(idx, scope.freeze
+          ? Collections.unmodifiableMap(rebuiltInner) : rebuiltInner);
     }
-    return Collections.unmodifiableMap(result);
+    return scope.freeze ? Collections.unmodifiableMap(result) : result;
   }
 
   /**
@@ -374,10 +518,11 @@ final class CatalogPatcher<T> {
       final Map<Object, List<AndersoniCatalogItem<T>>> inner,
       final Set<Object> oldKeys, final Set<Object> newKeys,
       final AndersoniCatalogItem<T> oldWrapped,
-      final AndersoniCatalogItem<T> newWrapped) {
+      final AndersoniCatalogItem<T> newWrapped,
+      final boolean owned) {
 
     final Map<Object, List<AndersoniCatalogItem<T>>> rebuilt =
-        new HashMap<>(inner);
+        owned ? inner : new HashMap<>(inner);
     for (final Object key : oldKeys) {
       if (!newKeys.contains(key)) {
         rebuilt.put(key, removeFromBucket(rebuilt.get(key), oldWrapped));
@@ -405,7 +550,8 @@ final class CatalogPatcher<T> {
       List<AndersoniCatalogItem<T>>>> patchSortedIndices(
           final Snapshot<T> snapshot, final T oldItem, final T newItem,
           final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
+          final AndersoniCatalogItem<T> newWrapped,
+          final PatchScope scope) {
 
     final Map<String, NavigableMap<Comparable<?>,
         List<AndersoniCatalogItem<T>>>> oldSorted =
@@ -424,11 +570,12 @@ final class CatalogPatcher<T> {
       }
       final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>>
           rebuilt = patchSortedInnerMap(oldSorted.get(def.name()),
-          oldKey, newKey, oldWrapped, newWrapped);
-      result.put(def.name(),
-          Collections.unmodifiableNavigableMap(rebuilt));
+          oldKey, newKey, oldWrapped, newWrapped,
+          scope.claim("sorted:" + def.name()));
+      result.put(def.name(), scope.freeze
+          ? Collections.unmodifiableNavigableMap(rebuilt) : rebuilt);
     }
-    return Collections.unmodifiableMap(result);
+    return scope.freeze ? Collections.unmodifiableMap(result) : result;
   }
 
   /**
@@ -442,10 +589,11 @@ final class CatalogPatcher<T> {
               List<AndersoniCatalogItem<T>>> inner,
           final Object oldKey, final Object newKey,
           final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
+          final AndersoniCatalogItem<T> newWrapped,
+          final boolean owned) {
 
-    final TreeMap<Comparable<?>, List<AndersoniCatalogItem<T>>> rebuilt =
-        new TreeMap<>(inner);
+    final NavigableMap<Comparable<?>, List<AndersoniCatalogItem<T>>> rebuilt =
+        owned ? inner : new TreeMap<>(inner);
     if (oldKey != null && Objects.equals(oldKey, newKey)) {
       rebuilt.put((Comparable<?>) oldKey,
           swapInBucket(rebuilt.get(oldKey), oldWrapped, newWrapped));
@@ -474,7 +622,8 @@ final class CatalogPatcher<T> {
   private Map<String, NavigableMap<String, List<AndersoniCatalogItem<T>>>>
       patchReversedIndices(final Snapshot<T> snapshot, final T oldItem,
           final T newItem, final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
+          final AndersoniCatalogItem<T> newWrapped,
+          final PatchScope scope) {
 
     final Map<String, NavigableMap<String,
         List<AndersoniCatalogItem<T>>>> oldReversed =
@@ -505,11 +654,12 @@ final class CatalogPatcher<T> {
       }
       final NavigableMap<String, List<AndersoniCatalogItem<T>>>
           rebuilt = patchReversedInnerMap(oldReversed.get(def.name()),
-          oldReversedKey, newReversedKey, oldWrapped, newWrapped);
-      result.put(def.name(),
-          Collections.unmodifiableNavigableMap(rebuilt));
+          oldReversedKey, newReversedKey, oldWrapped, newWrapped,
+          scope.claim("reversed:" + def.name()));
+      result.put(def.name(), scope.freeze
+          ? Collections.unmodifiableNavigableMap(rebuilt) : rebuilt);
     }
-    return Collections.unmodifiableMap(result);
+    return scope.freeze ? Collections.unmodifiableMap(result) : result;
   }
 
   /**
@@ -522,10 +672,11 @@ final class CatalogPatcher<T> {
               List<AndersoniCatalogItem<T>>> inner,
           final String oldReversedKey, final String newReversedKey,
           final AndersoniCatalogItem<T> oldWrapped,
-          final AndersoniCatalogItem<T> newWrapped) {
+          final AndersoniCatalogItem<T> newWrapped,
+          final boolean owned) {
 
-    final TreeMap<String, List<AndersoniCatalogItem<T>>> rebuilt =
-        new TreeMap<>(inner);
+    final NavigableMap<String, List<AndersoniCatalogItem<T>>> rebuilt =
+        owned ? inner : new TreeMap<>(inner);
     if (oldReversedKey != null
         && oldReversedKey.equals(newReversedKey)) {
       rebuilt.put(oldReversedKey,
