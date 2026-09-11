@@ -264,8 +264,12 @@ public final class Andersoni {
         failedCatalogs,
         this::repairFollower,
         this::repairLeader);
-    created.start();
+    // Assigned before start() so a failure inside start() (e.g. a listener
+    // registered on leaderElection.onLeaderChange throwing) still leaves
+    // reconciler visible to stop(), which would otherwise never see it and
+    // leak whatever start() managed to spin up before failing.
     reconciler = created;
+    created.start();
   }
 
   /**
@@ -685,15 +689,16 @@ public final class Andersoni {
   /**
    * Stops the Andersoni lifecycle.
    *
-   * <p>This method cancels all scheduled refresh tasks, stops the sync
-   * strategy and leader election, and clears internal state.
+   * <p>This method cancels all scheduled refresh tasks, stops the
+   * reconciler, the sync strategy and leader election, and clears internal
+   * state. Metrics are stopped last, after every component that might still
+   * report through them (in particular an in-flight reconciliation repair)
+   * has been shut down.
    */
   public void stop() {
     if (!stopped.compareAndSet(false, true)) {
       return;
     }
-
-    metrics.stop();
 
     cancelScheduledRefreshes();
 
@@ -707,6 +712,8 @@ public final class Andersoni {
     }
 
     leaderElection.stop();
+
+    metrics.stop();
   }
 
   /**

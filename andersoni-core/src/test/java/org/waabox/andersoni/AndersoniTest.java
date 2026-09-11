@@ -23,12 +23,15 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 import org.easymock.Capture;
 import org.junit.jupiter.api.Test;
@@ -2084,7 +2087,7 @@ class AndersoniTest {
   /** A sync strategy that records what was published and never delivers. */
   static final class RecordingSyncStrategy implements SyncStrategy {
 
-    final List<RefreshEvent> published = new java.util.concurrent.CopyOnWriteArrayList<>();
+    final List<RefreshEvent> published = new CopyOnWriteArrayList<>();
 
     @Override
     public void publish(final RefreshEvent event) {
@@ -2104,37 +2107,9 @@ class AndersoniTest {
     }
   }
 
-  /** A round-trip serializer for Event: id|sport|venue per line. */
-  static final class EventCodec implements SnapshotSerializer<Event> {
-
-    @Override
-    public byte[] serialize(final List<Event> items) {
-      final StringBuilder builder = new StringBuilder();
-      for (final Event event : items) {
-        builder.append(event.id()).append('|')
-            .append(event.sport().name()).append('|')
-            .append(event.venue().name()).append('\n');
-      }
-      return builder.toString().getBytes(StandardCharsets.UTF_8);
-    }
-
-    @Override
-    public List<Event> deserialize(final byte[] data) {
-      final List<Event> events = new java.util.ArrayList<>();
-      for (final String line : new String(data, StandardCharsets.UTF_8).split("\n")) {
-        if (line.isBlank()) {
-          continue;
-        }
-        final String[] parts = line.split("\\|");
-        events.add(new Event(parts[0], new Sport(parts[1]), new Venue(parts[2])));
-      }
-      return events;
-    }
-  }
-
   private static SerializedSnapshot eventsSnapshot(final List<Event> events,
       final long version) {
-    final byte[] bytes = new EventCodec().serialize(events);
+    final byte[] bytes = new EventSerializer().serialize(events);
     return new SerializedSnapshot("events", SnapshotStoreBridge.sha256Hex(bytes),
         version, Instant.parse("2026-09-11T10:00:00Z"), bytes);
   }
@@ -2147,7 +2122,7 @@ class AndersoniTest {
         .orElseThrow();
   }
 
-  private static void awaitUntil(final java.util.function.BooleanSupplier condition,
+  private static void awaitUntil(final BooleanSupplier condition,
       final Duration timeout) throws InterruptedException {
     final long deadline = System.nanoTime() + timeout.toNanos();
     while (!condition.getAsBoolean()) {
@@ -2188,7 +2163,7 @@ class AndersoniTest {
     final Catalog<Event> catalog = Catalog.of(Event.class)
         .named("events")
         .loadWith(() -> List.of(e1))
-        .serializer(new EventCodec())
+        .serializer(new EventSerializer())
         .index("by-sport").by(Event::sport, Sport::name)
         .build();
     final Andersoni andersoni = Andersoni.builder()
@@ -2199,20 +2174,22 @@ class AndersoniTest {
         .build();
     andersoni.register(catalog);
     andersoni.start();
-    store.failNextSave = true;
-    assertThrows(IllegalStateException.class, () -> andersoni.refreshAndSync("events"));
-    assertTrue(sync.published.isEmpty(), "A failed save must not publish");
+    try {
+      store.failNextSave = true;
+      assertThrows(IllegalStateException.class, () -> andersoni.refreshAndSync("events"));
+      assertTrue(sync.published.isEmpty(), "A failed save must not publish");
 
-    andersoni.reconcileNow();
+      andersoni.reconcileNow();
 
-    awaitUntil(() -> sync.published.size() == 1, Duration.ofSeconds(5));
-    assertEquals(catalog.currentSnapshot().hash(), sync.published.get(0).hash());
-    awaitUntil(() -> catalogStatus(andersoni, "events").syncState() == SyncState.IN_SYNC,
-        Duration.ofSeconds(5));
-    assertEquals(store.get("events").orElseThrow().hash(),
-        sync.published.get(0).hash());
-
-    andersoni.stop();
+      awaitUntil(() -> sync.published.size() == 1, Duration.ofSeconds(5));
+      assertEquals(catalog.currentSnapshot().hash(), sync.published.get(0).hash());
+      awaitUntil(() -> catalogStatus(andersoni, "events").syncState() == SyncState.IN_SYNC,
+          Duration.ofSeconds(5));
+      assertEquals(store.get("events").orElseThrow().hash(),
+          sync.published.get(0).hash());
+    } finally {
+      andersoni.stop();
+    }
   }
 
   @Test
@@ -2227,7 +2204,7 @@ class AndersoniTest {
         .loadWith(() -> {
           throw new IllegalStateException("followers must not query the source");
         })
-        .serializer(new EventCodec())
+        .serializer(new EventSerializer())
         .index("by-sport").by(Event::sport, Sport::name)
         .build();
     final Andersoni andersoni = Andersoni.builder()
@@ -2238,18 +2215,20 @@ class AndersoniTest {
         .build();
     andersoni.register(catalog);
     andersoni.start();
-    assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
-    store.put("events", eventsSnapshot(List.of(e1, e2), 2L));
+    try {
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+      store.put("events", eventsSnapshot(List.of(e1, e2), 2L));
 
-    andersoni.reconcileNow();
+      andersoni.reconcileNow();
 
-    awaitUntil(() -> andersoni.search("events", "by-sport", "Tennis").size() == 1,
-        Duration.ofSeconds(5));
-    awaitUntil(() -> catalogStatus(andersoni, "events").syncState() == SyncState.IN_SYNC,
-        Duration.ofSeconds(5));
-    assertTrue(catalogStatus(andersoni, "events").lastReconciledAt().isPresent());
-
-    andersoni.stop();
+      awaitUntil(() -> andersoni.search("events", "by-sport", "Tennis").size() == 1,
+          Duration.ofSeconds(5));
+      awaitUntil(() -> catalogStatus(andersoni, "events").syncState() == SyncState.IN_SYNC,
+          Duration.ofSeconds(5));
+      assertTrue(catalogStatus(andersoni, "events").lastReconciledAt().isPresent());
+    } finally {
+      andersoni.stop();
+    }
   }
 
   @Test
@@ -2262,7 +2241,7 @@ class AndersoniTest {
         .loadWith(() -> {
           throw new IllegalStateException("source down");
         })
-        .serializer(new EventCodec())
+        .serializer(new EventSerializer())
         .index("by-sport").by(Event::sport, Sport::name)
         .build();
     final Andersoni andersoni = Andersoni.builder()
@@ -2274,18 +2253,20 @@ class AndersoniTest {
         .build();
     andersoni.register(catalog);
     andersoni.start();
-    assertThrows(CatalogNotAvailableException.class,
-        () -> andersoni.search("events", "by-sport", "Football"));
-    store.put("events", eventsSnapshot(List.of(e1), 1L));
+    try {
+      assertThrows(CatalogNotAvailableException.class,
+          () -> andersoni.search("events", "by-sport", "Football"));
+      store.put("events", eventsSnapshot(List.of(e1), 1L));
 
-    andersoni.reconcileNow();
+      andersoni.reconcileNow();
 
-    awaitUntil(() -> catalogStatus(andersoni, "events").available(), Duration.ofSeconds(5));
-    assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
-    awaitUntil(() -> catalogStatus(andersoni, "events").syncState() == SyncState.IN_SYNC,
-        Duration.ofSeconds(5));
-
-    andersoni.stop();
+      awaitUntil(() -> catalogStatus(andersoni, "events").available(), Duration.ofSeconds(5));
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+      awaitUntil(() -> catalogStatus(andersoni, "events").syncState() == SyncState.IN_SYNC,
+          Duration.ofSeconds(5));
+    } finally {
+      andersoni.stop();
+    }
   }
 
   @Test
@@ -2294,7 +2275,7 @@ class AndersoniTest {
     final Catalog<Event> catalog = Catalog.of(Event.class)
         .named("events")
         .data(List.of(e1))
-        .serializer(new EventCodec())
+        .serializer(new EventSerializer())
         .index("by-sport").by(Event::sport, Sport::name)
         .build();
     final Andersoni andersoni = Andersoni.builder()
@@ -2303,14 +2284,15 @@ class AndersoniTest {
         .build();
     andersoni.register(catalog);
     andersoni.start();
+    try {
+      final AndersoniStatus.CatalogStatus status = catalogStatus(andersoni, "events");
 
-    final AndersoniStatus.CatalogStatus status = catalogStatus(andersoni, "events");
-
-    assertEquals(SyncState.UNKNOWN, status.syncState());
-    assertTrue(status.lastReconciledAt().isEmpty());
-    assertTrue(andersoni.status().inSync());
-
-    andersoni.stop();
+      assertEquals(SyncState.UNKNOWN, status.syncState());
+      assertTrue(status.lastReconciledAt().isEmpty());
+      assertTrue(andersoni.status().inSync());
+    } finally {
+      andersoni.stop();
+    }
   }
 
   @Test
@@ -2328,13 +2310,15 @@ class AndersoniTest {
   void whenReconcile_givenNoSnapshotStore_shouldBeNoOp() {
     final Andersoni andersoni = Andersoni.builder().build();
     andersoni.start();
-
-    assertDoesNotThrow(andersoni::reconcile);
-
-    andersoni.stop();
+    try {
+      assertDoesNotThrow(andersoni::reconcile);
+    } finally {
+      andersoni.stop();
+    }
   }
 
-  /** A serializer producing stable bytes for the Event test type. */
+  /** A round-trip serializer producing stable bytes for the Event test type:
+   *  id|sport|venue per line. */
   static final class EventSerializer implements SnapshotSerializer<Event> {
 
     @Override
@@ -2350,7 +2334,15 @@ class AndersoniTest {
 
     @Override
     public List<Event> deserialize(final byte[] data) {
-      throw new UnsupportedOperationException("not needed for this test");
+      final List<Event> events = new ArrayList<>();
+      for (final String line : new String(data, StandardCharsets.UTF_8).split("\n")) {
+        if (line.isBlank()) {
+          continue;
+        }
+        final String[] parts = line.split("\\|");
+        events.add(new Event(parts[0], new Sport(parts[1]), new Venue(parts[2])));
+      }
+      return events;
     }
   }
 
