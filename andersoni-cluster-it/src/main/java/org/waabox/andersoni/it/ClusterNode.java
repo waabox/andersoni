@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -21,9 +22,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.waabox.andersoni.Andersoni;
+import org.waabox.andersoni.AndersoniStatus;
 import org.waabox.andersoni.Catalog;
+import org.waabox.andersoni.ReconciliationPolicy;
 import org.waabox.andersoni.RetryPolicy;
 import org.waabox.andersoni.Snapshot;
+import org.waabox.andersoni.snapshot.fs.FileSystemSnapshotStore;
 import org.waabox.andersoni.sync.kafka.KafkaSyncConfig;
 import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
 
@@ -45,13 +49,16 @@ import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
  * <ul>
  *   <li>{@code GET  /health} — liveness, always {@code 200}.</li>
  *   <li>{@code GET  /state}  — JSON: {@code nodeId, leader, version, hash,
- *       itemCount}.</li>
+ *       itemCount, syncState}.</li>
  *   <li>{@code POST /refresh} — calls {@link Andersoni#refreshAndSync}.</li>
  * </ul>
  *
  * <p>Configuration is read from environment variables: {@code NODE_ID},
  * {@code LEADER}, {@code KAFKA_BOOTSTRAP}, {@code KAFKA_TOPIC},
- * {@code JDBC_URL}, {@code JDBC_USER}, {@code JDBC_PASSWORD}, {@code HTTP_PORT}.
+ * {@code JDBC_URL}, {@code JDBC_USER}, {@code JDBC_PASSWORD}, {@code HTTP_PORT},
+ * and, optionally, {@code SNAPSHOT_DIR} and {@code RECONCILE_INTERVAL_MS} to
+ * enable snapshot persistence and reconciliation through a shared filesystem
+ * store.
  *
  * @author waabox(waabox[at]gmail[dot]com)
  */
@@ -82,6 +89,8 @@ public final class ClusterNode {
     final String jdbcUser = env("JDBC_USER", "test");
     final String jdbcPassword = env("JDBC_PASSWORD", "test");
     final int httpPort = Integer.parseInt(env("HTTP_PORT", "8080"));
+    final String snapshotDir = optionalEnv("SNAPSHOT_DIR");
+    final String reconcileIntervalMs = optionalEnv("RECONCILE_INTERVAL_MS");
 
     LOG.info("Starting node '{}' (leader={})", nodeId, leader);
 
@@ -91,6 +100,7 @@ public final class ClusterNode {
         .named(CATALOG)
         .loadWith(() -> loadItems(jdbcUrl, jdbcUser, jdbcPassword))
         .index("by-name").by(Item::name, Function.identity())
+        .serializer(new ItemSerializer())
         .build();
 
     final KafkaSyncConfig kafkaConfig = KafkaSyncConfig.builder()
@@ -100,12 +110,19 @@ public final class ClusterNode {
         .build();
     final KafkaSyncStrategy sync = new KafkaSyncStrategy(kafkaConfig);
 
-    final Andersoni andersoni = Andersoni.builder()
+    final Andersoni.Builder builder = Andersoni.builder()
         .nodeId(nodeId)
         .syncStrategy(sync)
         .leaderElection(new StaticLeaderElection(leader))
-        .retryPolicy(RetryPolicy.of(1, Duration.ofMillis(300)))
-        .build();
+        .retryPolicy(RetryPolicy.of(1, Duration.ofMillis(300)));
+    if (snapshotDir != null) {
+      builder.snapshotStore(new FileSystemSnapshotStore(Paths.get(snapshotDir)));
+    }
+    if (reconcileIntervalMs != null) {
+      builder.reconciliation(
+          ReconciliationPolicy.of(Duration.ofMillis(Long.parseLong(reconcileIntervalMs))));
+    }
+    final Andersoni andersoni = builder.build();
 
     andersoni.register(catalog);
     andersoni.start();
@@ -191,6 +208,13 @@ public final class ClusterNode {
       json.put("version", snapshot.version());
       json.put("hash", snapshot.hash());
       json.put("itemCount", snapshot.data().size());
+      final AndersoniStatus status = andersoni.status();
+      final String syncState = status.catalogs().stream()
+          .filter(c -> c.catalogName().equals(CATALOG))
+          .map(c -> c.syncState().name())
+          .findFirst()
+          .orElse("UNKNOWN");
+      json.put("syncState", syncState);
       respond(exchange, 200, json.toString());
     });
 
@@ -235,6 +259,18 @@ public final class ClusterNode {
   private static String env(final String name, final String defaultValue) {
     final String value = System.getenv(name);
     return value != null && !value.isBlank() ? value : defaultValue;
+  }
+
+  /**
+   * Returns the value of an optional environment variable, or {@code null}
+   * if it is unset or blank.
+   *
+   * @param name the variable name, never null.
+   * @return the resolved value, or {@code null} if unset.
+   */
+  private static String optionalEnv(final String name) {
+    final String value = System.getenv(name);
+    return value != null && !value.isBlank() ? value : null;
   }
 
   /**

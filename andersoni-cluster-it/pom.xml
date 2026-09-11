@@ -41,6 +41,13 @@
       <version>${project.version}</version>
     </dependency>
 
+    <!-- Shared filesystem snapshot store (bind-mounted dir) for reconciliation. -->
+    <dependency>
+      <groupId>io.github.waabox</groupId>
+      <artifactId>andersoni-snapshot-fs</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
     <!-- JSON for the tiny HTTP state endpoint (also transitive via core). -->
     <dependency>
       <groupId>org.json</groupId>
