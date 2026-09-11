@@ -38,9 +38,9 @@
   <img src="./assets/logo-tr.png" width="300"/>
 </p>
 
-**Nanosecond-latency, lock-free reads.** In-memory indexed cache for Java 21 with a fluent DSL — regular, sorted, multi-key, and graph-based indexes, compound queries, pre-computed views (projections), build hooks, immutable snapshots, pluggable cross-node sync, and built-in observability.
+**Nanosecond-latency, lock-free reads.** In-memory indexed cache for Java 21 with a fluent DSL — regular, sorted, multi-key, and graph-based indexes, compound queries, pre-computed views (projections), build hooks, immutable snapshots, pluggable and self-healing cross-node sync, and built-in observability.
 
-> **[Read the full documentation on the Wiki](https://github.com/waabox/andersoni/wiki)** — getting started, core concepts, catalog DSL, Spring Boot integration, sync strategies, snapshot persistence, leader election, observability, DevOps & Kubernetes, deployment guide, and FAQ.
+> **[Read the full documentation on the Wiki](https://github.com/waabox/andersoni/wiki)** — getting started, core concepts, catalog DSL, Spring Boot integration, sync strategies, snapshot persistence, leader election, cluster self-healing, observability, DevOps & Kubernetes, deployment guide, and FAQ.
 
 ## Performance
 
@@ -326,6 +326,8 @@ andersoni.status().inSync();    // false if any catalog drifted
 Spring Boot: `andersoni.reconciliation.enabled=true`, `andersoni.reconciliation.interval=30s`.
 Datadog: counters `reconcile.drift_detected`, `reconcile.drift_repaired`, `reconcile.failed` and gauge `catalog.in_sync`.
 
+Decision table, leader-promotion semantics, cost and the Docker-verified failure scenarios are on the wiki: **[Cluster Self-Healing](https://github.com/waabox/andersoni/wiki/Cluster-Self-Healing)**.
+
 ## How It Compares
 
 Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.
@@ -425,7 +427,7 @@ List<EventSummary> results = andersoni.compound("events")
     .execute(EventSummary.class);
 ```
 
-For graph indexes, Spring Boot, sync strategies, snapshot persistence, K8s deployment, and more — see the **[Wiki](https://github.com/waabox/andersoni/wiki)**.
+For graph indexes, Spring Boot, sync strategies, snapshot persistence, cluster self-healing, K8s deployment, and more — see the **[Wiki](https://github.com/waabox/andersoni/wiki)**.
 
 ## Modules
 
