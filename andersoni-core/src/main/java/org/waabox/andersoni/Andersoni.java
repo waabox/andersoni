@@ -1,7 +1,5 @@
 package org.waabox.andersoni;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -26,8 +24,6 @@ import org.waabox.andersoni.leader.LeaderElectionStrategy;
 import org.waabox.andersoni.leader.SingleNodeLeaderElection;
 import org.waabox.andersoni.metrics.AndersoniMetrics;
 import org.waabox.andersoni.metrics.NoopAndersoniMetrics;
-import org.waabox.andersoni.snapshot.SerializedSnapshot;
-import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.snapshot.SnapshotStore;
 import org.waabox.andersoni.sync.RefreshEvent;
 import org.waabox.andersoni.sync.SyncStrategy;
@@ -76,8 +72,8 @@ public final class Andersoni {
   /** The leader election strategy. */
   private final LeaderElectionStrategy leaderElection;
 
-  /** The optional snapshot store for persistent snapshots. */
-  private final SnapshotStore snapshotStore;
+  /** The bridge to the optional snapshot store for persistent snapshots. */
+  private final SnapshotStoreBridge storeBridge;
 
   /** The retry policy for catalog bootstrap operations. */
   private final RetryPolicy retryPolicy;
@@ -127,7 +123,7 @@ public final class Andersoni {
     this.nodeId = nodeId;
     this.syncStrategy = syncStrategy;
     this.leaderElection = leaderElection;
-    this.snapshotStore = snapshotStore;
+    this.storeBridge = new SnapshotStoreBridge(snapshotStore);
     this.retryPolicy = retryPolicy;
     this.metrics = metrics;
     this.catalogsByName = new ConcurrentHashMap<>();
@@ -491,26 +487,34 @@ public final class Andersoni {
     }
 
     catalog.refresh();
+    storeBridge.markUnknown(catalogName);
     reportIndexSizes(catalog);
+    storeBridge.save(catalog);
+    publishRefreshEvent(catalog);
+  }
 
-    saveSnapshotIfPossible(catalog);
-
-    if (syncStrategy != null) {
-      final Snapshot<?> snapshot = catalog.currentSnapshot();
-      final RefreshEvent event = new RefreshEvent(
-          catalogName,
-          nodeId,
-          snapshot.version(),
-          snapshot.hash(),
-          Instant.now());
-      try {
-        syncStrategy.publish(event);
-        metrics.syncPublished(catalogName);
-      } catch (final Exception e) {
-        log.error("Failed to publish sync event for catalog '{}': {}",
-            catalogName, e.getMessage(), e);
-        metrics.syncPublishFailed(catalogName, e);
-      }
+  /**
+   * Broadcasts the catalog's current snapshot as a result
+   * {@link org.waabox.andersoni.sync.RefreshKind#EVENT}, if a sync
+   * strategy is configured. Publish failures are logged and reported, never
+   * thrown: the reconciliation loop is the retry path.
+   *
+   * @param catalog the catalog whose snapshot was just refreshed, never null
+   */
+  private void publishRefreshEvent(final Catalog<?> catalog) {
+    if (syncStrategy == null) {
+      return;
+    }
+    final Snapshot<?> snapshot = catalog.currentSnapshot();
+    final RefreshEvent event = new RefreshEvent(
+        catalog.name(), nodeId, snapshot.version(), snapshot.hash(), Instant.now());
+    try {
+      syncStrategy.publish(event);
+      metrics.syncPublished(catalog.name());
+    } catch (final Exception e) {
+      log.error("Failed to publish sync event for catalog '{}': {}",
+          catalog.name(), e.getMessage(), e);
+      metrics.syncPublishFailed(catalog.name(), e);
     }
   }
 
@@ -553,6 +557,10 @@ public final class Andersoni {
    * from other nodes. It re-queries the catalog's DataLoader to get fresh
    * data.
    *
+   * <p>With reconciliation active, a follower's local refresh is overwritten
+   * by the store's snapshot on the next pass; on the leader, the next pass
+   * re-saves and re-publishes the refreshed data.
+   *
    * @param catalogName the name of the catalog to refresh, never null
    *
    * @throws IllegalArgumentException if no catalog with the given name
@@ -566,6 +574,7 @@ public final class Andersoni {
     }
     final Catalog<?> catalog = requireCatalog(catalogName);
     catalog.refresh();
+    storeBridge.markUnknown(catalogName);
     reportIndexSizes(catalog);
   }
 
@@ -727,7 +736,7 @@ public final class Andersoni {
 
     // Step 1: try S3 once.
     try {
-      if (tryLoadFromSnapshotStore(name, catalog)) {
+      if (storeBridge.load(catalog)) {
         metrics.snapshotLoaded(name, "snapshotStore");
         reportIndexSizes(catalog);
         return;
@@ -762,8 +771,9 @@ public final class Andersoni {
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         catalog.bootstrap();
+        storeBridge.markUnknown(name);
         metrics.snapshotLoaded(name, "dataLoader");
-        saveSnapshotIfPossible(catalog);
+        storeBridge.save(catalog);
         reportIndexSizes(catalog);
         return;
       } catch (final Exception e) {
@@ -824,7 +834,7 @@ public final class Andersoni {
       }
 
       try {
-        if (tryLoadFromSnapshotStore(name, catalog)) {
+        if (storeBridge.load(catalog)) {
           metrics.snapshotLoaded(name, "snapshotStore");
           reportIndexSizes(catalog);
           return;
@@ -865,7 +875,8 @@ public final class Andersoni {
       final Catalog<?> catalog) {
     try {
       catalog.bootstrap();
-      saveSnapshotIfPossible(catalog);
+      storeBridge.markUnknown(name);
+      storeBridge.save(catalog);
       metrics.snapshotLoaded(name, "followerDataLoaderFallback");
       reportIndexSizes(catalog);
       log.info("Catalog '{}': follower DataLoader fallback succeeded,"
@@ -895,45 +906,6 @@ public final class Andersoni {
       failedCatalogs.add(catalogName);
       metrics.refreshFailed(catalogName, ie);
     }
-  }
-
-  /**
-   * Attempts to load catalog data from the snapshot store.
-   *
-   * @param name    the catalog name, never null
-   * @param catalog the catalog to load, never null
-   *
-   * @return true if data was successfully loaded from the snapshot store,
-   *         false if the snapshot store is not configured, the catalog has
-   *         no serializer, or no snapshot was found
-   */
-  @SuppressWarnings("unchecked")
-  private boolean tryLoadFromSnapshotStore(final String name,
-      final Catalog<?> catalog) {
-    if (snapshotStore == null) {
-      return false;
-    }
-
-    final Optional<? extends SnapshotSerializer<?>> serializerOpt =
-        catalog.serializer();
-    if (serializerOpt.isEmpty()) {
-      return false;
-    }
-
-    final Optional<SerializedSnapshot> snapshotOpt = snapshotStore.load(name);
-    if (snapshotOpt.isEmpty()) {
-      return false;
-    }
-
-    final SerializedSnapshot serialized = snapshotOpt.get();
-    final SnapshotSerializer<Object> serializer =
-        (SnapshotSerializer<Object>) serializerOpt.get();
-    final List<Object> data = serializer.deserialize(serialized.data());
-
-    final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
-    typedCatalog.refresh(data);
-
-    return true;
   }
 
   /**
@@ -1009,100 +981,22 @@ public final class Andersoni {
    * @param catalogName the catalog name, never null
    * @param catalog     the catalog to refresh, never null
    */
-  @SuppressWarnings("unchecked")
   private void refreshFromEvent(final String catalogName,
       final Catalog<?> catalog) {
     try {
-      if (snapshotStore != null && catalog.serializer().isPresent()) {
-        final Optional<SerializedSnapshot> snapshotOpt =
-            snapshotStore.load(catalogName);
-        if (snapshotOpt.isPresent()) {
-          final SnapshotSerializer<Object> serializer =
-              (SnapshotSerializer<Object>) catalog.serializer().get();
-          final List<Object> data =
-              serializer.deserialize(snapshotOpt.get().data());
-          final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
-          typedCatalog.refresh(data);
-          log.info("Refreshed catalog '{}' from snapshot store",
-              catalogName);
-          reportIndexSizes(catalog);
-          return;
-        }
+      if (storeBridge.load(catalog)) {
+        log.info("Refreshed catalog '{}' from snapshot store", catalogName);
+        reportIndexSizes(catalog);
+        return;
       }
-
       catalog.refresh();
+      storeBridge.markUnknown(catalogName);
       log.info("Refreshed catalog '{}' from DataLoader", catalogName);
       reportIndexSizes(catalog);
     } catch (final Exception e) {
       log.error("Failed to refresh catalog '{}' from sync event: {}",
           catalogName, e.getMessage(), e);
       metrics.refreshFailed(catalogName, e);
-    }
-  }
-
-  /**
-   * Serializes and saves the current catalog snapshot to the snapshot store
-   * if both the snapshot store is configured and the catalog has a
-   * serializer.
-   *
-   * <p>The stored hash is the SHA-256 of the bytes actually written, not the
-   * in-memory snapshot's hash. The two are identical whenever the serializer
-   * honours its determinism contract, but deriving the stored hash from the
-   * stored bytes makes it self-consistent by construction, so a store can
-   * verify integrity on load without depending on two separate
-   * {@code serialize()} calls agreeing. The stored hash is metadata only:
-   * restoring a snapshot recomputes the catalog's hash from the loaded items,
-   * so this does not affect the cross-node convergence signal.
-   *
-   * @param catalog the catalog whose snapshot should be saved, never null
-   */
-  @SuppressWarnings("unchecked")
-  private void saveSnapshotIfPossible(final Catalog<?> catalog) {
-    if (snapshotStore == null) {
-      return;
-    }
-
-    final Optional<? extends SnapshotSerializer<?>> serializerOpt =
-        catalog.serializer();
-    if (serializerOpt.isEmpty()) {
-      return;
-    }
-
-    final SnapshotSerializer<Object> serializer =
-        (SnapshotSerializer<Object>) serializerOpt.get();
-    final Snapshot<?> snapshot = catalog.currentSnapshot();
-    final List<Object> data = (List<Object>) snapshot.data();
-    final byte[] bytes = serializer.serialize(data);
-
-    final SerializedSnapshot serialized = new SerializedSnapshot(
-        catalog.name(),
-        sha256Hex(bytes),
-        snapshot.version(),
-        snapshot.createdAt(),
-        bytes);
-
-    snapshotStore.save(catalog.name(), serialized);
-  }
-
-  /**
-   * Returns the lowercase hex SHA-256 digest of the given bytes.
-   *
-   * @param bytes the bytes to digest, never null
-   *
-   * @return the hex-encoded digest, never null
-   */
-  private static String sha256Hex(final byte[] bytes) {
-    try {
-      final byte[] digest =
-          MessageDigest.getInstance("SHA-256").digest(bytes);
-      final StringBuilder builder = new StringBuilder(digest.length * 2);
-      for (final byte b : digest) {
-        builder.append(Character.forDigit((b >> 4) & 0xF, 16));
-        builder.append(Character.forDigit(b & 0xF, 16));
-      }
-      return builder.toString();
-    } catch (final NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 algorithm not available", e);
     }
   }
 
