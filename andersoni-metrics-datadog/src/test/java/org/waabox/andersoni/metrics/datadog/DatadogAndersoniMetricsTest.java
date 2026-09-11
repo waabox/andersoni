@@ -353,6 +353,10 @@ class DatadogAndersoniMetricsTest {
         eq("catalog:cities"), eq("node:node-1"));
     expectLastCall().once();
 
+    client.gauge(eq("catalog.in_sync"), eq(1L),
+        eq("catalog:cities"), eq("node:node-1"));
+    expectLastCall().once();
+
     // Expect index-level gauges
     client.gauge(eq("index.memory.bytes"),
         org.easymock.EasyMock.anyLong(),
@@ -375,6 +379,92 @@ class DatadogAndersoniMetricsTest {
     // Invoke reportGauges directly (package-private) for synchronous testing
     metrics.reportGauges();
 
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenDriftDetected_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+    client.count(eq("reconcile.drift_detected"), eq(1L),
+        eq("catalog:products"), eq("node:node-1"));
+    expectLastCall().once();
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics = DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.driftDetected("products");
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenDriftRepaired_givenBeforeStart_shouldIncrementCounterWithoutNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+    client.count(eq("reconcile.drift_repaired"), eq(1L), eq("catalog:products"));
+    expectLastCall().once();
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics = DatadogAndersoniMetrics.create(client);
+    metrics.driftRepaired("products");
+
+    verify(client);
+  }
+
+  @Test
+  void whenReconcileFailed_givenAfterStart_shouldIncrementCounterWithNodeTag() {
+    final StatsDClient client = createMock(StatsDClient.class);
+    client.count(eq("reconcile.failed"), eq(1L),
+        eq("catalog:products"), eq("node:node-1"));
+    expectLastCall().once();
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics = DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(), "node-1");
+    metrics.reconcileFailed("products", new RuntimeException("boom"));
+    metrics.stop();
+
+    verify(client);
+  }
+
+  @Test
+  void whenReportingGauges_givenDriftDetectedAndNotRepaired_shouldReportInSyncZero() {
+    final StatsDClient client = createMock(StatsDClient.class);
+    final Catalog<String> catalog = Catalog.of(String.class)
+        .named("cities")
+        .data(List.of("Madrid"))
+        .index("by-length").by(s -> s, String::length)
+        .build();
+    catalog.bootstrap();
+    client.count(eq("reconcile.drift_detected"), eq(1L),
+        eq("catalog:cities"), eq("node:node-1"));
+    expectLastCall().once();
+    client.gauge(eq("catalog.items"), org.easymock.EasyMock.anyLong(),
+        eq("catalog:cities"), eq("node:node-1"));
+    expectLastCall().once();
+    client.gauge(eq("catalog.memory.bytes"), org.easymock.EasyMock.anyLong(),
+        eq("catalog:cities"), eq("node:node-1"));
+    expectLastCall().once();
+    client.gauge(eq("catalog.version"), org.easymock.EasyMock.anyLong(),
+        eq("catalog:cities"), eq("node:node-1"));
+    expectLastCall().once();
+    client.gauge(eq("catalog.in_sync"), eq(0L),
+        eq("catalog:cities"), eq("node:node-1"));
+    expectLastCall().once();
+    client.gauge(eq("index.memory.bytes"), org.easymock.EasyMock.anyLong(),
+        eq("catalog:cities"), eq("index:by-length"), eq("node:node-1"));
+    expectLastCall().once();
+    client.gauge(eq("index.keys"), org.easymock.EasyMock.anyLong(),
+        eq("catalog:cities"), eq("index:by-length"), eq("node:node-1"));
+    expectLastCall().once();
+    replay(client);
+
+    final DatadogAndersoniMetrics metrics = DatadogAndersoniMetrics.create(client);
+    metrics.start(List.of(catalog), "node-1");
+    metrics.driftDetected("cities");
+    metrics.reportGauges();
     metrics.stop();
 
     verify(client);
