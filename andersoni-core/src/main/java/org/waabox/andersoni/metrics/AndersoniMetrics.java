@@ -92,6 +92,34 @@ public interface AndersoniMetrics {
   }
 
   /**
+   * Records that a reconciliation pass found this node's catalog differing
+   * from the snapshot store.
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void driftDetected(final String catalogName) {
+  }
+
+  /**
+   * Records that a reconciliation repair brought the catalog back in sync
+   * with the snapshot store (a follower reloaded, or the leader re-saved).
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void driftRepaired(final String catalogName) {
+  }
+
+  /**
+   * Records that a reconciliation step failed: the store could not be
+   * described, or a repair threw. The next pass retries.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @param cause       the failure, never null
+   */
+  default void reconcileFailed(final String catalogName, final Throwable cause) {
+  }
+
+  /**
    * Called when the Andersoni engine has fully started.
    *
    * <p>Implementations can use this to begin periodic metric reporting.

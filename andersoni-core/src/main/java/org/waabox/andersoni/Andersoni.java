@@ -644,10 +644,12 @@ public final class Andersoni {
       return new AndersoniStatus.CatalogStatus(
           catalog.name(), true, snapshot.version(), snapshot.hash(),
           catalog.serializer().isPresent(),
-          info.itemCount(), info.totalEstimatedSizeMB());
+          info.itemCount(), info.totalEstimatedSizeMB(),
+          SyncState.UNKNOWN, Optional.empty());
     } catch (final RuntimeException e) {
       return new AndersoniStatus.CatalogStatus(
-          catalog.name(), false, 0L, "", false, 0, 0.0);
+          catalog.name(), false, 0L, "", false, 0, 0.0,
+          SyncState.UNKNOWN, Optional.empty());
     }
   }
 
