@@ -62,6 +62,7 @@ final class SnapshotReconciler {
 
   private final Map<String, SyncState> syncStates = new ConcurrentHashMap<>();
   private final Map<String, Instant> lastReconciledAt = new ConcurrentHashMap<>();
+  private final Set<String> failingRepairs = ConcurrentHashMap.newKeySet();
   private final AtomicBoolean running = new AtomicBoolean(false);
   private volatile ScheduledExecutorService scheduler;
 
@@ -256,10 +257,15 @@ final class SnapshotReconciler {
       try {
         repair.accept(catalog);
         syncStates.put(name, SyncState.IN_SYNC);
+        failingRepairs.remove(name);
         metrics.driftRepaired(name);
         log.info("Catalog '{}' reconciled with the snapshot store", name);
       } catch (final RuntimeException e) {
-        log.warn("Reconciliation repair failed for catalog '{}': {}", name, e.getMessage(), e);
+        if (failingRepairs.add(name)) {
+          log.warn("Reconciliation repair failed for catalog '{}': {}", name, e.getMessage(), e);
+        } else {
+          log.warn("Reconciliation repair failed for catalog '{}': {}", name, e.getMessage());
+        }
         metrics.reconcileFailed(name, e);
       }
     });

@@ -6,10 +6,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.Test;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
+import org.waabox.andersoni.snapshot.SnapshotSerializer;
 
 /**
  * Tests for {@link SnapshotStoreBridge}.
@@ -118,5 +122,90 @@ class SnapshotStoreBridgeTest {
     final SnapshotStoreBridge bridge = new SnapshotStoreBridge(store);
 
     assertEquals(stored.hash(), bridge.describe("cities").orElseThrow().hash());
+  }
+
+  @Test
+  void whenSavingConcurrently_givenRefreshBetweenTwoSaves_shouldLeaveNewestSnapshotInStore()
+      throws InterruptedException {
+    final InMemorySnapshotStore store = new InMemorySnapshotStore();
+    final AtomicBoolean armed = new AtomicBoolean(false);
+    final CountDownLatch started = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final BlockOnceSerializer serializer = new BlockOnceSerializer(armed, started, release);
+    final Catalog<String> catalog = Catalog.of(String.class)
+        .named("cities")
+        .data(List.of("Madrid"))
+        .serializer(serializer)
+        .index("by-self").by(s -> s, Function.identity())
+        .build();
+    catalog.bootstrap();
+    final SnapshotStoreBridge bridge = new SnapshotStoreBridge(store);
+
+    armed.set(true);
+    final Thread firstSave = new Thread(() -> bridge.save(catalog));
+    firstSave.start();
+    assertTrue(started.await(5, TimeUnit.SECONDS), "first save should have started serializing");
+
+    catalog.refresh(List.of("Madrid", "Tokyo"));
+
+    final AtomicBoolean secondSaveFinished = new AtomicBoolean(false);
+    final Thread secondSave = new Thread(() -> {
+      bridge.save(catalog);
+      secondSaveFinished.set(true);
+    });
+    secondSave.start();
+    Thread.sleep(100);
+    assertFalse(secondSaveFinished.get(),
+        "the second save must block on the per-catalog monitor while the first is in flight");
+
+    release.countDown();
+    firstSave.join(5000);
+    secondSave.join(5000);
+
+    final byte[] expectedBytes = new LinesSerializer().serialize(List.of("Madrid", "Tokyo"));
+    final String expectedHash = SnapshotStoreBridge.sha256Hex(expectedBytes);
+    assertEquals(expectedHash, store.get("cities").orElseThrow().hash());
+    assertEquals(expectedHash, bridge.appliedStoreHash("cities").orElseThrow());
+    assertEquals(2, store.saveCalls());
+  }
+
+  /**
+   * Delegates to {@link LinesSerializer}, blocking on a "started"/"release"
+   * latch pair the first time {@link #serialize(List)} runs after being
+   * armed, so a test can pause one save mid-flight and let another event
+   * happen concurrently.
+   */
+  private static final class BlockOnceSerializer implements SnapshotSerializer<String> {
+
+    private final LinesSerializer delegate = new LinesSerializer();
+    private final AtomicBoolean armed;
+    private final CountDownLatch started;
+    private final CountDownLatch release;
+
+    BlockOnceSerializer(final AtomicBoolean armed, final CountDownLatch started,
+        final CountDownLatch release) {
+      this.armed = armed;
+      this.started = started;
+      this.release = release;
+    }
+
+    @Override
+    public byte[] serialize(final List<String> items) {
+      if (armed.compareAndSet(true, false)) {
+        started.countDown();
+        try {
+          release.await();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("interrupted while blocked in serialize", e);
+        }
+      }
+      return delegate.serialize(items);
+    }
+
+    @Override
+    public List<String> deserialize(final byte[] data) {
+      return delegate.deserialize(data);
+    }
   }
 }

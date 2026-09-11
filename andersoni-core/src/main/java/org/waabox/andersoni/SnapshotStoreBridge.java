@@ -39,6 +39,9 @@ final class SnapshotStoreBridge {
   /** The store hash last applied or written per catalog name. */
   private final Map<String, String> appliedStoreHash = new ConcurrentHashMap<>();
 
+  /** Per-catalog monitors serializing {@link #save(Catalog)}. */
+  private final Map<String, Object> saveLocks = new ConcurrentHashMap<>();
+
   /**
    * Creates a bridge over the given store.
    *
@@ -51,6 +54,11 @@ final class SnapshotStoreBridge {
   /** @return true if a store is configured. */
   boolean isConfigured() {
     return store != null;
+  }
+
+  /** @return the configured store's implementation class name, or "none" when absent. */
+  String storeDescription() {
+    return store == null ? "none" : store.getClass().getName();
   }
 
   /**
@@ -129,6 +137,11 @@ final class SnapshotStoreBridge {
    * store can verify integrity on load without depending on two separate
    * {@code serialize()} calls agreeing.
    *
+   * <p>The read-snapshot/serialize/store/record-hash sequence is serialized
+   * per catalog so that concurrent callers (a leader repair and an
+   * application-thread {@code refreshAndSync} can both call this) never
+   * interleave and let an older snapshot's write land after a newer one's.
+   *
    * @param catalog the catalog to save, never null
    */
   @SuppressWarnings("unchecked")
@@ -136,17 +149,19 @@ final class SnapshotStoreBridge {
     if (!supports(catalog)) {
       return;
     }
-    final SnapshotSerializer<Object> serializer =
-        (SnapshotSerializer<Object>) catalog.serializer().get();
-    final Snapshot<?> snapshot = catalog.currentSnapshot();
-    final List<Object> data = (List<Object>) snapshot.data();
-    final byte[] bytes = serializer.serialize(data);
-    final String hash = sha256Hex(bytes);
-    final SerializedSnapshot serialized = new SerializedSnapshot(
-        catalog.name(), hash, snapshot.version(), snapshot.createdAt(), bytes);
-    store.save(catalog.name(), serialized);
-    appliedStoreHash.put(catalog.name(), hash);
-    log.debug("Saved store snapshot for catalog '{}' (hash={})", catalog.name(), hash);
+    synchronized (saveLocks.computeIfAbsent(catalog.name(), k -> new Object())) {
+      final SnapshotSerializer<Object> serializer =
+          (SnapshotSerializer<Object>) catalog.serializer().get();
+      final Snapshot<?> snapshot = catalog.currentSnapshot();
+      final List<Object> data = (List<Object>) snapshot.data();
+      final byte[] bytes = serializer.serialize(data);
+      final String hash = sha256Hex(bytes);
+      final SerializedSnapshot serialized = new SerializedSnapshot(
+          catalog.name(), hash, snapshot.version(), snapshot.createdAt(), bytes);
+      store.save(catalog.name(), serialized);
+      appliedStoreHash.put(catalog.name(), hash);
+      log.debug("Saved store snapshot for catalog '{}' (hash={})", catalog.name(), hash);
+    }
   }
 
   /**

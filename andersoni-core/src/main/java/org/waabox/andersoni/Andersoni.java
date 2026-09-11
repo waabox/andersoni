@@ -270,6 +270,7 @@ public final class Andersoni {
     // leak whatever start() managed to spin up before failing.
     reconciler = created;
     created.start();
+    log.info("Snapshot reconciliation active with store {}", storeBridge.storeDescription());
   }
 
   /**
