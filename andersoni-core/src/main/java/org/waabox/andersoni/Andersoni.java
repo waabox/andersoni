@@ -38,6 +38,14 @@ import org.waabox.andersoni.sync.SyncStrategy;
  * <p>Instances are created through the fluent {@link Builder} starting with
  * {@link #builder()}.
  *
+ * <p>When a snapshot store is configured, a background reconciliation loop
+ * treats it as the cluster's authority: on each pass a follower whose
+ * applied hash drifted from the store reloads from it, and the leader
+ * whose applied hash drifted re-saves and re-publishes, so a save that
+ * failed mid-refresh is retried automatically. Reconciliation is on by
+ * default (see {@link ReconciliationPolicy#defaultPolicy()}); trigger an
+ * on-demand pass with {@link #reconcile()}.
+ *
  * <p>Usage example:
  * <pre>{@code
  * Andersoni andersoni = Andersoni.builder()
@@ -104,22 +112,31 @@ public final class Andersoni {
    *  read from transport/dispatch threads; volatile for visibility. */
   private volatile AsyncRefreshDispatcher asyncRefreshDispatcher;
 
+  /** The reconciliation policy. */
+  private final ReconciliationPolicy reconciliationPolicy;
+
+  /** The reconciler, or null when reconciliation is inactive. Written in
+   *  start() and read by status()/reconcile(). */
+  private volatile SnapshotReconciler reconciler;
+
   /**
    * Creates a new Andersoni instance.
    *
-   * @param nodeId          the unique node identifier, never null
-   * @param syncStrategy    the optional sync strategy, may be null
-   * @param leaderElection  the leader election strategy, never null
-   * @param snapshotStore   the optional snapshot store, may be null
-   * @param retryPolicy     the retry policy, never null
-   * @param metrics         the metrics reporter, never null
+   * @param nodeId               the unique node identifier, never null
+   * @param syncStrategy         the optional sync strategy, may be null
+   * @param leaderElection       the leader election strategy, never null
+   * @param snapshotStore        the optional snapshot store, may be null
+   * @param retryPolicy          the retry policy, never null
+   * @param metrics              the metrics reporter, never null
+   * @param reconciliationPolicy the reconciliation policy, never null
    */
   private Andersoni(final String nodeId,
       final SyncStrategy syncStrategy,
       final LeaderElectionStrategy leaderElection,
       final SnapshotStore snapshotStore,
       final RetryPolicy retryPolicy,
-      final AndersoniMetrics metrics) {
+      final AndersoniMetrics metrics,
+      final ReconciliationPolicy reconciliationPolicy) {
     this.nodeId = nodeId;
     this.syncStrategy = syncStrategy;
     this.leaderElection = leaderElection;
@@ -129,6 +146,7 @@ public final class Andersoni {
     this.catalogsByName = new ConcurrentHashMap<>();
     this.failedCatalogs = ConcurrentHashMap.newKeySet();
     this.scheduledFutures = new ConcurrentHashMap<>();
+    this.reconciliationPolicy = reconciliationPolicy;
   }
 
   /**
@@ -220,9 +238,60 @@ public final class Andersoni {
         catalogsByName.keySet());
     wireSyncListener();
     schedulePeriodicRefreshes();
+    startReconciler();
     metrics.start(
         Collections.unmodifiableCollection(catalogsByName.values()),
         nodeId);
+  }
+
+  /**
+   * Starts the reconciliation loop when the policy is enabled and a
+   * snapshot store is configured; otherwise logs why it is inactive.
+   */
+  private void startReconciler() {
+    if (!reconciliationPolicy.enabled() || !storeBridge.isConfigured()) {
+      log.info("Snapshot reconciliation inactive (enabled={}, snapshotStore={})",
+          reconciliationPolicy.enabled(), storeBridge.isConfigured());
+      return;
+    }
+    final SnapshotReconciler created = new SnapshotReconciler(
+        catalogsByName,
+        storeBridge,
+        leaderElection,
+        asyncRefreshDispatcher::dispatch,
+        metrics,
+        reconciliationPolicy,
+        failedCatalogs,
+        this::repairFollower,
+        this::repairLeader);
+    created.start();
+    reconciler = created;
+  }
+
+  /**
+   * Follower repair: reload the catalog from the store, which is the
+   * authority. Never falls back to the DataLoader.
+   *
+   * @param catalog the drifted catalog, never null
+   * @throws IllegalStateException if the store has no snapshot any more
+   */
+  private void repairFollower(final Catalog<?> catalog) {
+    if (!storeBridge.load(catalog)) {
+      throw new IllegalStateException("Snapshot for catalog '" + catalog.name()
+          + "' disappeared from the store before it could be loaded");
+    }
+    failedCatalogs.remove(catalog.name());
+    reportIndexSizes(catalog);
+  }
+
+  /**
+   * Leader repair: re-save the current snapshot and re-publish it.
+   *
+   * @param catalog the drifted catalog, never null
+   */
+  private void repairLeader(final Catalog<?> catalog) {
+    storeBridge.save(catalog);
+    publishRefreshEvent(catalog);
   }
 
   /**
@@ -579,6 +648,41 @@ public final class Andersoni {
   }
 
   /**
+   * Runs a reconciliation pass as soon as possible on the reconciler thread
+   * and returns without waiting.
+   *
+   * <p>This is the operational replacement for a manual refresh: it never
+   * queries the DataLoader. Followers reload from the snapshot store if it
+   * moved; the leader re-saves and re-publishes if the store is behind. It
+   * is a no-op when reconciliation is inactive (disabled policy or no
+   * snapshot store).
+   *
+   * @throws IllegalStateException if {@link #stop()} has been called
+   */
+  public void reconcile() {
+    if (stopped.get()) {
+      throw new IllegalStateException("Cannot reconcile after stop() has been called");
+    }
+    final SnapshotReconciler current = reconciler;
+    if (current == null) {
+      log.debug("reconcile() ignored: reconciliation is inactive");
+      return;
+    }
+    current.requestPass();
+  }
+
+  /**
+   * Runs a reconciliation pass on the calling thread. Repairs are still
+   * dispatched asynchronously. Intended for tests.
+   */
+  void reconcileNow() {
+    final SnapshotReconciler current = reconciler;
+    if (current != null) {
+      current.runPass();
+    }
+  }
+
+  /**
    * Stops the Andersoni lifecycle.
    *
    * <p>This method cancels all scheduled refresh tasks, stops the sync
@@ -592,6 +696,11 @@ public final class Andersoni {
     metrics.stop();
 
     cancelScheduledRefreshes();
+
+    final SnapshotReconciler current = reconciler;
+    if (current != null) {
+      current.stop();
+    }
 
     if (syncStrategy != null) {
       syncStrategy.stop();
@@ -643,20 +752,26 @@ public final class Andersoni {
    * @param catalog the catalog to inspect, never null
    * @return the catalog status, never null
    */
-  private static AndersoniStatus.CatalogStatus buildCatalogStatus(
+  private AndersoniStatus.CatalogStatus buildCatalogStatus(
       final Catalog<?> catalog) {
+    final SnapshotReconciler current = reconciler;
+    final SyncState syncState = current == null
+        ? SyncState.UNKNOWN : current.syncState(catalog.name());
+    final Optional<Instant> lastReconciledAt = current == null
+        ? Optional.empty() : current.lastReconciledAt(catalog.name());
     try {
       final Snapshot<?> snapshot = catalog.currentSnapshot();
       final CatalogInfo info = catalog.info();
       return new AndersoniStatus.CatalogStatus(
-          catalog.name(), true, snapshot.version(), snapshot.hash(),
+          catalog.name(), !failedCatalogs.contains(catalog.name()),
+          snapshot.version(), snapshot.hash(),
           catalog.serializer().isPresent(),
           info.itemCount(), info.totalEstimatedSizeMB(),
-          SyncState.UNKNOWN, Optional.empty());
+          syncState, lastReconciledAt);
     } catch (final RuntimeException e) {
       return new AndersoniStatus.CatalogStatus(
           catalog.name(), false, 0L, "", false, 0, 0.0,
-          SyncState.UNKNOWN, Optional.empty());
+          syncState, lastReconciledAt);
     }
   }
 
@@ -1110,6 +1225,7 @@ public final class Andersoni {
    *   <li>snapshotStore: none</li>
    *   <li>retryPolicy: {@link RetryPolicy#defaultPolicy()}</li>
    *   <li>metrics: {@link NoopAndersoniMetrics}</li>
+   *   <li>reconciliation: {@link ReconciliationPolicy#defaultPolicy()}</li>
    * </ul>
    */
   public static final class Builder {
@@ -1131,6 +1247,9 @@ public final class Andersoni {
 
     /** The optional metrics reporter. */
     private AndersoniMetrics metrics;
+
+    /** The optional reconciliation policy. */
+    private ReconciliationPolicy reconciliation;
 
     /** Creates a new builder with default settings. */
     private Builder() {
@@ -1250,6 +1369,20 @@ public final class Andersoni {
     }
 
     /**
+     * Sets the reconciliation policy. Defaults to
+     * {@link ReconciliationPolicy#defaultPolicy()}: enabled, every 30
+     * seconds, active only when a snapshot store is configured.
+     *
+     * @param thePolicy the policy, never null
+     * @return this builder, never null
+     */
+    public Builder reconciliation(final ReconciliationPolicy thePolicy) {
+      Objects.requireNonNull(thePolicy, "reconciliation policy must not be null");
+      this.reconciliation = thePolicy;
+      return this;
+    }
+
+    /**
      * Builds the Andersoni instance with the configured settings.
      *
      * <p>Any unset optional fields are replaced with their defaults.
@@ -1283,6 +1416,8 @@ public final class Andersoni {
           ? retryPolicy : RetryPolicy.defaultPolicy();
       final AndersoniMetrics resolvedMetrics = metrics != null
           ? metrics : new NoopAndersoniMetrics();
+      final ReconciliationPolicy resolvedReconciliation = reconciliation != null
+          ? reconciliation : ReconciliationPolicy.defaultPolicy();
 
       return new Andersoni(
           resolvedNodeId,
@@ -1290,7 +1425,8 @@ public final class Andersoni {
           resolvedLeader,
           snapshotStore,
           resolvedRetry,
-          resolvedMetrics);
+          resolvedMetrics,
+          resolvedReconciliation);
     }
   }
 }
