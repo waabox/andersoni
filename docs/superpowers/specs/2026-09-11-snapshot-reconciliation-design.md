@@ -50,7 +50,9 @@ authoritative state** of the cluster:
 - **The leader pushes**: compare the store's snapshot hash with what the leader
   last saved; on mismatch (or after a local refresh whose save failed),
   re-save and re-publish.
-- **A newly promoted leader** runs an immediate pass.
+- **A newly promoted leader** runs an authoritative refresh of every catalog
+  (re-query, save, publish), because its in-memory snapshot may be older
+  than the store's.
 
 Kafka remains the fast path. The store becomes the durable safety net, so
 recovery no longer depends on the sync channel being healthy. The loop is also
@@ -139,10 +141,16 @@ catalogs by name, `SnapshotStoreBridge`, `LeaderElectionStrategy`,
 interval plus a random jitter of up to 20% so N nodes do not hit the store in
 lockstep. Stopped in `Andersoni.stop()`.
 
-**Leader change.** On start, registers
-`leaderElection.onLeaderChange(isLeader -> { if (isLeader) runPassNow(); })`.
-The immediate pass runs on the reconciler thread, never on the election
-callback thread.
+**Leader change.** `SnapshotReconciler` does not react to leadership changes;
+`Andersoni` owns that. On `start()`, `Andersoni` registers
+`leaderElection.onLeaderChange(isLeader -> { if (isLeader) refreshAllAsPromotedLeader(); })`,
+which dispatches `refreshAndSync` for every registered catalog through the
+`AsyncRefreshDispatcher` (serialized and coalesced per catalog). This runs
+regardless of whether a snapshot store is configured. A promoted follower's
+in-memory snapshot may be older than the one the previous leader uploaded
+just before dying, so re-querying the source is the only way to avoid
+publishing stale data over the store; the reconciliation pass remains the
+fallback if the refresh itself fails.
 
 **A pass** iterates every catalog that has a serializer (catalogs without one
 are skipped and reported as `UNKNOWN`). For each catalog:
@@ -328,7 +336,7 @@ scheduler:
 - a serializer whose round trip is not byte-stable does not cause repeated
   reloads across passes;
 - `describe` throwing does not stop the pass for the remaining catalogs;
-- promotion to leader triggers an immediate pass;
+- promotion to leader triggers an authoritative refresh;
 - `disabled()` or no snapshot store: no scheduler thread, `status()` reports
   `UNKNOWN`;
 - `reconcile()` after `stop()` throws;
@@ -392,6 +400,13 @@ Test naming follows `whenDoingSomething_givenSomeScenario_shouldDoOrHappenSometh
 - **Kafka `auto.offset.reset=earliest` / durable consumer offsets.** Would
   replay missed events after a restart but not after a lost message, a dead
   consumer, or a failed reload, and would replay long histories on new nodes.
+- **Promotion runs a reconciliation pass.** A promoted follower whose
+  in-memory snapshot is older than the store would overwrite the store with
+  stale data: if the previous leader uploaded a newer snapshot and died
+  before this node reloaded it, the leader rule ("my applied hash differs
+  from the store's → re-save mine") pushes the stale in-memory snapshot over
+  the store, losing the previous leader's refresh until the next refresh.
+  Re-querying the source instead re-establishes the cluster's truth.
 
 ## Open Questions
 

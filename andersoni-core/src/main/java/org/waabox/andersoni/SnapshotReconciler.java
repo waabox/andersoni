@@ -32,8 +32,7 @@ import org.waabox.andersoni.snapshot.SnapshotMetadata;
  *       authority);</li>
  *   <li>the <b>leader</b> whose applied hash is missing or differs re-saves
  *       and re-publishes, which also covers a save that failed during
- *       {@code refreshAndSync};</li>
- *   <li>a node promoted to leader runs a pass immediately.</li>
+ *       {@code refreshAndSync}.</li>
  * </ul>
  *
  * <p>Repairs run through the shared dispatcher so they serialize with
@@ -99,7 +98,7 @@ final class SnapshotReconciler {
     this.leaderRepair = leaderRepair;
   }
 
-  /** Starts the scheduler, registers for leader changes, schedules the first pass. */
+  /** Starts the scheduler and schedules the first pass. */
   void start() {
     if (!running.compareAndSet(false, true)) {
       return;
@@ -108,12 +107,6 @@ final class SnapshotReconciler {
       final Thread thread = new Thread(r, "andersoni-reconciler");
       thread.setDaemon(true);
       return thread;
-    });
-    leaderElection.onLeaderChange(isLeader -> {
-      if (isLeader) {
-        log.info("Promoted to leader; running an immediate reconciliation pass");
-        requestPass();
-      }
     });
     scheduleNext();
     log.info("Snapshot reconciliation started, interval {} (+ up to {}% jitter)",

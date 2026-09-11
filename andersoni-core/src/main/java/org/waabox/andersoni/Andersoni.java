@@ -236,6 +236,7 @@ public final class Andersoni {
     bootstrapAllCatalogs();
     asyncRefreshDispatcher = new AsyncRefreshDispatcher(
         catalogsByName.keySet());
+    registerPromotionRefresh();
     wireSyncListener();
     schedulePeriodicRefreshes();
     startReconciler();
@@ -271,6 +272,67 @@ public final class Andersoni {
     reconciler = created;
     created.start();
     log.info("Snapshot reconciliation active with store {}", storeBridge.storeDescription());
+  }
+
+  /**
+   * Registers the listener that runs an authoritative refresh of every
+   * catalog when this node is promoted to leader.
+   *
+   * <p>Registered unconditionally, independent of whether a snapshot store
+   * is configured: a promoted leader re-publishing fresh data is correct in
+   * every deployment (without a store, followers still reload from their
+   * DataLoader on the resulting {@code EVENT}). Must run after
+   * {@link #asyncRefreshDispatcher} is assigned. Leadership already started
+   * in {@link #start()} before this is called, so a promotion that happened
+   * during bootstrap is not replayed here: the first reconciliation pass
+   * covers that, and single-node deployments never change leader.
+   */
+  private void registerPromotionRefresh() {
+    leaderElection.onLeaderChange(isLeader -> {
+      if (isLeader) {
+        refreshAllAsPromotedLeader();
+      }
+    });
+  }
+
+  /**
+   * Runs an authoritative refresh of every registered catalog after this
+   * node is promoted to leader.
+   *
+   * <p>Each catalog's refresh is dispatched through the
+   * {@link #asyncRefreshDispatcher} so it is serialized and coalesced with
+   * any concurrent sync-event reload for the same catalog.
+   */
+  private void refreshAllAsPromotedLeader() {
+    log.info("Promoted to leader; running an authoritative refresh of {} catalog(s)",
+        catalogsByName.size());
+    for (final String name : catalogsByName.keySet()) {
+      asyncRefreshDispatcher.dispatch(name, () -> promotedLeaderRefresh(name));
+    }
+  }
+
+  /**
+   * Runs the authoritative refresh for one catalog as part of a promotion.
+   *
+   * <p>On success, a catalog whose bootstrap had previously failed is
+   * recovered. On failure, the error is reported and swallowed: the
+   * reconciliation loop remains the fallback under the leader rule (an
+   * applied hash missing or differing from the store's is re-saved and
+   * re-published on the next pass).
+   *
+   * @param name the catalog name, never null
+   */
+  private void promotedLeaderRefresh(final String name) {
+    if (stopped.get()) {
+      return;
+    }
+    try {
+      refreshAndSync(name);
+      failedCatalogs.remove(name);
+    } catch (final RuntimeException e) {
+      log.error("Promotion refresh failed for catalog '{}': {}", name, e.getMessage(), e);
+      metrics.refreshFailed(name, e);
+    }
   }
 
   /**

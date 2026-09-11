@@ -310,7 +310,7 @@ With a `SnapshotStore` configured, every node runs a reconciliation loop (defaul
 
 - **Followers** compare the store's snapshot hash with the one they last applied and reload from the store on any difference. A missed sync event, a failed reload or a restart during a broadcast is repaired within one interval.
 - **The leader** re-uploads and re-broadcasts its snapshot if the store is behind (for example after a failed upload). A local `refresh(name)` called directly on the leader is picked up by the next reconciliation pass, which re-uploads and re-broadcasts it, so it becomes cluster-visible within one interval; the same call on a follower is simply overwritten by the store on the next pass.
-- **A newly elected leader** reconciles immediately.
+- **A newly elected leader** re-queries the source and re-publishes, so a refresh the previous leader made just before dying is never lost.
 - A custom `SnapshotStore` that does not override `describe` pays a full snapshot download per catalog per node per interval, since the default falls back to `load`. Override `describe` to return metadata without fetching the payload (the bundled S3 and filesystem stores already do).
 
 ```java

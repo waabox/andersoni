@@ -372,33 +372,6 @@ class SnapshotReconcilerTest {
   }
 
   @Test
-  void whenPromotedToLeader_givenStartedReconciler_shouldRunPassImmediately()
-      throws InterruptedException {
-    final InMemorySnapshotStore store = new InMemorySnapshotStore();
-    final SnapshotStoreBridge bridge = new SnapshotStoreBridge(store);
-    final Catalog<String> cities = catalog("cities", new LinesSerializer(), List.of("Madrid"));
-    cities.bootstrap();
-    final ToggleLeaderElection election = new ToggleLeaderElection(false);
-    final List<String> leaderRepairs = new CopyOnWriteArrayList<>();
-    final SnapshotReconciler reconciler = new SnapshotReconciler(Map.of("cities", cities),
-        bridge, election, INLINE, new RecordingMetrics(),
-        ReconciliationPolicy.of(Duration.ofHours(1)), ConcurrentHashMap.newKeySet(),
-        c -> bridge.load(c), c -> {
-          leaderRepairs.add(c.name());
-          bridge.save(c);
-        });
-    reconciler.start();
-    try {
-      election.become(true);
-
-      awaitUntil(() -> !leaderRepairs.isEmpty(), Duration.ofSeconds(5));
-      assertEquals(List.of("cities"), leaderRepairs);
-    } finally {
-      reconciler.stop();
-    }
-  }
-
-  @Test
   void whenStarted_givenShortInterval_shouldRunPassesPeriodically()
       throws InterruptedException {
     final InMemorySnapshotStore store = new InMemorySnapshotStore();
