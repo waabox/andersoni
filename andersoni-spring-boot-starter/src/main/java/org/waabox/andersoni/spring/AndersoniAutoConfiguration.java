@@ -11,6 +11,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.Bean;
 import org.waabox.andersoni.Andersoni;
+import org.waabox.andersoni.ReconciliationPolicy;
 import org.waabox.andersoni.RetryPolicy;
 import org.waabox.andersoni.leader.LeaderElectionStrategy;
 import org.waabox.andersoni.metrics.AndersoniMetrics;
@@ -114,6 +115,15 @@ public final class AndersoniAutoConfiguration {
       builder.retryPolicy(policy);
       log.info("Andersoni using custom RetryPolicy");
     });
+
+    final AndersoniProperties.Reconciliation reconciliation = properties.getReconciliation();
+    if (reconciliation.isEnabled()) {
+      builder.reconciliation(ReconciliationPolicy.of(reconciliation.getInterval()));
+      log.info("Andersoni reconciliation enabled every {}", reconciliation.getInterval());
+    } else {
+      builder.reconciliation(ReconciliationPolicy.disabled());
+      log.info("Andersoni reconciliation disabled by configuration");
+    }
 
     final Andersoni andersoni = builder.build();
 

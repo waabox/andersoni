@@ -1,9 +1,11 @@
 package org.waabox.andersoni.spring;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
@@ -101,6 +103,35 @@ class AndersoniAutoConfigurationTest {
               context.getBean(TestSyncStrategy.class);
           assertTrue(syncStrategy.isStarted(),
               "SyncStrategy should have been started during lifecycle");
+        });
+  }
+
+  @Test
+  void whenContextLoads_givenNoReconciliationProperties_shouldDefaultToEnabledEveryThirtySeconds() {
+    runner.run(context -> {
+      final AndersoniProperties properties = context.getBean(AndersoniProperties.class);
+      assertTrue(properties.getReconciliation().isEnabled());
+      assertEquals(Duration.ofSeconds(30), properties.getReconciliation().getInterval());
+    });
+  }
+
+  @Test
+  void whenContextLoads_givenReconciliationDisabled_shouldBindFalse() {
+    runner.withPropertyValues("andersoni.reconciliation.enabled=false")
+        .run(context -> {
+          final AndersoniProperties properties = context.getBean(AndersoniProperties.class);
+          assertFalse(properties.getReconciliation().isEnabled());
+          assertNotNull(context.getBean(Andersoni.class));
+        });
+  }
+
+  @Test
+  void whenContextLoads_givenReconciliationInterval_shouldBindDuration() {
+    runner.withPropertyValues("andersoni.reconciliation.interval=10s")
+        .run(context -> {
+          final AndersoniProperties properties = context.getBean(AndersoniProperties.class);
+          assertEquals(Duration.ofSeconds(10), properties.getReconciliation().getInterval());
+          assertNotNull(context.getBean(Andersoni.class));
         });
   }
 
