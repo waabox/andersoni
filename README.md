@@ -304,6 +304,27 @@ public interface SnapshotBuildHook<T> {
 }
 ```
 
+## Cluster Self-Healing
+
+With a `SnapshotStore` configured, every node runs a reconciliation loop (default: every 30 seconds):
+
+- **Followers** compare the store's snapshot hash with the one they last applied and reload from the store on any difference. A missed sync event, a failed reload or a restart during a broadcast is repaired within one interval.
+- **The leader** re-uploads and re-broadcasts its snapshot if the store is behind (for example after a failed upload).
+- **A newly elected leader** reconciles immediately.
+
+```java
+Andersoni andersoni = Andersoni.builder()
+    .snapshotStore(s3Store)
+    .reconciliation(ReconciliationPolicy.of(Duration.ofSeconds(15)))  // or .disabled()
+    .build();
+
+andersoni.reconcile();          // force a pass now (never hits the DataLoader)
+andersoni.status().inSync();    // false if any catalog drifted
+```
+
+Spring Boot: `andersoni.reconciliation.enabled=true`, `andersoni.reconciliation.interval=30s`.
+Datadog: counters `reconcile.drift_detected`, `reconcile.drift_repaired`, `reconcile.failed` and gauge `catalog.in_sync`.
+
 ## How It Compares
 
 Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.

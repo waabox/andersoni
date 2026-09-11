@@ -86,6 +86,7 @@ org.waabox.andersoni.example            # Example app
 - **Build Hooks**: `SnapshotBuildHook<T>` — per-item hooks during snapshot build with priority ordering. Single-loop build: views → indexation → hooks in one pass
 - **Retry with backoff**: `RetryPolicy` for bootstrap and refresh failures
 - **Refresh request propagation**: `RefreshEvent` carries a `RefreshKind` (`EVENT` = result, `REQUEST` = command). The authoritative refresh runs **only on the leader**. `refreshAndSync` on a follower publishes a `REQUEST`; **only the leader acts on requests**, followers ignore them, so the propagation graph `REQUEST → EVENT → reload` stays acyclic (no loop). DB polling is a state channel and cannot carry requests — it drops them (follower refresh becomes a no-op there). See `.claude/docs/use-cases/cluster-refresh-request-propagation.md`
+- **Snapshot reconciliation (anti-entropy)**: the `SnapshotStore` is the cluster's authoritative state. `SnapshotReconciler` runs every `ReconciliationPolicy.interval()` (default 30s, on by default when a store is configured): followers reload from the store when its hash differs from the hash they last applied (`SnapshotStoreBridge.appliedStoreHash`), the leader re-saves and re-publishes when its applied hash is missing or differs, a promoted leader runs a pass immediately. Repairs go through `AsyncRefreshDispatcher`. `Andersoni.reconcile()` forces a pass; `status()` exposes `syncState` per catalog. Design: `docs/superpowers/specs/2026-09-11-snapshot-reconciliation-design.md`
 
 ## CI/CD
 
