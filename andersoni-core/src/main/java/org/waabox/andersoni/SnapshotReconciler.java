@@ -6,6 +6,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -137,7 +138,11 @@ final class SnapshotReconciler {
     if (current == null) {
       return;
     }
-    current.execute(this::runPassSafely);
+    try {
+      current.execute(this::runPassSafely);
+    } catch (final RejectedExecutionException e) {
+      log.debug("Reconciler stopped; ignoring pass request for a concurrently stopped scheduler");
+    }
   }
 
   /**
@@ -172,10 +177,17 @@ final class SnapshotReconciler {
     if (current == null || !running.get()) {
       return;
     }
-    current.schedule(() -> {
-      runPassSafely();
-      scheduleNext();
-    }, nextDelayMillis(), TimeUnit.MILLISECONDS);
+    try {
+      current.schedule(() -> {
+        try {
+          runPassSafely();
+        } finally {
+          scheduleNext();
+        }
+      }, nextDelayMillis(), TimeUnit.MILLISECONDS);
+    } catch (final RejectedExecutionException e) {
+      log.debug("Reconciler stopped; not rescheduling the next pass");
+    }
   }
 
   private long nextDelayMillis() {
@@ -236,6 +248,10 @@ final class SnapshotReconciler {
         storeHash.orElse("<none>"), applied.orElse("<none>"));
 
     final Consumer<Catalog<?>> repair = leader ? leaderRepair : followerRepair;
+    // Relies on the dispatcher's per-catalog coalescing (a dispatch while one is
+    // queued is dropped; while one is running it queues at most one follow-up) to
+    // bound redundant repairs. Deliberately keeps no in-flight marker here: a
+    // dropped dispatch would never clear it, wedging the catalog permanently.
     dispatcher.accept(name, () -> {
       try {
         repair.accept(catalog);

@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -40,7 +42,7 @@ class SnapshotReconcilerTest {
     @Override
     public List<String> deserialize(final byte[] data) {
       final List<String> items = new ArrayList<>(super.deserialize(data));
-      java.util.Collections.reverse(items);
+      Collections.reverse(items);
       return items;
     }
   }
@@ -292,19 +294,24 @@ class SnapshotReconcilerTest {
     b.bootstrap();
     final RecordingMetrics metrics = new RecordingMetrics();
     final List<String> leaderRepairs = new ArrayList<>();
-    final Map<String, Catalog<?>> catalogs = new java.util.LinkedHashMap<>();
+    final Map<String, Catalog<?>> catalogs = new LinkedHashMap<>();
     catalogs.put("a", a);
     catalogs.put("b", b);
     final SnapshotReconciler reconciler = reconciler(catalogs, bridge,
         new ToggleLeaderElection(true), metrics, ConcurrentHashMap.newKeySet(),
         new ArrayList<>(), leaderRepairs);
+    reconciler.runPass();
+    assertEquals(List.of("a", "b"), leaderRepairs);
+    assertEquals(SyncState.IN_SYNC, reconciler.syncState("a"));
+    assertEquals(SyncState.IN_SYNC, reconciler.syncState("b"));
     store.failDescribe = true;
 
     reconciler.runPass();
 
     assertEquals(List.of("a", "b"), metrics.failed);
-    assertTrue(leaderRepairs.isEmpty());
-    assertEquals(SyncState.UNKNOWN, reconciler.syncState("a"));
+    assertEquals(List.of("a", "b"), leaderRepairs);
+    assertEquals(SyncState.IN_SYNC, reconciler.syncState("a"));
+    assertEquals(SyncState.IN_SYNC, reconciler.syncState("b"));
   }
 
   @Test
