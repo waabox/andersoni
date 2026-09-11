@@ -61,7 +61,7 @@ class ClusterSelfHealingIT {
       assertEquals(3, itemCount(cluster, node1),
           "node-1 has a 60s reconcile interval and dropped the leader's event");
 
-      final String storeHashBefore = cluster.storeHash().orElseThrow();
+      final String storeHashBefore = cluster.storeHash(node1).orElseThrow();
 
       cluster.stopNode(node0);
       assertEquals(200, cluster.post(node1, "/leader?value=true"));
@@ -72,11 +72,11 @@ class ClusterSelfHealingIT {
       cluster.post(node1, "/reconcile");
       cluster.await(Duration.ofSeconds(15), () -> cluster.allInSync(survivors));
 
-      assertEquals(cluster.storeHash().orElseThrow(), cluster.hashOf(node1));
+      assertEquals(cluster.storeHash(node1).orElseThrow(), cluster.hashOf(node1));
       assertEquals(4, itemCount(cluster, node1));
       assertEquals(4, itemCount(cluster, node2));
       LOG.info("Store hash unchanged after promotion: {}",
-          storeHashBefore.equals(cluster.storeHash().orElseThrow()));
+          storeHashBefore.equals(cluster.storeHash(node1).orElseThrow()));
       LOG.info("node-1 promoted to leader, re-established truth from the source, and "
           + "converged node-2 through its authoritative refresh");
     }
@@ -112,7 +112,7 @@ class ClusterSelfHealingIT {
 
       cluster.await(Duration.ofSeconds(30), () -> cluster.allConverged(4));
       cluster.await(Duration.ofSeconds(15), () -> cluster.allInSync(all));
-      assertEquals(cluster.storeHash().orElseThrow(), cluster.hashOf(node0));
+      assertEquals(cluster.storeHash(node0).orElseThrow(), cluster.hashOf(node0));
       LOG.info("Leader recovered from a failed save and republished once the store came back");
     }
   }
@@ -137,7 +137,12 @@ class ClusterSelfHealingIT {
       assertEquals(200, cluster.post(node2, "/fault/sync?dropIncoming=true"));
 
       cluster.insertItem(4, "item-4");
-      assertEquals(200, cluster.post(node0, "/refresh"));
+      // node-2's consumer may not have joined its group yet (offset reset =
+      // latest), so keep re-publishing until it provably received and dropped
+      // one event; the data does not change between refreshes.
+      cluster.refreshUntil(node0,
+          () -> droppedEvents(cluster, node2) >= 1,
+          Duration.ofSeconds(60));
 
       cluster.await(Duration.ofSeconds(30), () -> cluster.allConverged(4));
       cluster.await(Duration.ofSeconds(15), () -> cluster.allInSync(all));
@@ -186,6 +191,14 @@ class ClusterSelfHealingIT {
       return cluster.state(node).getInt("itemCount");
     } catch (final Exception e) {
       return -1;
+    }
+  }
+
+  private long droppedEvents(final ClusterHarness cluster, final GenericContainer<?> node) {
+    try {
+      return cluster.state(node).getLong("droppedEvents");
+    } catch (final Exception e) {
+      return -1L;
     }
   }
 

@@ -34,8 +34,6 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.kafka.KafkaContainer;
 
-import org.waabox.andersoni.snapshot.SnapshotMetadata;
-import org.waabox.andersoni.snapshot.fs.FileSystemSnapshotStore;
 
 /**
  * Boots a Kafka broker, a PostgreSQL database, and any number of Andersoni
@@ -389,13 +387,46 @@ final class ClusterHarness implements AutoCloseable {
   }
 
   /**
-   * Reads the snapshot store's current hash for the {@code items} catalog
-   * directly from the host, bypassing every node.
+   * Returns the snapshot store's current hash for the catalog as seen by the
+   * given node.
    *
-   * @return the stored hash, or empty if no snapshot has been written yet.
+   * <p>Read through the node on purpose: on Linux the container writes the
+   * bind-mounted snapshot as root, so the test process cannot open it.
+   *
+   * @param node the node to ask, never null.
+   * @return the store hash, or empty when the store holds no snapshot.
+   * @throws Exception if the node cannot be reached.
    */
-  Optional<String> storeHash() {
-    return new FileSystemSnapshotStore(snapshotDir).describe(CATALOG).map(SnapshotMetadata::hash);
+  Optional<String> storeHash(final GenericContainer<?> node) throws Exception {
+    final JSONObject state = state(node);
+    return state.isNull("storeHash")
+        ? Optional.empty()
+        : Optional.of(state.getString("storeHash"));
+  }
+
+  /**
+   * Re-publishes a leader refresh every two seconds until the condition
+   * holds. Used when a scenario needs a follower's Kafka consumer to have
+   * actually joined its group ({@code auto.offset.reset=latest} drops
+   * anything published before that).
+   *
+   * @param leaderNode the leader node to refresh, never null.
+   * @param condition  the condition to satisfy, never null.
+   * @param budget     the maximum time to keep trying, never null.
+   * @throws Exception if the condition is not met within the budget.
+   */
+  void refreshUntil(final GenericContainer<?> leaderNode, final BooleanSupplier condition,
+      final Duration budget) throws Exception {
+    final long deadline = System.nanoTime() + budget.toNanos();
+    while (System.nanoTime() < deadline) {
+      post(leaderNode, "/refresh");
+      if (awaitQuietly(Duration.ofSeconds(2), condition)) {
+        return;
+      }
+      LOG.info("Condition not met yet; re-publishing leader refresh");
+    }
+    throw new AssertionError("Condition not met within " + budget.toSeconds()
+        + "s of repeated leader refreshes");
   }
 
   /**

@@ -28,6 +28,7 @@ import org.waabox.andersoni.DataLoader;
 import org.waabox.andersoni.ReconciliationPolicy;
 import org.waabox.andersoni.RetryPolicy;
 import org.waabox.andersoni.Snapshot;
+import org.waabox.andersoni.snapshot.SnapshotMetadata;
 import org.waabox.andersoni.snapshot.fs.FileSystemSnapshotStore;
 import org.waabox.andersoni.sync.kafka.KafkaSyncConfig;
 import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
@@ -58,7 +59,7 @@ import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
  * <ul>
  *   <li>{@code GET  /health} — liveness, always {@code 200}.</li>
  *   <li>{@code GET  /state}  — JSON: {@code nodeId, leader, version, hash,
- *       itemCount, syncState, available, droppedEvents}.</li>
+ *       itemCount, syncState, available, droppedEvents, storeHash}.</li>
  *   <li>{@code POST /refresh} — calls {@link Andersoni#refreshAndSync};
  *       responds {@code 500} with the exception message on failure.</li>
  *   <li>{@code POST /reconcile} — calls {@link Andersoni#reconcile}.</li>
@@ -251,6 +252,9 @@ public final class ClusterNode {
           ? catalogStatus.syncState().name() : "UNKNOWN");
       json.put("available", catalogStatus != null && catalogStatus.available());
       json.put("droppedEvents", sync.droppedEvents());
+      json.put("storeHash", store == null
+          ? JSONObject.NULL
+          : store.describe(CATALOG).<Object>map(SnapshotMetadata::hash).orElse(JSONObject.NULL));
       respond(exchange, 200, json.toString());
     });
 
