@@ -95,6 +95,13 @@ public final class Andersoni {
   /** The set of catalog names that failed to bootstrap. */
   private final Set<String> failedCatalogs;
 
+  /** Catalog names marked for an authoritative refresh due to a promotion,
+   *  read and cleared by whichever dispatched task for that catalog runs
+   *  first: the promotion's own refresh, or a leader repair a concurrent
+   *  reconciliation pass had already queued and into which the dispatcher
+   *  coalesced the promotion dispatch. See {@link #repairLeader}. */
+  private final Set<String> pendingPromotionRefresh;
+
   /** Whether this instance has been started. */
   private final AtomicBoolean started = new AtomicBoolean(false);
 
@@ -145,6 +152,7 @@ public final class Andersoni {
     this.metrics = metrics;
     this.catalogsByName = new ConcurrentHashMap<>();
     this.failedCatalogs = ConcurrentHashMap.newKeySet();
+    this.pendingPromotionRefresh = ConcurrentHashMap.newKeySet();
     this.scheduledFutures = new ConcurrentHashMap<>();
     this.reconciliationPolicy = reconciliationPolicy;
   }
@@ -301,18 +309,32 @@ public final class Andersoni {
    *
    * <p>Each catalog's refresh is dispatched through the
    * {@link #asyncRefreshDispatcher} so it is serialized and coalesced with
-   * any concurrent sync-event reload for the same catalog.
+   * any concurrent sync-event reload for the same catalog. That coalescing
+   * can drop the promotion's own dispatch: if a reconciliation pass has
+   * already queued a leader repair for this catalog (dispatched but not yet
+   * running) when this method is called, the dispatcher discards the new
+   * task rather than running two. Marking the catalog here, before
+   * dispatching, lets {@link #repairLeader} detect that case and perform
+   * the source refresh itself instead of re-saving the stale in-memory
+   * snapshot.
    */
   private void refreshAllAsPromotedLeader() {
     log.info("Promoted to leader; running an authoritative refresh of {} catalog(s)",
         catalogsByName.size());
     for (final String name : catalogsByName.keySet()) {
+      pendingPromotionRefresh.add(name);
       asyncRefreshDispatcher.dispatch(name, () -> promotedLeaderRefresh(name));
     }
   }
 
   /**
    * Runs the authoritative refresh for one catalog as part of a promotion.
+   *
+   * <p>Clears the catalog's promotion mark first, regardless of outcome, so
+   * a concurrently queued {@link #repairLeader} does not also treat this
+   * catalog as pending a promotion refresh. No-ops if this node was demoted
+   * between the dispatch and this task running: {@link #refreshAndSync}
+   * would otherwise take the follower branch and only publish a request.
    *
    * <p>On success, a catalog whose bootstrap had previously failed is
    * recovered. On failure, the error is reported and swallowed: the
@@ -323,7 +345,12 @@ public final class Andersoni {
    * @param name the catalog name, never null
    */
   private void promotedLeaderRefresh(final String name) {
+    pendingPromotionRefresh.remove(name);
     if (stopped.get()) {
+      return;
+    }
+    if (!leaderElection.isLeader()) {
+      log.debug("Promotion refresh skipped for catalog '{}': no longer leader", name);
       return;
     }
     try {
@@ -354,9 +381,20 @@ public final class Andersoni {
   /**
    * Leader repair: re-save the current snapshot and re-publish it.
    *
+   * <p>If this catalog is marked pending a promotion refresh, the dispatcher
+   * coalesced that promotion dispatch into this very task (see
+   * {@link #refreshAllAsPromotedLeader}): performing the promotion's source
+   * refresh here, instead of re-saving the current in-memory snapshot, is
+   * what the promotion asked for. The mark is consumed at most once, so a
+   * later repair for the same catalog falls back to the plain save+publish.
+   *
    * @param catalog the drifted catalog, never null
    */
   private void repairLeader(final Catalog<?> catalog) {
+    if (pendingPromotionRefresh.remove(catalog.name())) {
+      promotedLeaderRefresh(catalog.name());
+      return;
+    }
     storeBridge.save(catalog);
     publishRefreshEvent(catalog);
   }

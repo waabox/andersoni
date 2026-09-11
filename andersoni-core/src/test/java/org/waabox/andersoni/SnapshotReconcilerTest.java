@@ -47,21 +47,15 @@ class SnapshotReconcilerTest {
     }
   }
 
-  /** Leader election whose role tests flip at will. */
+  /** Leader election whose role tests fix at construction time. No test in
+   *  this file exercises a leadership change: {@code Andersoni} owns the
+   *  promotion listener now, so {@link #onLeaderChange} is never invoked. */
   static final class ToggleLeaderElection implements LeaderElectionStrategy {
 
-    private volatile boolean leader;
-    private final List<LeaderChangeListener> listeners = new CopyOnWriteArrayList<>();
+    private final boolean leader;
 
     ToggleLeaderElection(final boolean initiallyLeader) {
       leader = initiallyLeader;
-    }
-
-    void become(final boolean isLeader) {
-      leader = isLeader;
-      for (final LeaderChangeListener listener : listeners) {
-        listener.onLeaderChange(isLeader);
-      }
     }
 
     @Override
@@ -75,7 +69,6 @@ class SnapshotReconcilerTest {
 
     @Override
     public void onLeaderChange(final LeaderChangeListener listener) {
-      listeners.add(listener);
     }
 
     @Override

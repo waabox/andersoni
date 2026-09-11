@@ -2187,6 +2187,14 @@ class AndersoniTest {
       }
     }
 
+    /** Flips the role without notifying listeners, so a test can drive the
+     *  isLeader()-then-notify race deterministically: check the new role
+     *  becomes visible to a concurrent reconciliation pass before the
+     *  promotion listener fires. */
+    void setLeaderSilently(final boolean isLeader) {
+      leader = isLeader;
+    }
+
     @Override
     public void start() {
     }
@@ -2507,6 +2515,70 @@ class AndersoniTest {
 
       awaitUntil(() -> catalogStatus(andersoni, "events").available(), Duration.ofSeconds(5));
       assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenPromotedToLeader_givenLeaderRepairQueuedFirst_shouldRefreshFromSourceInsteadOfResaving()
+      throws InterruptedException {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final Event e2 = new Event("2", new Sport("Tennis"), new Venue("Wimbledon"));
+    final Event e3 = new Event("3", new Sport("Rugby"), new Venue("Twickenham"));
+    final InMemorySnapshotStore store = new InMemorySnapshotStore();
+    store.put("events", eventsSnapshot(List.of(e1), 1L));
+    final RecordingSyncStrategy sync = new RecordingSyncStrategy();
+    final ToggleLeaderElection election = new ToggleLeaderElection(false);
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1, e2, e3))
+        .serializer(new EventSerializer())
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .snapshotStore(store)
+        .syncStrategy(sync)
+        .leaderElection(election)
+        .reconciliation(ReconciliationPolicy.of(Duration.ofHours(1)))
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+    try {
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+
+      // The dead previous leader's last upload, ahead of what this follower
+      // ever applied.
+      store.put("events", eventsSnapshot(List.of(e1, e2), 2L));
+
+      // Flip the role without notifying listeners: a reconciliation pass
+      // reading isLeader() right now sees a leader and dispatches a leader
+      // repair, before the promotion listener has had a chance to mark it.
+      election.setLeaderSilently(true);
+      andersoni.reconcileNow();
+
+      // Now notify: the promotion dispatch races the already-queued repair.
+      election.become(true);
+
+      // Depending on how the dispatcher's coalescing and the leader repair
+      // interleave, either exactly one event is published (the promotion
+      // dispatch was coalesced into the already-queued repair, which then
+      // performs the source refresh itself) or two are (the repair ran to
+      // completion first with the stale snapshot, and the promotion's own,
+      // separately dispatched refresh corrects it right after). Either way
+      // the store must converge on the source data, never stay on the
+      // stale one: that is the invariant this test protects.
+      final String expectedHash = SnapshotStoreBridge.sha256Hex(
+          new EventSerializer().serialize(List.of(e1, e2, e3)));
+      awaitUntil(() -> !sync.published.isEmpty()
+          && store.get("events").map(SerializedSnapshot::hash)
+              .filter(expectedHash::equals).isPresent(),
+          Duration.ofSeconds(5));
+      assertEquals(3, catalogStatus(andersoni, "events").itemCount());
+      assertEquals(expectedHash, store.get("events").orElseThrow().hash(),
+          "A leader repair queued just before the promotion notification must "
+              + "still refresh from the source, not resave the stale snapshot");
     } finally {
       andersoni.stop();
     }
