@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
+import org.waabox.andersoni.snapshot.SnapshotMetadata;
 
 /**
  * Tests for {@link FileSystemSnapshotStore}.
@@ -218,5 +220,53 @@ class FileSystemSnapshotStoreTest {
     assertNull(mismatch.get(),
         "A concurrent reader must never observe one snapshot's data paired "
             + "with another snapshot's metadata: " + mismatch.get());
+  }
+
+  @Test
+  void whenDescribing_givenSavedSnapshot_shouldReturnMetadataWithoutData(
+      @TempDir final Path tempDir) {
+    final FileSystemSnapshotStore store = new FileSystemSnapshotStore(tempDir);
+    final Instant createdAt = Instant.parse("2026-09-11T10:30:00Z");
+    store.save("events", new SerializedSnapshot(
+        "events", "hash-42", 42L, createdAt, "payload\n\nwith blank line".getBytes()));
+
+    final Optional<SnapshotMetadata> metadata = store.describe("events");
+
+    assertTrue(metadata.isPresent());
+    assertEquals("events", metadata.get().catalogName());
+    assertEquals("hash-42", metadata.get().hash());
+    assertEquals(42L, metadata.get().version());
+    assertEquals(createdAt, metadata.get().createdAt());
+  }
+
+  @Test
+  void whenDescribing_givenNoSnapshot_shouldReturnEmpty(@TempDir final Path tempDir) {
+    final FileSystemSnapshotStore store = new FileSystemSnapshotStore(tempDir);
+
+    assertTrue(store.describe("missing").isEmpty());
+  }
+
+  @Test
+  void whenDescribing_givenLegacyTwoFileLayout_shouldReturnMetadata(
+      @TempDir final Path tempDir) throws Exception {
+    final Path catalogDir = tempDir.resolve("events");
+    Files.createDirectories(catalogDir);
+    Files.write(catalogDir.resolve("snapshot.dat"), "legacy".getBytes());
+    Files.writeString(catalogDir.resolve("snapshot.meta"),
+        "hash=legacy-hash\nversion=7\ncreatedAt=2026-01-15T10:30:00Z\n");
+    final FileSystemSnapshotStore store = new FileSystemSnapshotStore(tempDir);
+
+    final Optional<SnapshotMetadata> metadata = store.describe("events");
+
+    assertTrue(metadata.isPresent());
+    assertEquals("legacy-hash", metadata.get().hash());
+    assertEquals(7L, metadata.get().version());
+  }
+
+  @Test
+  void whenDescribing_givenTraversalCatalogName_shouldThrow(@TempDir final Path tempDir) {
+    final FileSystemSnapshotStore store = new FileSystemSnapshotStore(tempDir);
+
+    assertThrows(IllegalArgumentException.class, () -> store.describe("../escape"));
   }
 }
