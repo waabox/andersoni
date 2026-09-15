@@ -11,7 +11,21 @@ mechanisms the branch had already settled differently.
 
 ---
 
-## 1. Relationship to `2026-07-28-incremental-refresh-design.md`
+## 1. Relationship to the other two designs
+
+There is also an earlier, abandoned attempt:
+`2026-03-23-patch-operations-design.md`, kept for the record and clearly
+marked. It located items through an identity function declared on the
+catalog, rebuilt the whole snapshot on every patch — surgical index updates
+were an explicit non-goal — and would have broken `SyncStrategy`,
+`RefreshEvent`, `RefreshListener` and `RefreshEventCodec`. Its PR was closed
+unmerged in May. Nothing depends on it; it is listed here only so the count
+is honest: three designs have been written for this feature, and two of them
+were never built.
+
+The live comparison is with the July document.
+
+### Against `2026-07-28-incremental-refresh-design.md`
 
 Both documents solve the same problem — surgical updates instead of full
 reloads — and reach it differently. The differences are not cosmetic, and they
