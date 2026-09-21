@@ -32,4 +32,25 @@ public interface SnapshotStore {
    *         if no snapshot has been stored for this catalog
    */
   Optional<SerializedSnapshot> load(String catalogName);
+
+  /**
+   * Describes the most recent snapshot for the given catalog without
+   * loading its bytes.
+   *
+   * <p>Used by the reconciliation loop to detect drift cheaply. The default
+   * implementation is correct but expensive: it loads the whole snapshot and
+   * discards the data. Implementations backed by a store that can serve
+   * metadata separately (object metadata headers, a file header) should
+   * override it.
+   *
+   * <p>Returns {@link Optional#empty()} when no snapshot exists, exactly as
+   * {@link #load(String)} does. Transport or I/O failures propagate as
+   * runtime exceptions.
+   *
+   * @param catalogName the name of the catalog, never null
+   * @return the snapshot metadata if a snapshot exists, or empty
+   */
+  default Optional<SnapshotMetadata> describe(final String catalogName) {
+    return load(catalogName).map(SnapshotMetadata::of);
+  }
 }

@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -26,11 +27,16 @@ import org.slf4j.LoggerFactory;
 
 import org.waabox.andersoni.AmbiguousPatchTargetException;
 import org.waabox.andersoni.Andersoni;
+import org.waabox.andersoni.AndersoniStatus;
 import org.waabox.andersoni.Catalog;
+import org.waabox.andersoni.DataLoader;
 import org.waabox.andersoni.PatchOp;
 import org.waabox.andersoni.PatchOutcome;
+import org.waabox.andersoni.ReconciliationPolicy;
 import org.waabox.andersoni.RetryPolicy;
 import org.waabox.andersoni.Snapshot;
+import org.waabox.andersoni.snapshot.SnapshotMetadata;
+import org.waabox.andersoni.snapshot.fs.FileSystemSnapshotStore;
 import org.waabox.andersoni.sync.kafka.KafkaSyncConfig;
 import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
 
@@ -41,25 +47,37 @@ import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
  * <p>Each node:
  * <ul>
  *   <li>loads an {@code items} catalog from a shared PostgreSQL database
- *       (the DataLoader);</li>
- *   <li>synchronizes via raw Kafka ({@link KafkaSyncStrategy});</li>
- *   <li>has a fixed leadership role via {@link StaticLeaderElection}, driven
- *       by the {@code LEADER} environment variable;</li>
- *   <li>exposes a tiny HTTP API to trigger refreshes and observe state.</li>
+ *       (the DataLoader), unless {@code LOADER_MODE=fail} simulates a
+ *       permanent data source outage;</li>
+ *   <li>synchronizes via raw Kafka ({@link KafkaSyncStrategy}), wrapped so
+ *       incoming events can be dropped on demand
+ *       ({@link FaultInjectingSyncStrategy});</li>
+ *   <li>has a controllable leadership role, initially driven by the
+ *       {@code LEADER} environment variable and changeable afterwards
+ *       ({@link ControllableLeaderElection});</li>
+ *   <li>optionally persists snapshots to a shared filesystem store that can
+ *       be made to fail saves on demand
+ *       ({@link FaultInjectingSnapshotStore});</li>
+ *   <li>exposes a tiny HTTP API to trigger refreshes, inject faults, and
+ *       observe state.</li>
  * </ul>
  *
  * <p>HTTP API:
  * <ul>
  *   <li>{@code GET  /health} — liveness, always {@code 200}.</li>
  *   <li>{@code GET  /state}  — JSON: {@code nodeId, leader, version, hash,
- *       itemCount}.</li>
+ *       itemCount, syncState, available, droppedEvents, storeHash}.</li>
  *   <li>{@code GET  /items}  — JSON array of the items currently held, so a
  *       test can assert on content and not only on the hash.</li>
- *   <li>{@code POST /refresh} — calls {@link Andersoni#refreshAndSync}.</li>
+ *   <li>{@code POST /refresh} — calls {@link Andersoni#refreshAndSync};
+ *       responds {@code 500} with the exception message on failure.</li>
+ *   <li>{@code POST /local-refresh} — calls {@link Andersoni#refresh}, which
+ *       reloads from the DataLoader <em>without</em> broadcasting. Used to
+ *       drive one node out of sync with the rest on purpose.</li>
  *   <li>{@code POST /replace?key=&id=&name=} — calls
  *       {@link Andersoni#replaceAndSync} against the {@code by-name} index.
- *       Answers {@code {"applied":bool}}, or {@code 409} when the lookup is
- *       ambiguous.</li>
+ *       Answers {@code {"applied":bool,"outcome":name}}, or {@code 409} when
+ *       the lookup is ambiguous.</li>
  *   <li>{@code POST /insert?id=&name=} — calls
  *       {@link Andersoni#insertAndSync}.</li>
  *   <li>{@code POST /remove?key=} — calls {@link Andersoni#removeAndSync}
@@ -67,14 +85,22 @@ import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
  *   <li>{@code POST /batch?insertId=&insertName=&removeKey=} — calls
  *       {@link Andersoni#applyAndSync} with one insert and one removal, so
  *       a test can observe a multi-operation patch landing as a unit.</li>
- *   <li>{@code POST /local-refresh} — calls {@link Andersoni#refresh}, which
- *       reloads from the DataLoader <em>without</em> broadcasting. Used to
- *       drive one node out of sync with the rest on purpose.</li>
+ *   <li>{@code POST /reconcile} — calls {@link Andersoni#reconcile}.</li>
+ *   <li>{@code POST /leader?value=true|false} — flips this node's
+ *       leadership.</li>
+ *   <li>{@code POST /fault/store?failSave=true|false} — makes the snapshot
+ *       store fail (or stop failing) saves; {@code 400} if no store is
+ *       configured.</li>
+ *   <li>{@code POST /fault/sync?dropIncoming=true|false} — makes the sync
+ *       strategy drop (or stop dropping) incoming sync events.</li>
  * </ul>
  *
  * <p>Configuration is read from environment variables: {@code NODE_ID},
  * {@code LEADER}, {@code KAFKA_BOOTSTRAP}, {@code KAFKA_TOPIC},
- * {@code JDBC_URL}, {@code JDBC_USER}, {@code JDBC_PASSWORD}, {@code HTTP_PORT}.
+ * {@code JDBC_URL}, {@code JDBC_USER}, {@code JDBC_PASSWORD}, {@code HTTP_PORT},
+ * and, optionally, {@code SNAPSHOT_DIR}, {@code RECONCILE_INTERVAL_MS}, and
+ * {@code LOADER_MODE} to enable snapshot persistence, reconciliation, and a
+ * simulated data source outage.
  *
  * @author waabox(waabox[at]gmail[dot]com)
  */
@@ -105,16 +131,25 @@ public final class ClusterNode {
     final String jdbcUser = env("JDBC_USER", "test");
     final String jdbcPassword = env("JDBC_PASSWORD", "test");
     final int httpPort = Integer.parseInt(env("HTTP_PORT", "8080"));
+    final String snapshotDir = optionalEnv("SNAPSHOT_DIR");
+    final String reconcileIntervalMs = optionalEnv("RECONCILE_INTERVAL_MS");
+    final boolean failLoader = "fail".equals(optionalEnv("LOADER_MODE"));
 
     LOG.info("Starting node '{}' (leader={})", nodeId, leader);
 
     awaitDatabase(jdbcUrl, jdbcUser, jdbcPassword);
 
+    final DataLoader<Item> loader = failLoader
+        ? () -> {
+          throw new IllegalStateException("simulated data source outage");
+        }
+        : () -> loadItems(jdbcUrl, jdbcUser, jdbcPassword);
+
     final Catalog<Item> catalog = Catalog.of(Item.class)
         .named(CATALOG)
-        .loadWith(() -> loadItems(jdbcUrl, jdbcUser, jdbcPassword))
-        .serializer(new ItemSerializer())
+        .loadWith(loader)
         .index("by-name").by(Item::name, Function.identity())
+        .serializer(new ItemSerializer())
         .build();
 
     final KafkaSyncConfig kafkaConfig = KafkaSyncConfig.builder()
@@ -122,19 +157,31 @@ public final class ClusterNode {
         .topic(topic)
         .nodeId(nodeId)
         .build();
-    final KafkaSyncStrategy sync = new KafkaSyncStrategy(kafkaConfig);
+    final ControllableLeaderElection election = new ControllableLeaderElection(leader);
+    final FaultInjectingSyncStrategy sync =
+        new FaultInjectingSyncStrategy(new KafkaSyncStrategy(kafkaConfig));
+    final FaultInjectingSnapshotStore store = snapshotDir != null
+        ? new FaultInjectingSnapshotStore(new FileSystemSnapshotStore(Paths.get(snapshotDir)))
+        : null;
 
-    final Andersoni andersoni = Andersoni.builder()
+    final Andersoni.Builder builder = Andersoni.builder()
         .nodeId(nodeId)
         .syncStrategy(sync)
-        .leaderElection(new StaticLeaderElection(leader))
-        .retryPolicy(RetryPolicy.of(1, Duration.ofMillis(300)))
-        .build();
+        .leaderElection(election)
+        .retryPolicy(RetryPolicy.of(1, Duration.ofMillis(300)));
+    if (store != null) {
+      builder.snapshotStore(store);
+    }
+    if (reconcileIntervalMs != null) {
+      builder.reconciliation(
+          ReconciliationPolicy.of(Duration.ofMillis(Long.parseLong(reconcileIntervalMs))));
+    }
+    final Andersoni andersoni = builder.build();
 
     andersoni.register(catalog);
     andersoni.start();
 
-    startHttpServer(httpPort, nodeId, leader, andersoni, catalog);
+    startHttpServer(httpPort, nodeId, andersoni, catalog, election, sync, store);
 
     LOG.info("Node '{}' ready on port {}", nodeId, httpPort);
     Thread.currentThread().join();
@@ -193,14 +240,18 @@ public final class ClusterNode {
    *
    * @param port      the port to listen on.
    * @param nodeId    this node's id, never null.
-   * @param leader    whether this node is the leader.
    * @param andersoni the Andersoni instance, never null.
    * @param catalog   the items catalog, never null.
+   * @param election  the controllable leader election, never null.
+   * @param sync      the fault-injecting sync strategy, never null.
+   * @param store     the fault-injecting snapshot store, or {@code null} if
+   *                  no snapshot store is configured.
    * @throws IOException if the server cannot bind.
    */
   private static void startHttpServer(final int port, final String nodeId,
-      final boolean leader, final Andersoni andersoni,
-      final Catalog<Item> catalog) throws IOException {
+      final Andersoni andersoni, final Catalog<Item> catalog,
+      final ControllableLeaderElection election, final FaultInjectingSyncStrategy sync,
+      final FaultInjectingSnapshotStore store) throws IOException {
     final HttpServer server = HttpServer.create(
         new InetSocketAddress(port), 0);
 
@@ -209,12 +260,24 @@ public final class ClusterNode {
 
     server.createContext("/state", exchange -> {
       final Snapshot<Item> snapshot = catalog.currentSnapshot();
+      final AndersoniStatus status = andersoni.status();
+      final AndersoniStatus.CatalogStatus catalogStatus = status.catalogs().stream()
+          .filter(c -> c.catalogName().equals(CATALOG))
+          .findFirst()
+          .orElse(null);
       final JSONObject json = new JSONObject();
       json.put("nodeId", nodeId);
-      json.put("leader", leader);
+      json.put("leader", status.leader());
       json.put("version", snapshot.version());
       json.put("hash", snapshot.hash());
       json.put("itemCount", snapshot.data().size());
+      json.put("syncState", catalogStatus != null
+          ? catalogStatus.syncState().name() : "UNKNOWN");
+      json.put("available", catalogStatus != null && catalogStatus.available());
+      json.put("droppedEvents", sync.droppedEvents());
+      json.put("storeHash", store == null
+          ? JSONObject.NULL
+          : store.describe(CATALOG).<Object>map(SnapshotMetadata::hash).orElse(JSONObject.NULL));
       respond(exchange, 200, json.toString());
     });
 
@@ -232,7 +295,13 @@ public final class ClusterNode {
         respond(exchange, 405, "{\"error\":\"POST only\"}");
         return;
       }
-      andersoni.refreshAndSync(CATALOG);
+      try {
+        andersoni.refreshAndSync(CATALOG);
+      } catch (final RuntimeException e) {
+        respond(exchange, 500, new JSONObject().put("error", String.valueOf(e.getMessage()))
+            .toString());
+        return;
+      }
       respond(exchange, 200, "{\"status\":\"ok\"}");
     });
 
@@ -340,8 +409,75 @@ public final class ClusterNode {
       }
     });
 
+    server.createContext("/reconcile", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      andersoni.reconcile();
+      respond(exchange, 200, "{\"status\":\"ok\"}");
+    });
+
+    server.createContext("/leader", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final boolean value = Boolean.parseBoolean(queryParam(exchange, "value"));
+      election.become(value);
+      respond(exchange, 200, new JSONObject().put("leader", value).toString());
+    });
+
+    server.createContext("/fault/store", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      if (store == null) {
+        respond(exchange, 400, "{\"error\":\"no snapshot store\"}");
+        return;
+      }
+      final boolean failSave = Boolean.parseBoolean(queryParam(exchange, "failSave"));
+      store.failSave(failSave);
+      respond(exchange, 200, new JSONObject().put("failSave", failSave).toString());
+    });
+
+    server.createContext("/fault/sync", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final boolean dropIncoming = Boolean.parseBoolean(queryParam(exchange, "dropIncoming"));
+      sync.dropIncoming(dropIncoming);
+      respond(exchange, 200, new JSONObject().put("dropIncoming", dropIncoming).toString());
+    });
+
     server.setExecutor(null);
     server.start();
+  }
+
+  /**
+   * Extracts a single query parameter's value from an exchange's request URI.
+   *
+   * @param exchange the exchange, never null.
+   * @param name     the parameter name, never null.
+   * @return the parameter value, or {@code null} if absent.
+   */
+  private static String queryParam(final HttpExchange exchange, final String name) {
+    final String query = exchange.getRequestURI().getQuery();
+    if (query == null) {
+      return null;
+    }
+    for (final String pair : query.split("&")) {
+      final int separator = pair.indexOf('=');
+      if (separator < 0) {
+        continue;
+      }
+      if (pair.substring(0, separator).equals(name)) {
+        return pair.substring(separator + 1);
+      }
+    }
+    return null;
   }
 
   /**
@@ -394,6 +530,18 @@ public final class ClusterNode {
   private static String env(final String name, final String defaultValue) {
     final String value = System.getenv(name);
     return value != null && !value.isBlank() ? value : defaultValue;
+  }
+
+  /**
+   * Returns the value of an optional environment variable, or {@code null}
+   * if it is unset or blank.
+   *
+   * @param name the variable name, never null.
+   * @return the resolved value, or {@code null} if unset.
+   */
+  private static String optionalEnv(final String name) {
+    final String value = System.getenv(name);
+    return value != null && !value.isBlank() ? value : null;
   }
 
   /**

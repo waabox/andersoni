@@ -22,6 +22,7 @@ import java.util.Optional;
 import org.easymock.Capture;
 import org.junit.jupiter.api.Test;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
+import org.waabox.andersoni.snapshot.SnapshotMetadata;
 
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -30,9 +31,12 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 /**
  * Tests for {@link S3SnapshotStore}.
@@ -341,5 +345,92 @@ class S3SnapshotStoreTest {
     assertTrue(config.durationSeconds().isEmpty(),
         "durationSeconds should be empty when not set");
     assertEquals("andersoni-snapshot", config.sessionName());
+  }
+
+  @Test
+  void whenDescribing_givenExistingObject_shouldReturnMetadataFromHeadRequest() {
+    final S3Client s3Client = createMock(S3Client.class);
+    final S3SnapshotConfig config = S3SnapshotConfig.builder()
+        .bucket("my-bucket")
+        .region(Region.US_EAST_1)
+        .s3Client(s3Client)
+        .build();
+    final HeadObjectResponse response = HeadObjectResponse.builder()
+        .metadata(Map.of(
+            "hash", "abc123",
+            "version", "42",
+            "created-at", "2026-01-15T10:30:00Z",
+            "catalog-name", "events"))
+        .build();
+    final Capture<HeadObjectRequest> requestCapture = newCapture();
+    expect(s3Client.headObject(capture(requestCapture))).andReturn(response);
+    replay(s3Client);
+
+    final S3SnapshotStore store = new S3SnapshotStore(config);
+    final Optional<SnapshotMetadata> metadata = store.describe("events");
+
+    verify(s3Client);
+    assertEquals("my-bucket", requestCapture.getValue().bucket());
+    assertEquals("andersoni/events/snapshot.dat", requestCapture.getValue().key());
+    assertTrue(metadata.isPresent());
+    assertEquals("abc123", metadata.get().hash());
+    assertEquals(42L, metadata.get().version());
+    assertEquals(Instant.parse("2026-01-15T10:30:00Z"), metadata.get().createdAt());
+    assertEquals("events", metadata.get().catalogName());
+  }
+
+  @Test
+  void whenDescribing_givenNoSuchKey_shouldReturnEmpty() {
+    final S3Client s3Client = createMock(S3Client.class);
+    final S3SnapshotConfig config = S3SnapshotConfig.builder()
+        .bucket("my-bucket")
+        .region(Region.US_EAST_1)
+        .s3Client(s3Client)
+        .build();
+    expect(s3Client.headObject(anyObject(HeadObjectRequest.class)))
+        .andThrow(NoSuchKeyException.builder().message("missing").build());
+    replay(s3Client);
+
+    final S3SnapshotStore store = new S3SnapshotStore(config);
+
+    assertTrue(store.describe("events").isEmpty());
+    verify(s3Client);
+  }
+
+  @Test
+  void whenDescribing_givenGeneric404_shouldReturnEmpty() {
+    final S3Client s3Client = createMock(S3Client.class);
+    final S3SnapshotConfig config = S3SnapshotConfig.builder()
+        .bucket("my-bucket")
+        .region(Region.US_EAST_1)
+        .s3Client(s3Client)
+        .build();
+    expect(s3Client.headObject(anyObject(HeadObjectRequest.class)))
+        .andThrow((S3Exception) S3Exception.builder().statusCode(404)
+            .message("Not Found").build());
+    replay(s3Client);
+
+    final S3SnapshotStore store = new S3SnapshotStore(config);
+
+    assertTrue(store.describe("events").isEmpty());
+    verify(s3Client);
+  }
+
+  @Test
+  void whenDescribing_givenObjectWithoutMetadata_shouldReturnEmpty() {
+    final S3Client s3Client = createMock(S3Client.class);
+    final S3SnapshotConfig config = S3SnapshotConfig.builder()
+        .bucket("my-bucket")
+        .region(Region.US_EAST_1)
+        .s3Client(s3Client)
+        .build();
+    expect(s3Client.headObject(anyObject(HeadObjectRequest.class)))
+        .andReturn(HeadObjectResponse.builder().metadata(Map.of()).build());
+    replay(s3Client);
+
+    final S3SnapshotStore store = new S3SnapshotStore(config);
+
+    assertTrue(store.describe("events").isEmpty());
+    verify(s3Client);
   }
 }

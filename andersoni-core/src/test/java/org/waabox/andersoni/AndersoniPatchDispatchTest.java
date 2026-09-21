@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.easymock.Capture;
 import org.junit.jupiter.api.Test;
+import org.waabox.andersoni.leader.LeaderChangeListener;
 import org.waabox.andersoni.leader.LeaderElectionStrategy;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.sync.PatchEvent;
@@ -97,6 +98,8 @@ class AndersoniPatchDispatchTest {
         LeaderElectionStrategy.class);
     leader.start();
     expectLastCall().anyTimes();
+    leader.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     // Bootstrap as leader (fast path via DataLoader) then switch to
     // follower for the rest of the test so handlePatch sees a non-leader.
     expect(leader.isLeader()).andReturn(true).times(1);

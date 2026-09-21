@@ -38,9 +38,9 @@
   <img src="./assets/logo-tr.png" width="300"/>
 </p>
 
-**Nanosecond-latency, lock-free reads.** In-memory indexed cache for Java 21 with a fluent DSL — regular, sorted, multi-key, and graph-based indexes, compound queries, pre-computed views (projections), build hooks, immutable snapshots, pluggable cross-node sync, and built-in observability.
+**Nanosecond-latency, lock-free reads.** In-memory indexed cache for Java 21 with a fluent DSL — regular, sorted, multi-key, and graph-based indexes, compound queries, pre-computed views (projections), build hooks, immutable snapshots, pluggable and self-healing cross-node sync, and built-in observability.
 
-> **[Read the full documentation on the Wiki](https://github.com/waabox/andersoni/wiki)** — getting started, core concepts, catalog DSL, Spring Boot integration, sync strategies, snapshot persistence, leader election, observability, DevOps & Kubernetes, deployment guide, and FAQ.
+> **[Read the full documentation on the Wiki](https://github.com/waabox/andersoni/wiki)** — getting started, core concepts, catalog DSL, Spring Boot integration, sync strategies, snapshot persistence, leader election, cluster self-healing, observability, DevOps & Kubernetes, deployment guide, and FAQ.
 
 ## Performance
 
@@ -304,9 +304,33 @@ public interface SnapshotBuildHook<T> {
 }
 ```
 
+## Cluster Self-Healing
+
+With a `SnapshotStore` configured, every node runs a reconciliation loop (default: every 30 seconds):
+
+- **Followers** compare the store's snapshot hash with the one they last applied and reload from the store on any difference. A missed sync event, a failed reload or a restart during a broadcast is repaired within one interval.
+- **The leader** re-uploads and re-broadcasts its snapshot if the store is behind (for example after a failed upload). A local `refresh(name)` called directly on the leader is picked up by the next reconciliation pass, which re-uploads and re-broadcasts it, so it becomes cluster-visible within one interval; the same call on a follower is simply overwritten by the store on the next pass.
+- **A newly elected leader** re-queries the source and re-publishes, so a refresh the previous leader made just before dying is never lost. This runs whether or not a `SnapshotStore` is configured.
+- A custom `SnapshotStore` that does not override `describe` pays a full snapshot download per catalog per node per interval, since the default falls back to `load`. Override `describe` to return metadata without fetching the payload (the bundled S3 and filesystem stores already do).
+
+```java
+Andersoni andersoni = Andersoni.builder()
+    .snapshotStore(s3Store)
+    .reconciliation(ReconciliationPolicy.of(Duration.ofSeconds(15)))  // or .disabled()
+    .build();
+
+andersoni.reconcile();          // force a pass now (never hits the DataLoader)
+andersoni.status().inSync();    // false if any catalog drifted
+```
+
+Spring Boot: `andersoni.reconciliation.enabled=true`, `andersoni.reconciliation.interval=30s`.
+Datadog: counters `reconcile.drift_detected`, `reconcile.drift_repaired`, `reconcile.failed` and gauge `catalog.in_sync`.
+
+Decision table, leader-promotion semantics, cost and the Docker-verified failure scenarios are on the wiki: **[Cluster Self-Healing](https://github.com/waabox/andersoni/wiki/Cluster-Self-Healing)**.
+
 ## Snapshot Patches
 
-> **Since 1.12.0**
+> **Since 1.13.0**
 
 Replace a single item in a catalog without re-loading the dataset. The snapshot is rebuilt copy-on-write — only the index buckets whose keys change for the patched item are recomputed; everything else is shared by reference with the previous snapshot.
 
@@ -404,7 +428,7 @@ The catalog must have a `SnapshotSerializer` configured — cross-node patches c
 
 > ### ⚠️ Every node must be upgraded before you patch
 >
-> A patch is a new kind of sync message. A node running **1.11.0 or earlier cannot decode it**: the payload carries `fromHash`/`toHash` rather than the `version`/`hash` an older codec requires, so parsing fails.
+> A patch is a new kind of sync message. A node running **1.12.0 or earlier cannot decode it**: the payload carries `fromHash`/`toHash` rather than the `version`/`hash` an older codec requires, so parsing fails.
 >
 > Nothing crashes. The Kafka consumer logs an error per message and keeps polling; the HTTP endpoint answers `500` and stays up. But an old node never learns the leader patched, so **it goes on serving stale data** until some later full refresh happens to correct it — which looks like a mysteriously stale pod rather than an obvious failure. The symptom to grep for is a deserialization error naming a `refresh event`.
 >
@@ -478,7 +502,7 @@ Andersoni fits when you have **read-heavy reference data** queried by multiple c
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-core</artifactId>
-    <version>1.11.0</version>
+    <version>1.12.0</version>
 </dependency>
 ```
 
@@ -521,7 +545,7 @@ List<EventSummary> results = andersoni.compound("events")
     .execute(EventSummary.class);
 ```
 
-For graph indexes, Spring Boot, sync strategies, snapshot persistence, K8s deployment, and more — see the **[Wiki](https://github.com/waabox/andersoni/wiki)**.
+For graph indexes, Spring Boot, sync strategies, snapshot persistence, cluster self-healing, K8s deployment, and more — see the **[Wiki](https://github.com/waabox/andersoni/wiki)**.
 
 ## Modules
 

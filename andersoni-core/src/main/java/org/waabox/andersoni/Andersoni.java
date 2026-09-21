@@ -1,13 +1,10 @@
 package org.waabox.andersoni;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -16,7 +13,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -28,8 +24,6 @@ import org.waabox.andersoni.leader.LeaderElectionStrategy;
 import org.waabox.andersoni.leader.SingleNodeLeaderElection;
 import org.waabox.andersoni.metrics.AndersoniMetrics;
 import org.waabox.andersoni.metrics.NoopAndersoniMetrics;
-import org.waabox.andersoni.snapshot.SerializedSnapshot;
-import org.waabox.andersoni.snapshot.SnapshotSerializer;
 import org.waabox.andersoni.snapshot.SnapshotStore;
 import org.waabox.andersoni.sync.RefreshEvent;
 import org.waabox.andersoni.sync.SyncStrategy;
@@ -43,6 +37,14 @@ import org.waabox.andersoni.sync.SyncStrategy;
  *
  * <p>Instances are created through the fluent {@link Builder} starting with
  * {@link #builder()}.
+ *
+ * <p>When a snapshot store is configured, a background reconciliation loop
+ * treats it as the cluster's authority: on each pass a follower whose
+ * applied hash drifted from the store reloads from it, and the leader
+ * whose applied hash drifted re-saves and re-publishes, so a save that
+ * failed mid-refresh is retried automatically. Reconciliation is on by
+ * default (see {@link ReconciliationPolicy#defaultPolicy()}); trigger an
+ * on-demand pass with {@link #reconcile()}.
  *
  * <p>Usage example:
  * <pre>{@code
@@ -84,8 +86,8 @@ public final class Andersoni {
   /** The leader election strategy. */
   private final LeaderElectionStrategy leaderElection;
 
-  /** The optional snapshot store for persistent snapshots. */
-  private final SnapshotStore snapshotStore;
+  /** The bridge to the optional snapshot store for persistent snapshots. */
+  private final SnapshotStoreBridge storeBridge;
 
   /** The retry policy for catalog bootstrap operations. */
   private final RetryPolicy retryPolicy;
@@ -98,6 +100,13 @@ public final class Andersoni {
 
   /** The set of catalog names that failed to bootstrap. */
   private final Set<String> failedCatalogs;
+
+  /** Catalog names marked for an authoritative refresh due to a promotion,
+   *  read and cleared by whichever dispatched task for that catalog runs
+   *  first: the promotion's own refresh, or a leader repair a concurrent
+   *  reconciliation pass had already queued and into which the dispatcher
+   *  coalesced the promotion dispatch. See {@link #repairLeader}. */
+  private final Set<String> pendingPromotionRefresh;
 
   /** Whether this instance has been started. */
   private final AtomicBoolean started = new AtomicBoolean(false);
@@ -119,15 +128,23 @@ public final class Andersoni {
   /** Cross-node patch coordination (publish + dispatch). */
   private final PatchCoordinator patchCoordinator;
 
+  /** The reconciliation policy. */
+  private final ReconciliationPolicy reconciliationPolicy;
+
+  /** The reconciler, or null when reconciliation is inactive. Written in
+   *  start() and read by status()/reconcile(). */
+  private volatile SnapshotReconciler reconciler;
+
   /**
    * Creates a new Andersoni instance.
    *
-   * @param nodeId          the unique node identifier, never null
-   * @param syncStrategy    the optional sync strategy, may be null
-   * @param leaderElection  the leader election strategy, never null
-   * @param snapshotStore   the optional snapshot store, may be null
-   * @param retryPolicy     the retry policy, never null
-   * @param metrics         the metrics reporter, never null
+   * @param nodeId               the unique node identifier, never null
+   * @param syncStrategy         the optional sync strategy, may be null
+   * @param leaderElection       the leader election strategy, never null
+   * @param snapshotStore        the optional snapshot store, may be null
+   * @param retryPolicy          the retry policy, never null
+   * @param metrics              the metrics reporter, never null
+   * @param reconciliationPolicy the reconciliation policy, never null
    */
   private Andersoni(final String nodeId,
       final SyncStrategy syncStrategy,
@@ -135,16 +152,19 @@ public final class Andersoni {
       final SnapshotStore snapshotStore,
       final RetryPolicy retryPolicy,
       final AndersoniMetrics metrics,
-      final int maxPatchPayloadBytes) {
+      final int maxPatchPayloadBytes,
+      final ReconciliationPolicy reconciliationPolicy) {
     this.nodeId = nodeId;
     this.syncStrategy = syncStrategy;
     this.leaderElection = leaderElection;
-    this.snapshotStore = snapshotStore;
+    this.storeBridge = new SnapshotStoreBridge(snapshotStore);
     this.retryPolicy = retryPolicy;
     this.metrics = metrics;
     this.catalogsByName = new ConcurrentHashMap<>();
     this.failedCatalogs = ConcurrentHashMap.newKeySet();
+    this.pendingPromotionRefresh = ConcurrentHashMap.newKeySet();
     this.scheduledFutures = new ConcurrentHashMap<>();
+    this.reconciliationPolicy = reconciliationPolicy;
     this.patchCoordinator = new PatchCoordinator(nodeId, syncStrategy,
         leaderElection, metrics, catalogsByName, maxPatchPayloadBytes,
         new PatchCoordinator.Callbacks() {
@@ -160,9 +180,12 @@ public final class Andersoni {
           @Override public void reportIndexSizes(final Catalog<?> catalog) {
             Andersoni.this.reportIndexSizes(catalog);
           }
-          @Override public void saveSnapshotIfPossible(
-              final Catalog<?> catalog) {
-            Andersoni.this.saveSnapshotIfPossible(catalog);
+          @Override public void saveSnapshot(final Catalog<?> catalog) {
+            // A patch changes local state from a source other than the
+            // store. Forgetting the applied hash first makes a failed save
+            // visible to reconciliation, which re-saves and re-publishes.
+            storeBridge.markUnknown(catalog.name());
+            storeBridge.save(catalog);
           }
           @Override public void refreshFromEvent(final String name,
               final Catalog<?> catalog) {
@@ -259,11 +282,159 @@ public final class Andersoni {
     asyncRefreshDispatcher = new AsyncRefreshDispatcher(
         catalogsByName.keySet());
     patchCoordinator.setDispatcher(asyncRefreshDispatcher);
+    registerPromotionRefresh();
     wireSyncListener();
     schedulePeriodicRefreshes();
+    startReconciler();
     metrics.start(
         Collections.unmodifiableCollection(catalogsByName.values()),
         nodeId);
+  }
+
+  /**
+   * Starts the reconciliation loop when the policy is enabled and a
+   * snapshot store is configured; otherwise logs why it is inactive.
+   */
+  private void startReconciler() {
+    if (!reconciliationPolicy.enabled() || !storeBridge.isConfigured()) {
+      log.info("Snapshot reconciliation inactive (enabled={}, snapshotStore={})",
+          reconciliationPolicy.enabled(), storeBridge.isConfigured());
+      return;
+    }
+    final SnapshotReconciler created = new SnapshotReconciler(
+        catalogsByName,
+        storeBridge,
+        leaderElection,
+        asyncRefreshDispatcher::dispatch,
+        metrics,
+        reconciliationPolicy,
+        failedCatalogs,
+        this::repairFollower,
+        this::repairLeader);
+    // Assigned before start() so a failure inside start() (e.g. a listener
+    // registered on leaderElection.onLeaderChange throwing) still leaves
+    // reconciler visible to stop(), which would otherwise never see it and
+    // leak whatever start() managed to spin up before failing.
+    reconciler = created;
+    created.start();
+    log.info("Snapshot reconciliation active with store {}", storeBridge.storeDescription());
+  }
+
+  /**
+   * Registers the listener that runs an authoritative refresh of every
+   * catalog when this node is promoted to leader.
+   *
+   * <p>Registered unconditionally, independent of whether a snapshot store
+   * is configured: a promoted leader re-publishing fresh data is correct in
+   * every deployment (without a store, followers still reload from their
+   * DataLoader on the resulting {@code EVENT}). Must run after
+   * {@link #asyncRefreshDispatcher} is assigned. Leadership already started
+   * in {@link #start()} before this is called, so a promotion that happened
+   * during bootstrap is not replayed here: the first reconciliation pass
+   * covers that, and single-node deployments never change leader.
+   */
+  private void registerPromotionRefresh() {
+    leaderElection.onLeaderChange(isLeader -> {
+      if (isLeader) {
+        refreshAllAsPromotedLeader();
+      }
+    });
+  }
+
+  /**
+   * Runs an authoritative refresh of every registered catalog after this
+   * node is promoted to leader.
+   *
+   * <p>Each catalog's refresh is dispatched through the
+   * {@link #asyncRefreshDispatcher} so it is serialized and coalesced with
+   * any concurrent sync-event reload for the same catalog. That coalescing
+   * can drop the promotion's own dispatch: if a reconciliation pass has
+   * already queued a leader repair for this catalog (dispatched but not yet
+   * running) when this method is called, the dispatcher discards the new
+   * task rather than running two. Marking the catalog here, before
+   * dispatching, lets {@link #repairLeader} detect that case and perform
+   * the source refresh itself instead of re-saving the stale in-memory
+   * snapshot.
+   */
+  private void refreshAllAsPromotedLeader() {
+    log.info("Promoted to leader; running an authoritative refresh of {} catalog(s)",
+        catalogsByName.size());
+    for (final String name : catalogsByName.keySet()) {
+      pendingPromotionRefresh.add(name);
+      asyncRefreshDispatcher.dispatch(name, () -> promotedLeaderRefresh(name));
+    }
+  }
+
+  /**
+   * Runs the authoritative refresh for one catalog as part of a promotion.
+   *
+   * <p>Clears the catalog's promotion mark first, regardless of outcome, so
+   * a concurrently queued {@link #repairLeader} does not also treat this
+   * catalog as pending a promotion refresh. No-ops if this node was demoted
+   * between the dispatch and this task running: {@link #refreshAndSync}
+   * would otherwise take the follower branch and only publish a request.
+   *
+   * <p>On success, a catalog whose bootstrap had previously failed is
+   * recovered. On failure, the error is reported and swallowed: the
+   * reconciliation loop remains the fallback under the leader rule (an
+   * applied hash missing or differing from the store's is re-saved and
+   * re-published on the next pass).
+   *
+   * @param name the catalog name, never null
+   */
+  private void promotedLeaderRefresh(final String name) {
+    pendingPromotionRefresh.remove(name);
+    if (stopped.get()) {
+      return;
+    }
+    if (!leaderElection.isLeader()) {
+      log.debug("Promotion refresh skipped for catalog '{}': no longer leader", name);
+      return;
+    }
+    try {
+      refreshAndSync(name);
+      failedCatalogs.remove(name);
+    } catch (final RuntimeException e) {
+      log.error("Promotion refresh failed for catalog '{}': {}", name, e.getMessage(), e);
+      metrics.refreshFailed(name, e);
+    }
+  }
+
+  /**
+   * Follower repair: reload the catalog from the store, which is the
+   * authority. Never falls back to the DataLoader.
+   *
+   * @param catalog the drifted catalog, never null
+   * @throws IllegalStateException if the store has no snapshot any more
+   */
+  private void repairFollower(final Catalog<?> catalog) {
+    if (!storeBridge.load(catalog)) {
+      throw new IllegalStateException("Snapshot for catalog '" + catalog.name()
+          + "' disappeared from the store before it could be loaded");
+    }
+    failedCatalogs.remove(catalog.name());
+    reportIndexSizes(catalog);
+  }
+
+  /**
+   * Leader repair: re-save the current snapshot and re-publish it.
+   *
+   * <p>If this catalog is marked pending a promotion refresh, the dispatcher
+   * coalesced that promotion dispatch into this very task (see
+   * {@link #refreshAllAsPromotedLeader}): performing the promotion's source
+   * refresh here, instead of re-saving the current in-memory snapshot, is
+   * what the promotion asked for. The mark is consumed at most once, so a
+   * later repair for the same catalog falls back to the plain save+publish.
+   *
+   * @param catalog the drifted catalog, never null
+   */
+  private void repairLeader(final Catalog<?> catalog) {
+    if (pendingPromotionRefresh.remove(catalog.name())) {
+      promotedLeaderRefresh(catalog.name());
+      return;
+    }
+    storeBridge.save(catalog);
+    publishRefreshEvent(catalog);
   }
 
   /**
@@ -528,26 +699,34 @@ public final class Andersoni {
     }
 
     catalog.refresh();
+    storeBridge.markUnknown(catalogName);
     reportIndexSizes(catalog);
+    storeBridge.save(catalog);
+    publishRefreshEvent(catalog);
+  }
 
-    saveSnapshotIfPossible(catalog);
-
-    if (syncStrategy != null) {
-      final Snapshot<?> snapshot = catalog.currentSnapshot();
-      final RefreshEvent event = new RefreshEvent(
-          catalogName,
-          nodeId,
-          snapshot.version(),
-          snapshot.hash(),
-          Instant.now());
-      try {
-        syncStrategy.publish(event);
-        metrics.syncPublished(catalogName);
-      } catch (final Exception e) {
-        log.error("Failed to publish sync event for catalog '{}': {}",
-            catalogName, e.getMessage(), e);
-        metrics.syncPublishFailed(catalogName, e);
-      }
+  /**
+   * Broadcasts the catalog's current snapshot as a result
+   * {@link org.waabox.andersoni.sync.RefreshKind#EVENT}, if a sync
+   * strategy is configured. Publish failures are logged and reported, never
+   * thrown: the reconciliation loop is the retry path.
+   *
+   * @param catalog the catalog whose snapshot was just refreshed, never null
+   */
+  private void publishRefreshEvent(final Catalog<?> catalog) {
+    if (syncStrategy == null) {
+      return;
+    }
+    final Snapshot<?> snapshot = catalog.currentSnapshot();
+    final RefreshEvent event = new RefreshEvent(
+        catalog.name(), nodeId, snapshot.version(), snapshot.hash(), Instant.now());
+    try {
+      syncStrategy.publish(event);
+      metrics.syncPublished(catalog.name());
+    } catch (final Exception e) {
+      log.error("Failed to publish sync event for catalog '{}': {}",
+          catalog.name(), e.getMessage(), e);
+      metrics.syncPublishFailed(catalog.name(), e);
     }
   }
 
@@ -590,6 +769,10 @@ public final class Andersoni {
    * from other nodes. It re-queries the catalog's DataLoader to get fresh
    * data.
    *
+   * <p>With reconciliation active, a follower's local refresh is overwritten
+   * by the store's snapshot on the next pass; on the leader, the next pass
+   * re-saves and re-publishes the refreshed data.
+   *
    * @param catalogName the name of the catalog to refresh, never null
    *
    * @throws IllegalArgumentException if no catalog with the given name
@@ -603,6 +786,7 @@ public final class Andersoni {
     }
     final Catalog<?> catalog = requireCatalog(catalogName);
     catalog.refresh();
+    storeBridge.markUnknown(catalogName);
     reportIndexSizes(catalog);
   }
 
@@ -841,19 +1025,60 @@ public final class Andersoni {
   }
 
   /**
+   * Runs a reconciliation pass as soon as possible on the reconciler thread
+   * and returns without waiting.
+   *
+   * <p>This is the operational replacement for a manual refresh: it never
+   * queries the DataLoader. Followers reload from the snapshot store if it
+   * moved; the leader re-saves and re-publishes if the store is behind. It
+   * is a no-op when reconciliation is inactive (disabled policy or no
+   * snapshot store).
+   *
+   * @throws IllegalStateException if {@link #stop()} has been called
+   */
+  public void reconcile() {
+    if (stopped.get()) {
+      throw new IllegalStateException("Cannot reconcile after stop() has been called");
+    }
+    final SnapshotReconciler current = reconciler;
+    if (current == null) {
+      log.debug("reconcile() ignored: reconciliation is inactive");
+      return;
+    }
+    current.requestPass();
+  }
+
+  /**
+   * Runs a reconciliation pass on the calling thread. Repairs are still
+   * dispatched asynchronously. Intended for tests.
+   */
+  void reconcileNow() {
+    final SnapshotReconciler current = reconciler;
+    if (current != null) {
+      current.runPass();
+    }
+  }
+
+  /**
    * Stops the Andersoni lifecycle.
    *
-   * <p>This method cancels all scheduled refresh tasks, stops the sync
-   * strategy and leader election, and clears internal state.
+   * <p>This method cancels all scheduled refresh tasks, stops the
+   * reconciler, the sync strategy and leader election, and clears internal
+   * state. Metrics are stopped last, after every component that might still
+   * report through them (in particular an in-flight reconciliation repair)
+   * has been shut down.
    */
   public void stop() {
     if (!stopped.compareAndSet(false, true)) {
       return;
     }
 
-    metrics.stop();
-
     cancelScheduledRefreshes();
+
+    final SnapshotReconciler current = reconciler;
+    if (current != null) {
+      current.stop();
+    }
 
     if (asyncRefreshDispatcher != null) {
       asyncRefreshDispatcher.stop();
@@ -864,6 +1089,8 @@ public final class Andersoni {
     }
 
     leaderElection.stop();
+
+    metrics.stop();
   }
 
   /**
@@ -909,18 +1136,26 @@ public final class Andersoni {
    * @param catalog the catalog to inspect, never null
    * @return the catalog status, never null
    */
-  private static AndersoniStatus.CatalogStatus buildCatalogStatus(
+  private AndersoniStatus.CatalogStatus buildCatalogStatus(
       final Catalog<?> catalog) {
+    final SnapshotReconciler current = reconciler;
+    final SyncState syncState = current == null
+        ? SyncState.UNKNOWN : current.syncState(catalog.name());
+    final Optional<Instant> lastReconciledAt = current == null
+        ? Optional.empty() : current.lastReconciledAt(catalog.name());
     try {
       final Snapshot<?> snapshot = catalog.currentSnapshot();
       final CatalogInfo info = catalog.info();
       return new AndersoniStatus.CatalogStatus(
-          catalog.name(), true, snapshot.version(), snapshot.hash(),
+          catalog.name(), !failedCatalogs.contains(catalog.name()),
+          snapshot.version(), snapshot.hash(),
           catalog.serializer().isPresent(),
-          info.itemCount(), info.totalEstimatedSizeMB());
+          info.itemCount(), info.totalEstimatedSizeMB(),
+          syncState, lastReconciledAt);
     } catch (final RuntimeException e) {
       return new AndersoniStatus.CatalogStatus(
-          catalog.name(), false, 0L, "", false, 0, 0.0);
+          catalog.name(), false, 0L, "", false, 0, 0.0,
+          syncState, lastReconciledAt);
     }
   }
 
@@ -1000,7 +1235,7 @@ public final class Andersoni {
 
     // Step 1: try S3 once.
     try {
-      if (tryLoadFromSnapshotStore(name, catalog)) {
+      if (storeBridge.load(catalog)) {
         metrics.snapshotLoaded(name, "snapshotStore");
         reportIndexSizes(catalog);
         return;
@@ -1035,8 +1270,9 @@ public final class Andersoni {
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         catalog.bootstrap();
+        storeBridge.markUnknown(name);
         metrics.snapshotLoaded(name, "dataLoader");
-        saveSnapshotIfPossible(catalog);
+        storeBridge.save(catalog);
         reportIndexSizes(catalog);
         return;
       } catch (final Exception e) {
@@ -1097,7 +1333,7 @@ public final class Andersoni {
       }
 
       try {
-        if (tryLoadFromSnapshotStore(name, catalog)) {
+        if (storeBridge.load(catalog)) {
           metrics.snapshotLoaded(name, "snapshotStore");
           reportIndexSizes(catalog);
           return;
@@ -1138,7 +1374,8 @@ public final class Andersoni {
       final Catalog<?> catalog) {
     try {
       catalog.bootstrap();
-      saveSnapshotIfPossible(catalog);
+      storeBridge.markUnknown(name);
+      storeBridge.save(catalog);
       metrics.snapshotLoaded(name, "followerDataLoaderFallback");
       reportIndexSizes(catalog);
       log.info("Catalog '{}': follower DataLoader fallback succeeded,"
@@ -1168,45 +1405,6 @@ public final class Andersoni {
       failedCatalogs.add(catalogName);
       metrics.refreshFailed(catalogName, ie);
     }
-  }
-
-  /**
-   * Attempts to load catalog data from the snapshot store.
-   *
-   * @param name    the catalog name, never null
-   * @param catalog the catalog to load, never null
-   *
-   * @return true if data was successfully loaded from the snapshot store,
-   *         false if the snapshot store is not configured, the catalog has
-   *         no serializer, or no snapshot was found
-   */
-  @SuppressWarnings("unchecked")
-  private boolean tryLoadFromSnapshotStore(final String name,
-      final Catalog<?> catalog) {
-    if (snapshotStore == null) {
-      return false;
-    }
-
-    final Optional<? extends SnapshotSerializer<?>> serializerOpt =
-        catalog.serializer();
-    if (serializerOpt.isEmpty()) {
-      return false;
-    }
-
-    final Optional<SerializedSnapshot> snapshotOpt = snapshotStore.load(name);
-    if (snapshotOpt.isEmpty()) {
-      return false;
-    }
-
-    final SerializedSnapshot serialized = snapshotOpt.get();
-    final SnapshotSerializer<Object> serializer =
-        (SnapshotSerializer<Object>) serializerOpt.get();
-    final List<Object> data = serializer.deserialize(serialized.data());
-
-    final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
-    typedCatalog.refresh(data);
-
-    return true;
   }
 
   /**
@@ -1286,100 +1484,22 @@ public final class Andersoni {
    * @param catalogName the catalog name, never null
    * @param catalog     the catalog to refresh, never null
    */
-  @SuppressWarnings("unchecked")
   private void refreshFromEvent(final String catalogName,
       final Catalog<?> catalog) {
     try {
-      if (snapshotStore != null && catalog.serializer().isPresent()) {
-        final Optional<SerializedSnapshot> snapshotOpt =
-            snapshotStore.load(catalogName);
-        if (snapshotOpt.isPresent()) {
-          final SnapshotSerializer<Object> serializer =
-              (SnapshotSerializer<Object>) catalog.serializer().get();
-          final List<Object> data =
-              serializer.deserialize(snapshotOpt.get().data());
-          final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
-          typedCatalog.refresh(data);
-          log.info("Refreshed catalog '{}' from snapshot store",
-              catalogName);
-          reportIndexSizes(catalog);
-          return;
-        }
+      if (storeBridge.load(catalog)) {
+        log.info("Refreshed catalog '{}' from snapshot store", catalogName);
+        reportIndexSizes(catalog);
+        return;
       }
-
       catalog.refresh();
+      storeBridge.markUnknown(catalogName);
       log.info("Refreshed catalog '{}' from DataLoader", catalogName);
       reportIndexSizes(catalog);
     } catch (final Exception e) {
       log.error("Failed to refresh catalog '{}' from sync event: {}",
           catalogName, e.getMessage(), e);
       metrics.refreshFailed(catalogName, e);
-    }
-  }
-
-  /**
-   * Serializes and saves the current catalog snapshot to the snapshot store
-   * if both the snapshot store is configured and the catalog has a
-   * serializer.
-   *
-   * <p>The stored hash is the SHA-256 of the bytes actually written, not the
-   * in-memory snapshot's hash. The two are identical whenever the serializer
-   * honours its determinism contract, but deriving the stored hash from the
-   * stored bytes makes it self-consistent by construction, so a store can
-   * verify integrity on load without depending on two separate
-   * {@code serialize()} calls agreeing. The stored hash is metadata only:
-   * restoring a snapshot recomputes the catalog's hash from the loaded items,
-   * so this does not affect the cross-node convergence signal.
-   *
-   * @param catalog the catalog whose snapshot should be saved, never null
-   */
-  @SuppressWarnings("unchecked")
-  private void saveSnapshotIfPossible(final Catalog<?> catalog) {
-    if (snapshotStore == null) {
-      return;
-    }
-
-    final Optional<? extends SnapshotSerializer<?>> serializerOpt =
-        catalog.serializer();
-    if (serializerOpt.isEmpty()) {
-      return;
-    }
-
-    final SnapshotSerializer<Object> serializer =
-        (SnapshotSerializer<Object>) serializerOpt.get();
-    final Snapshot<?> snapshot = catalog.currentSnapshot();
-    final List<Object> data = (List<Object>) snapshot.data();
-    final byte[] bytes = serializer.serialize(data);
-
-    final SerializedSnapshot serialized = new SerializedSnapshot(
-        catalog.name(),
-        sha256Hex(bytes),
-        snapshot.version(),
-        snapshot.createdAt(),
-        bytes);
-
-    snapshotStore.save(catalog.name(), serialized);
-  }
-
-  /**
-   * Returns the lowercase hex SHA-256 digest of the given bytes.
-   *
-   * @param bytes the bytes to digest, never null
-   *
-   * @return the hex-encoded digest, never null
-   */
-  private static String sha256Hex(final byte[] bytes) {
-    try {
-      final byte[] digest =
-          MessageDigest.getInstance("SHA-256").digest(bytes);
-      final StringBuilder builder = new StringBuilder(digest.length * 2);
-      for (final byte b : digest) {
-        builder.append(Character.forDigit((b >> 4) & 0xF, 16));
-        builder.append(Character.forDigit(b & 0xF, 16));
-      }
-      return builder.toString();
-    } catch (final NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 algorithm not available", e);
     }
   }
 
@@ -1482,9 +1602,6 @@ public final class Andersoni {
     return catalog;
   }
 
-
-  /**
-
   /**
    * A fluent builder for constructing {@link Andersoni} instances.
    *
@@ -1496,6 +1613,7 @@ public final class Andersoni {
    *   <li>snapshotStore: none</li>
    *   <li>retryPolicy: {@link RetryPolicy#defaultPolicy()}</li>
    *   <li>metrics: {@link NoopAndersoniMetrics}</li>
+   *   <li>reconciliation: {@link ReconciliationPolicy#defaultPolicy()}</li>
    * </ul>
    */
   public static final class Builder {
@@ -1520,6 +1638,9 @@ public final class Andersoni {
 
     /** The patch payload ceiling, defaulting to {@link #DEFAULT_MAX_PATCH_PAYLOAD_BYTES}. */
     private int maxPatchPayloadBytes = DEFAULT_MAX_PATCH_PAYLOAD_BYTES;
+
+    /** The optional reconciliation policy. */
+    private ReconciliationPolicy reconciliation;
 
     /** Creates a new builder with default settings. */
     private Builder() {
@@ -1665,6 +1786,20 @@ public final class Andersoni {
     }
 
     /**
+     * Sets the reconciliation policy. Defaults to
+     * {@link ReconciliationPolicy#defaultPolicy()}: enabled, every 30
+     * seconds, active only when a snapshot store is configured.
+     *
+     * @param thePolicy the policy, never null
+     * @return this builder, never null
+     */
+    public Builder reconciliation(final ReconciliationPolicy thePolicy) {
+      Objects.requireNonNull(thePolicy, "reconciliation policy must not be null");
+      this.reconciliation = thePolicy;
+      return this;
+    }
+
+    /**
      * Builds the Andersoni instance with the configured settings.
      *
      * <p>Any unset optional fields are replaced with their defaults.
@@ -1698,6 +1833,8 @@ public final class Andersoni {
           ? retryPolicy : RetryPolicy.defaultPolicy();
       final AndersoniMetrics resolvedMetrics = metrics != null
           ? metrics : new NoopAndersoniMetrics();
+      final ReconciliationPolicy resolvedReconciliation = reconciliation != null
+          ? reconciliation : ReconciliationPolicy.defaultPolicy();
 
       return new Andersoni(
           resolvedNodeId,
@@ -1706,7 +1843,8 @@ public final class Andersoni {
           snapshotStore,
           resolvedRetry,
           resolvedMetrics,
-          maxPatchPayloadBytes);
+          maxPatchPayloadBytes,
+          resolvedReconciliation);
     }
   }
 }

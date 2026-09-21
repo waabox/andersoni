@@ -23,15 +23,20 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 import org.easymock.Capture;
 import org.junit.jupiter.api.Test;
+import org.waabox.andersoni.leader.LeaderChangeListener;
 import org.waabox.andersoni.leader.LeaderElectionStrategy;
 import org.waabox.andersoni.metrics.AndersoniMetrics;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
@@ -450,6 +455,8 @@ class AndersoniTest {
     expectLastCall().once();
     leaderElection.isLeader();
     expectLastCall().andReturn(true).anyTimes();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
 
     syncStrategy.subscribe(anyObject(RefreshListener.class));
     expectLastCall().once();
@@ -512,6 +519,8 @@ class AndersoniTest {
 
     // Leader election starts and this node is leader.
     leaderElection.start();
+    expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
     expectLastCall().once();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
 
@@ -587,6 +596,8 @@ class AndersoniTest {
 
     // Leader election starts and this node is a follower.
     leaderElection.start();
+    expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
     expectLastCall().once();
     expect(leaderElection.isLeader()).andReturn(false).anyTimes();
 
@@ -674,6 +685,8 @@ class AndersoniTest {
     // Leader election starts, initially this node is a follower.
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
 
     // Initial S3 try returns empty.
     expect(snapshotStore.load("events"))
@@ -749,6 +762,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     expect(leaderElection.isLeader()).andReturn(false).anyTimes();
 
     // S3 always returns empty: exhaust all 30 attempts (maxRetries=3 * 10).
@@ -815,6 +830,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     expect(leaderElection.isLeader()).andReturn(false).anyTimes();
 
     // S3 always returns empty: exhaust all 30 attempts.
@@ -874,6 +891,8 @@ class AndersoniTest {
     leaderElection.start();
     expectLastCall().once();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
 
     metrics.refreshFailed(eq("events"), anyObject(Throwable.class));
     expectLastCall().once();
@@ -1140,6 +1159,8 @@ class AndersoniTest {
 
     leaderElection.start();
     expectLastCall().once();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
 
     // SnapshotStore throws on load.
@@ -1234,6 +1255,8 @@ class AndersoniTest {
         .andReturn(false)  // scheduled refresh 2
         .andReturn(false)  // scheduled refresh 3
         .andReturn(false).anyTimes();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     leaderElection.stop();
     expectLastCall().once();
 
@@ -1535,6 +1558,8 @@ class AndersoniTest {
     expect(leaderElection.isLeader())
         .andReturn(true)   // bootstrap
         .andReturn(false); // refreshAndSync call
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
 
     leaderElection.stop();
     expectLastCall().once();
@@ -1585,6 +1610,8 @@ class AndersoniTest {
     expect(leaderElection.isLeader())
         .andReturn(true)   // bootstrap
         .andReturn(false); // refreshAndSync call
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     leaderElection.stop();
     expectLastCall().once();
 
@@ -1716,6 +1743,8 @@ class AndersoniTest {
     expect(leaderElection.isLeader())
         .andReturn(true)    // bootstrap
         .andReturn(false);  // handling the received request
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     leaderElection.stop();
     expectLastCall().once();
 
@@ -1778,6 +1807,8 @@ class AndersoniTest {
     expect(leaderElection.isLeader())
         .andReturn(true)             // bootstrap
         .andReturn(false).anyTimes(); // every scheduled tick
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     leaderElection.stop();
     expectLastCall().once();
     replay(leaderElection);
@@ -2081,7 +2112,493 @@ class AndersoniTest {
     }
   }
 
-  /** A serializer producing stable bytes for the Event test type. */
+  /** A sync strategy that records what was published and never delivers. */
+  static final class RecordingSyncStrategy implements SyncStrategy {
+
+    final List<RefreshEvent> published = new CopyOnWriteArrayList<>();
+
+    @Override
+    public void publish(final RefreshEvent event) {
+      published.add(event);
+    }
+
+    @Override
+    public void subscribe(final RefreshListener listener) {
+    }
+
+    @Override
+    public void start() {
+    }
+
+    @Override
+    public void stop() {
+    }
+  }
+
+  private static SerializedSnapshot eventsSnapshot(final List<Event> events,
+      final long version) {
+    final byte[] bytes = new EventSerializer().serialize(events);
+    return new SerializedSnapshot("events", SnapshotStoreBridge.sha256Hex(bytes),
+        version, Instant.parse("2026-09-11T10:00:00Z"), bytes);
+  }
+
+  private static AndersoniStatus.CatalogStatus catalogStatus(final Andersoni andersoni,
+      final String name) {
+    return andersoni.status().catalogs().stream()
+        .filter(c -> c.catalogName().equals(name))
+        .findFirst()
+        .orElseThrow();
+  }
+
+  private static void awaitUntil(final BooleanSupplier condition,
+      final Duration timeout) throws InterruptedException {
+    final long deadline = System.nanoTime() + timeout.toNanos();
+    while (!condition.getAsBoolean()) {
+      if (System.nanoTime() > deadline) {
+        throw new AssertionError("Condition not met within " + timeout);
+      }
+      Thread.sleep(20);
+    }
+  }
+
+  /** Leader election fixed to a follower role. */
+  static final class FollowerElection implements LeaderElectionStrategy {
+
+    @Override
+    public void start() {
+    }
+
+    @Override
+    public boolean isLeader() {
+      return false;
+    }
+
+    @Override
+    public void onLeaderChange(final LeaderChangeListener listener) {
+    }
+
+    @Override
+    public void stop() {
+    }
+  }
+
+  /** Leader election whose role tests flip at will, notifying registered
+   *  listeners on every {@link #become(boolean)} call. */
+  static final class ToggleLeaderElection implements LeaderElectionStrategy {
+
+    private volatile boolean leader;
+    private final List<LeaderChangeListener> listeners = new CopyOnWriteArrayList<>();
+
+    ToggleLeaderElection(final boolean initiallyLeader) {
+      leader = initiallyLeader;
+    }
+
+    void become(final boolean isLeader) {
+      leader = isLeader;
+      for (final LeaderChangeListener listener : listeners) {
+        listener.onLeaderChange(isLeader);
+      }
+    }
+
+    /** Flips the role without notifying listeners, so a test can drive the
+     *  isLeader()-then-notify race deterministically: check the new role
+     *  becomes visible to a concurrent reconciliation pass before the
+     *  promotion listener fires. */
+    void setLeaderSilently(final boolean isLeader) {
+      leader = isLeader;
+    }
+
+    @Override
+    public void start() {
+    }
+
+    @Override
+    public boolean isLeader() {
+      return leader;
+    }
+
+    @Override
+    public void onLeaderChange(final LeaderChangeListener listener) {
+      listeners.add(listener);
+    }
+
+    @Override
+    public void stop() {
+    }
+  }
+
+  /** Records the catalog names passed to {@link AndersoniMetrics#refreshFailed}. */
+  static final class RecordingFailureMetrics implements AndersoniMetrics {
+
+    final List<String> failed = new CopyOnWriteArrayList<>();
+
+    @Override
+    public void snapshotLoaded(final String catalogName, final String source) {
+    }
+
+    @Override
+    public void refreshFailed(final String catalogName, final Throwable cause) {
+      failed.add(catalogName);
+    }
+
+    @Override
+    public void indexSizeReported(final String catalogName, final String indexName,
+        final long estimatedSizeBytes) {
+    }
+  }
+
+  @Test
+  void whenReconciling_givenLeaderSaveFailedDuringRefresh_shouldResaveAndPublish()
+      throws InterruptedException {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final InMemorySnapshotStore store = new InMemorySnapshotStore();
+    final RecordingSyncStrategy sync = new RecordingSyncStrategy();
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1))
+        .serializer(new EventSerializer())
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .snapshotStore(store)
+        .syncStrategy(sync)
+        .reconciliation(ReconciliationPolicy.of(Duration.ofHours(1)))
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+    try {
+      store.failNextSave = true;
+      assertThrows(IllegalStateException.class, () -> andersoni.refreshAndSync("events"));
+      assertTrue(sync.published.isEmpty(), "A failed save must not publish");
+
+      andersoni.reconcileNow();
+
+      awaitUntil(() -> sync.published.size() == 1, Duration.ofSeconds(5));
+      assertEquals(catalog.currentSnapshot().hash(), sync.published.get(0).hash());
+      awaitUntil(() -> catalogStatus(andersoni, "events").syncState() == SyncState.IN_SYNC,
+          Duration.ofSeconds(5));
+      assertEquals(store.get("events").orElseThrow().hash(),
+          sync.published.get(0).hash());
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenReconciling_givenFollowerBehindStore_shouldReloadFromStore()
+      throws InterruptedException {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final Event e2 = new Event("2", new Sport("Tennis"), new Venue("Wimbledon"));
+    final InMemorySnapshotStore store = new InMemorySnapshotStore();
+    store.put("events", eventsSnapshot(List.of(e1), 1L));
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          throw new IllegalStateException("followers must not query the source");
+        })
+        .serializer(new EventSerializer())
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .snapshotStore(store)
+        .leaderElection(new FollowerElection())
+        .reconciliation(ReconciliationPolicy.of(Duration.ofHours(1)))
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+    try {
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+      store.put("events", eventsSnapshot(List.of(e1, e2), 2L));
+
+      andersoni.reconcileNow();
+
+      awaitUntil(() -> andersoni.search("events", "by-sport", "Tennis").size() == 1,
+          Duration.ofSeconds(5));
+      awaitUntil(() -> catalogStatus(andersoni, "events").syncState() == SyncState.IN_SYNC,
+          Duration.ofSeconds(5));
+      assertTrue(catalogStatus(andersoni, "events").lastReconciledAt().isPresent());
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenReconciling_givenFollowerWhoseBootstrapFailed_shouldRecoverFromStore()
+      throws InterruptedException {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final InMemorySnapshotStore store = new InMemorySnapshotStore();
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          throw new IllegalStateException("source down");
+        })
+        .serializer(new EventSerializer())
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .snapshotStore(store)
+        .leaderElection(new FollowerElection())
+        .retryPolicy(RetryPolicy.of(1, Duration.ofMillis(5)))
+        .reconciliation(ReconciliationPolicy.of(Duration.ofHours(1)))
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+    try {
+      assertThrows(CatalogNotAvailableException.class,
+          () -> andersoni.search("events", "by-sport", "Football"));
+      store.put("events", eventsSnapshot(List.of(e1), 1L));
+
+      andersoni.reconcileNow();
+
+      awaitUntil(() -> catalogStatus(andersoni, "events").available(), Duration.ofSeconds(5));
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+      awaitUntil(() -> catalogStatus(andersoni, "events").syncState() == SyncState.IN_SYNC,
+          Duration.ofSeconds(5));
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenStatus_givenReconciliationDisabled_shouldReportUnknown() {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .data(List.of(e1))
+        .serializer(new EventSerializer())
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    final Andersoni andersoni = Andersoni.builder()
+        .snapshotStore(new InMemorySnapshotStore())
+        .reconciliation(ReconciliationPolicy.disabled())
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+    try {
+      final AndersoniStatus.CatalogStatus status = catalogStatus(andersoni, "events");
+
+      assertEquals(SyncState.UNKNOWN, status.syncState());
+      assertTrue(status.lastReconciledAt().isEmpty());
+      assertTrue(andersoni.status().inSync());
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenReconcile_givenStopped_shouldThrow() {
+    final Andersoni andersoni = Andersoni.builder()
+        .snapshotStore(new InMemorySnapshotStore())
+        .build();
+    andersoni.start();
+    andersoni.stop();
+
+    assertThrows(IllegalStateException.class, andersoni::reconcile);
+  }
+
+  @Test
+  void whenReconcile_givenNoSnapshotStore_shouldBeNoOp() {
+    final Andersoni andersoni = Andersoni.builder().build();
+    andersoni.start();
+    try {
+      assertDoesNotThrow(andersoni::reconcile);
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenPromotedToLeader_givenStoreAheadOfLocalSnapshot_shouldRefreshFromSourceNotOverwriteStore()
+      throws InterruptedException {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final Event e2 = new Event("2", new Sport("Tennis"), new Venue("Wimbledon"));
+    final Event e3 = new Event("3", new Sport("Rugby"), new Venue("Twickenham"));
+    final InMemorySnapshotStore store = new InMemorySnapshotStore();
+    store.put("events", eventsSnapshot(List.of(e1), 1L));
+    final RecordingSyncStrategy sync = new RecordingSyncStrategy();
+    final ToggleLeaderElection election = new ToggleLeaderElection(false);
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1, e2, e3))
+        .serializer(new EventSerializer())
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .snapshotStore(store)
+        .syncStrategy(sync)
+        .leaderElection(election)
+        .reconciliation(ReconciliationPolicy.of(Duration.ofHours(1)))
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+    try {
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+
+      // The dead previous leader's last upload, ahead of what this follower
+      // ever applied.
+      store.put("events", eventsSnapshot(List.of(e1, e2), 2L));
+
+      election.become(true);
+
+      awaitUntil(() -> sync.published.size() == 1, Duration.ofSeconds(5));
+      assertEquals(3, catalogStatus(andersoni, "events").itemCount());
+      final String expectedHash = SnapshotStoreBridge.sha256Hex(
+          new EventSerializer().serialize(List.of(e1, e2, e3)));
+      assertEquals(expectedHash, store.get("events").orElseThrow().hash(),
+          "The promoted leader must re-query the source, not overwrite the "
+              + "store with its own stale in-memory snapshot");
+      assertEquals(catalog.currentSnapshot().hash(), sync.published.get(0).hash());
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenPromotedToLeader_givenRefreshFails_shouldReportAndKeepServing()
+      throws InterruptedException {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final AtomicBoolean loaderUsed = new AtomicBoolean(false);
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          if (loaderUsed.compareAndSet(false, true)) {
+            return List.of(e1);
+          }
+          throw new RuntimeException("source unavailable");
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    final RecordingSyncStrategy sync = new RecordingSyncStrategy();
+    final ToggleLeaderElection election = new ToggleLeaderElection(true);
+    final RecordingFailureMetrics metrics = new RecordingFailureMetrics();
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-1")
+        .syncStrategy(sync)
+        .leaderElection(election)
+        .metrics(metrics)
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+    try {
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+
+      election.become(true);
+
+      awaitUntil(() -> metrics.failed.contains("events"), Duration.ofSeconds(5));
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+      assertTrue(sync.published.isEmpty(), "A failed promotion refresh must not publish");
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenPromotedToLeader_givenFailedBootstrap_shouldRecoverThroughRefresh()
+      throws InterruptedException {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final AtomicBoolean loaderReady = new AtomicBoolean(false);
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          if (!loaderReady.get()) {
+            throw new RuntimeException("source down");
+          }
+          return List.of(e1);
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    final ToggleLeaderElection election = new ToggleLeaderElection(false);
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .leaderElection(election)
+        .retryPolicy(RetryPolicy.of(1, Duration.ofMillis(5)))
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+    try {
+      assertThrows(CatalogNotAvailableException.class,
+          () -> andersoni.search("events", "by-sport", "Football"));
+
+      loaderReady.set(true);
+      election.become(true);
+
+      awaitUntil(() -> catalogStatus(andersoni, "events").available(), Duration.ofSeconds(5));
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenPromotedToLeader_givenLeaderRepairQueuedFirst_shouldRefreshFromSourceInsteadOfResaving()
+      throws InterruptedException {
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final Event e2 = new Event("2", new Sport("Tennis"), new Venue("Wimbledon"));
+    final Event e3 = new Event("3", new Sport("Rugby"), new Venue("Twickenham"));
+    final InMemorySnapshotStore store = new InMemorySnapshotStore();
+    store.put("events", eventsSnapshot(List.of(e1), 1L));
+    final RecordingSyncStrategy sync = new RecordingSyncStrategy();
+    final ToggleLeaderElection election = new ToggleLeaderElection(false);
+    final Catalog<Event> catalog = Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> List.of(e1, e2, e3))
+        .serializer(new EventSerializer())
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("node-2")
+        .snapshotStore(store)
+        .syncStrategy(sync)
+        .leaderElection(election)
+        .reconciliation(ReconciliationPolicy.of(Duration.ofHours(1)))
+        .build();
+    andersoni.register(catalog);
+    andersoni.start();
+    try {
+      assertEquals(1, andersoni.search("events", "by-sport", "Football").size());
+
+      // The dead previous leader's last upload, ahead of what this follower
+      // ever applied.
+      store.put("events", eventsSnapshot(List.of(e1, e2), 2L));
+
+      // Flip the role without notifying listeners: a reconciliation pass
+      // reading isLeader() right now sees a leader and dispatches a leader
+      // repair, before the promotion listener has had a chance to mark it.
+      election.setLeaderSilently(true);
+      andersoni.reconcileNow();
+
+      // Now notify: the promotion dispatch races the already-queued repair.
+      election.become(true);
+
+      // Depending on how the dispatcher's coalescing and the leader repair
+      // interleave, either exactly one event is published (the promotion
+      // dispatch was coalesced into the already-queued repair, which then
+      // performs the source refresh itself) or two are (the repair ran to
+      // completion first with the stale snapshot, and the promotion's own,
+      // separately dispatched refresh corrects it right after). Either way
+      // the store must converge on the source data, never stay on the
+      // stale one: that is the invariant this test protects.
+      final String expectedHash = SnapshotStoreBridge.sha256Hex(
+          new EventSerializer().serialize(List.of(e1, e2, e3)));
+      awaitUntil(() -> !sync.published.isEmpty()
+          && store.get("events").map(SerializedSnapshot::hash)
+              .filter(expectedHash::equals).isPresent(),
+          Duration.ofSeconds(5));
+      assertEquals(3, catalogStatus(andersoni, "events").itemCount());
+      assertEquals(expectedHash, store.get("events").orElseThrow().hash(),
+          "A leader repair queued just before the promotion notification must "
+              + "still refresh from the source, not resave the stale snapshot");
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  /** A round-trip serializer producing stable bytes for the Event test type:
+   *  id|sport|venue per line. */
   static final class EventSerializer implements SnapshotSerializer<Event> {
 
     @Override
@@ -2097,7 +2614,15 @@ class AndersoniTest {
 
     @Override
     public List<Event> deserialize(final byte[] data) {
-      throw new UnsupportedOperationException("not needed for this test");
+      final List<Event> events = new ArrayList<>();
+      for (final String line : new String(data, StandardCharsets.UTF_8).split("\n")) {
+        if (line.isBlank()) {
+          continue;
+        }
+        final String[] parts = line.split("\\|");
+        events.add(new Event(parts[0], new Sport(parts[1]), new Venue(parts[2])));
+      }
+      return events;
     }
   }
 
@@ -2169,6 +2694,8 @@ class AndersoniTest {
     leaderElection.start();
     expectLastCall().once();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
 
     metrics.snapshotLoaded("events", "dataLoader");
     expectLastCall().once();
@@ -2252,6 +2779,8 @@ class AndersoniTest {
     leaderElection.start();
     expectLastCall().once();
     expect(leaderElection.isLeader()).andReturn(true).anyTimes();
+    leaderElection.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
 
     metrics.refreshFailed(eq("dated-events"), anyObject(Throwable.class));
     expectLastCall().once();

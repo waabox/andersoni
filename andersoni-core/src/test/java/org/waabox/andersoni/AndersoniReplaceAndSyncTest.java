@@ -20,6 +20,7 @@ import java.util.List;
 
 import org.easymock.Capture;
 import org.junit.jupiter.api.Test;
+import org.waabox.andersoni.leader.LeaderChangeListener;
 import org.waabox.andersoni.leader.LeaderElectionStrategy;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
@@ -99,6 +100,8 @@ class AndersoniReplaceAndSyncTest {
         LeaderElectionStrategy.class);
     leader.start();
     expectLastCall().anyTimes();
+    leader.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     expect(leader.isLeader()).andReturn(true).anyTimes();
     leader.stop();
     expectLastCall().anyTimes();
@@ -166,6 +169,8 @@ class AndersoniReplaceAndSyncTest {
         LeaderElectionStrategy.class);
     leader.start();
     expectLastCall().anyTimes();
+    leader.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     expect(leader.isLeader()).andReturn(true).times(1);  // bootstrap
     expect(leader.isLeader()).andReturn(false).anyTimes();
     leader.stop();
@@ -211,6 +216,8 @@ class AndersoniReplaceAndSyncTest {
         LeaderElectionStrategy.class);
     leader.start();
     expectLastCall().anyTimes();
+    leader.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     expect(leader.isLeader()).andReturn(true).anyTimes();
     leader.stop();
     expectLastCall().anyTimes();
@@ -274,6 +281,8 @@ class AndersoniReplaceAndSyncTest {
         LeaderElectionStrategy.class);
     leader.start();
     expectLastCall().anyTimes();
+    leader.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     expect(leader.isLeader()).andReturn(true).anyTimes();
     leader.stop();
     expectLastCall().anyTimes();
@@ -318,6 +327,8 @@ class AndersoniReplaceAndSyncTest {
         LeaderElectionStrategy.class);
     leader.start();
     expectLastCall().anyTimes();
+    leader.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     expect(leader.isLeader()).andReturn(true).anyTimes();
     leader.stop();
     expectLastCall().anyTimes();
@@ -375,6 +386,8 @@ class AndersoniReplaceAndSyncTest {
         LeaderElectionStrategy.class);
     leader.start();
     expectLastCall().anyTimes();
+    leader.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
     expect(leader.isLeader()).andReturn(true).anyTimes();
     leader.stop();
     expectLastCall().anyTimes();
