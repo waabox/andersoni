@@ -198,6 +198,41 @@ that document reaches it from a wire format that stayed decodable by old nodes.
 
 ---
 
+## 4c. Reconciliation
+
+1.12.0 shipped snapshot reconciliation (`SnapshotReconciler`; see
+`.claude/docs/use-cases/cluster-snapshot-reconciliation.md`): every node
+compares the store's hash against the hash it last *applied* from the store, a
+follower that differs reloads, a leader that differs re-saves and re-publishes.
+Left alone, that loop would undo the point of a patch — every follower would
+apply the delta and then, within one interval, reload the whole snapshot anyway,
+reporting drift while doing so — and would miss the one failure it exists to
+catch, a leader whose save failed, because the leader's applied hash would still
+match the stale store.
+
+Both fall out of one fact: the in-memory hash and the store hash are the same
+SHA-256 over the same serializer bytes, so on the leader the store object
+written after a patch carries exactly the event's `toHash`.
+
+- The leader forgets its applied hash before saving the patched snapshot, as
+  `refreshAndSync` does. A failed save propagates to the caller, the change is
+  not broadcast, and the next pass re-saves and re-publishes it as a refresh.
+- A follower that applied a patch surgically records `toHash` as its applied
+  hash (`SnapshotStoreBridge.markApplied`). The next pass finds the store at
+  that hash and does nothing.
+- A follower that missed a patch keeps its old applied hash, so the next pass
+  reloads it from the store. Reconciliation is therefore also the repair path
+  for a lost patch message, which the transports only deliver at least once.
+- The local `insert`, `remove` and `replace` on `Andersoni` mark the catalog
+  unknown like a local `refresh`: uploaded and broadcast by the leader's next
+  pass, overwritten by the store on a follower.
+
+A serializer whose round trip is not byte-stable never applied patches
+surgically anyway (its `fromHash` never matches), so nothing here asks more of
+the serializer than patches already did.
+
+---
+
 ## 5. What is left to build
 
 ### 5.1 Operations

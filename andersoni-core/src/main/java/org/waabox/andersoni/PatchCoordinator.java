@@ -46,6 +46,7 @@ final class PatchCoordinator {
     boolean isFailedCatalog(String catalogName);
     void reportIndexSizes(Catalog<?> catalog);
     void saveSnapshot(Catalog<?> catalog);
+    void markStoreHashApplied(String catalogName, String storeHash);
     void refreshFromEvent(String catalogName, Catalog<?> catalog);
   }
 
@@ -514,6 +515,11 @@ final class PatchCoordinator {
           + "(leader v{} -> v{})", ops.size(), event.catalogName(),
           event.fromVersion(), event.toVersion());
       metrics.patchApplied(event.catalogName());
+      // The leader saved its snapshot under toHash before publishing, so
+      // this node now holds that store object without having loaded it.
+      // Recording the hash keeps reconciliation from reading a delivered
+      // patch as drift and reloading what it already has.
+      callbacks.markStoreHashApplied(event.catalogName(), event.toHash());
       callbacks.reportIndexSizes(catalog);
     } catch (final Exception e) {
       log.error("Failed to apply patch surgically for catalog '{}': {}."

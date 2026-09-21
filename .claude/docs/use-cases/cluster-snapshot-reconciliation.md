@@ -44,13 +44,18 @@ the source. Design spec:
    store object it last loaded or wrote (`SnapshotStoreBridge`). It is set on
    every load from the store and on every successful save, and cleared
    (`null`, meaning "must reconcile") whenever the local state changed from a
-   source other than the store: a leader's local refresh before its save
-   attempt, a follower's `DataLoader` fallback, a local `refresh(name)`, or a
-   failed bootstrap.
+   source other than the store: a leader's local refresh or snapshot patch
+   before its save attempt, a follower's `DataLoader` fallback, a local
+   `refresh(name)`, `insert`, `remove` or `replace`, or a failed bootstrap.
 4. Drift is always detected by comparing the store's hash (obtained through
    `SnapshotStore.describe`, metadata only) against the **applied** hash, never
    against the in-memory snapshot hash. This keeps a serializer whose round
-   trip is not byte-stable from causing a reload on every pass.
+   trip is not byte-stable from causing a reload on every pass. A follower
+   that applied a snapshot patch surgically records the patch's `toHash` as
+   applied (`SnapshotStoreBridge.markApplied`): the leader saved the patched
+   snapshot under that very hash before publishing, so a delivered patch is
+   not drift while a missed one still is. See
+   `docs/plans/2026-09-04-patch-operation-design.md`, §4c.
 5. Decision table, evaluated per catalog on every pass:
 
    | Role     | Store        | Condition                              | Outcome                                   |
