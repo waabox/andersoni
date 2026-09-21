@@ -1,7 +1,9 @@
 package org.waabox.andersoni.metrics.datadog;
 
 import java.util.Collection;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -21,9 +23,10 @@ import com.timgroup.statsd.StatsDClient;
  * {@link AndersoniMetrics} implementation that reports metrics to Datadog
  * via the DogStatsD protocol.
  *
- * <p>Reports counters on events (snapshot loads, refresh failures) and
- * gauges on a configurable polling interval (item counts, memory usage,
- * index sizes).
+ * <p>Reports counters on events (snapshot loads, refresh failures,
+ * reconciliation drift detected/repaired/failed) and gauges on a
+ * configurable polling interval (item counts, memory usage, index sizes,
+ * and whether each catalog is currently in sync with the snapshot store).
  *
  * <p>Three factory methods are available:
  * <ul>
@@ -60,6 +63,9 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
 
   /** The scheduler for gauge polling. */
   private volatile ScheduledExecutorService scheduler;
+
+  /** Per-catalog in-sync flag derived from drift events; absent means never drifted. */
+  private final Map<String, Boolean> inSyncByCatalog = new ConcurrentHashMap<>();
 
   private DatadogAndersoniMetrics(final StatsDClient theClient,
       final boolean clientOwned, final long thePollingIntervalMs) {
@@ -257,6 +263,50 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
     });
   }
 
+  /** {@inheritDoc} */
+  @Override
+  public void driftDetected(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    inSyncByCatalog.put(catalogName, Boolean.FALSE);
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("reconcile.drift_detected", 1, "catalog:" + catalogName, "node:" + node);
+      } else {
+        client.count("reconcile.drift_detected", 1, "catalog:" + catalogName);
+      }
+    });
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void driftRepaired(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    inSyncByCatalog.put(catalogName, Boolean.TRUE);
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("reconcile.drift_repaired", 1, "catalog:" + catalogName, "node:" + node);
+      } else {
+        client.count("reconcile.drift_repaired", 1, "catalog:" + catalogName);
+      }
+    });
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public void reconcileFailed(final String catalogName, final Throwable cause) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    safely(() -> {
+      final String node = this.nodeId;
+      if (node != null) {
+        client.count("reconcile.failed", 1, "catalog:" + catalogName, "node:" + node);
+      } else {
+        client.count("reconcile.failed", 1, "catalog:" + catalogName);
+      }
+    });
+  }
+
   /** Runs a metric emission, swallowing and logging any error so that a
    * failing or misconfigured StatsD client can never break the cache path.
    *
@@ -366,6 +416,9 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
     client.gauge("catalog.version",
         catalog.currentSnapshot().version(),
         catalogTag, nodeTag);
+
+    final boolean inSync = inSyncByCatalog.getOrDefault(catalog.name(), Boolean.TRUE);
+    client.gauge("catalog.in_sync", inSync ? 1L : 0L, catalogTag, nodeTag);
 
     for (final IndexInfo indexInfo : info.indices()) {
       final String indexTag = "index:" + indexInfo.name();

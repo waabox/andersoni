@@ -1,6 +1,9 @@
 package org.waabox.andersoni.snapshot.fs;
 
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -13,6 +16,7 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
+import org.waabox.andersoni.snapshot.SnapshotMetadata;
 import org.waabox.andersoni.snapshot.SnapshotStore;
 
 /**
@@ -195,6 +199,73 @@ public final class FileSystemSnapshotStore implements SnapshotStore {
       throw new UncheckedIOException(
           "Failed to load snapshot for catalog: " + catalogName, e);
     }
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Reads only the metadata header of {@code snapshot.bin} (up to the
+   * blank line), or the legacy {@code snapshot.meta} file, never the data
+   * bytes.
+   *
+   * @throws UncheckedIOException if reading from the filesystem fails
+   */
+  @Override
+  public Optional<SnapshotMetadata> describe(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    validateCatalogName(catalogName);
+
+    final Path catalogDir = baseDir.resolve(catalogName);
+    final Path snapshotFile = catalogDir.resolve(SNAPSHOT_FILE);
+
+    try {
+      if (Files.exists(snapshotFile)) {
+        final String header = readHeader(catalogName, snapshotFile);
+        return Optional.of(SnapshotMetadata.of(
+            parseSnapshot(catalogName, new byte[0], header)));
+      }
+      final Path dataFile = catalogDir.resolve(DATA_FILE);
+      final Path metaFile = catalogDir.resolve(META_FILE);
+      if (Files.exists(dataFile) && Files.exists(metaFile)) {
+        return Optional.of(SnapshotMetadata.of(
+            parseSnapshot(catalogName, new byte[0], Files.readString(metaFile))));
+      }
+      return Optional.empty();
+    } catch (final IOException e) {
+      throw new UncheckedIOException(
+          "Failed to describe snapshot for catalog: " + catalogName, e);
+    }
+  }
+
+  /**
+   * Reads the metadata header of a single-file snapshot, stopping at the
+   * blank line that separates it from the data.
+   *
+   * @param catalogName  the catalog name for error messages, never null
+   * @param snapshotFile the file to read, never null
+   *
+   * @return the header text, never null
+   *
+   * @throws IOException           if reading fails
+   * @throws IllegalStateException if the separator is missing
+   */
+  private static String readHeader(final String catalogName, final Path snapshotFile)
+      throws IOException {
+    try (InputStream in = new BufferedInputStream(Files.newInputStream(snapshotFile))) {
+      final ByteArrayOutputStream header = new ByteArrayOutputStream();
+      int previous = -1;
+      int current;
+      while ((current = in.read()) >= 0) {
+        if (previous == '\n' && current == '\n') {
+          return header.toString(StandardCharsets.UTF_8);
+        }
+        header.write(current);
+        previous = current;
+      }
+    }
+    throw new IllegalStateException(
+        "Malformed snapshot file for catalog: " + catalogName
+            + ". Missing the blank line separating header from data.");
   }
 
   /**

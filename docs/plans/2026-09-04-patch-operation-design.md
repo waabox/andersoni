@@ -170,7 +170,7 @@ falls back to a reload rather than dropping it.
 ## 4b. Upgrading a running cluster
 
 A patch is a new sync message type, and it is **not readable by a node running
-1.11.0 or earlier**. The payload carries `fromHash`/`toHash` where the older
+1.12.0 or earlier**. The payload carries `fromHash`/`toHash` where the older
 `RefreshEventCodec` requires `version` and `hash`, so it throws.
 
 Neither transport fails loudly enough to notice. `KafkaSyncStrategy` catches
@@ -189,7 +189,7 @@ exactly as it did before. The safe order is therefore:
 3. switch call sites to the patch operations.
 
 Step 3 is reversible by reverting a code change. Step 1 is not reversible once
-patches are in flight: a node rolled back to 1.11.0 cannot read them and will
+patches are in flight: a node rolled back to 1.12.0 cannot read them and will
 not catch up on its own.
 
 This is the same staged shape as §7 of
@@ -262,12 +262,13 @@ removals and upserts throw it too.
 
 ### 5.4 Target version
 
-`README.md` marks the feature "Since 1.12.0", matching the release
-`2026-07-28-incremental-refresh-design.md` targets. It was "Since 1.10.0",
-written when the branch started in May; 1.10.0, 1.10.1, 1.10.2 and 1.11.0 have
-all been released since, none carrying this feature. The number is a
-placeholder until §1 is settled — if this design is not the one that ships, or
-slips a release, it moves with it.
+`README.md` marks the feature "Since 1.13.0". It was "Since 1.10.0", written
+when the branch started in May, then "Since 1.12.0" to match the release
+`2026-07-28-incremental-refresh-design.md` targets; 1.10.0, 1.10.1, 1.10.2,
+1.11.0 and 1.12.0 have all been released since, none carrying this feature
+(1.12.0 shipped snapshot reconciliation instead). The number is a placeholder
+until §1 is settled — if this design is not the one that ships, or slips a
+release, it moves with it.
 
 ---
 

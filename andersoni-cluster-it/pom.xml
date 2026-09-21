@@ -8,7 +8,7 @@
   <parent>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni</artifactId>
-    <version>1.11.0</version>
+    <version>1.12.0</version>
   </parent>
 
   <artifactId>andersoni-cluster-it</artifactId>
@@ -38,6 +38,13 @@
     <dependency>
       <groupId>io.github.waabox</groupId>
       <artifactId>andersoni-sync-kafka</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!-- Shared filesystem snapshot store (bind-mounted dir) for reconciliation. -->
+    <dependency>
+      <groupId>io.github.waabox</groupId>
+      <artifactId>andersoni-snapshot-fs</artifactId>
       <version>${project.version}</version>
     </dependency>
 

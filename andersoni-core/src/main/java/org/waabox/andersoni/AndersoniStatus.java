@@ -1,7 +1,9 @@
 package org.waabox.andersoni;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * A read-only snapshot of this node's operational state, suitable for health
@@ -39,6 +41,18 @@ public record AndersoniStatus(
   }
 
   /**
+   * Returns whether every catalog on this node is at the store's snapshot.
+   *
+   * <p>{@link SyncState#UNKNOWN} does not count as drift, so a node without
+   * reconciliation reports {@code true}.
+   *
+   * @return false if any catalog is {@link SyncState#DRIFTED}
+   */
+  public boolean inSync() {
+    return catalogs.stream().noneMatch(c -> c.syncState() == SyncState.DRIFTED);
+  }
+
+  /**
    * The status of a single catalog on this node.
    *
    * @param catalogName     the catalog name, never null
@@ -59,6 +73,11 @@ public record AndersoniStatus(
    * @param itemCount       the number of items in the current snapshot
    * @param estimatedSizeMB the estimated in-memory size of the catalog's
    *                        indices, in megabytes
+   * @param syncState        whether this catalog matched the snapshot store at
+   *                         the last reconciliation pass; {@code UNKNOWN} when
+   *                         reconciliation is inactive for it
+   * @param lastReconciledAt when the last reconciliation pass checked this
+   *                         catalog, or empty if none has, never null
    *
    * @author waabox(waabox[at]gmail[dot]com)
    */
@@ -69,22 +88,28 @@ public record AndersoniStatus(
       String hash,
       boolean hashComparable,
       int itemCount,
-      double estimatedSizeMB) {
+      double estimatedSizeMB,
+      SyncState syncState,
+      Optional<Instant> lastReconciledAt) {
 
     /**
      * Canonical constructor validating inputs.
      *
-     * @param catalogName     the catalog name, never null.
-     * @param available       whether the catalog is bootstrapped.
-     * @param version         the snapshot version.
-     * @param hash            the snapshot hash, never null.
-     * @param hashComparable  whether the hash is comparable across nodes.
-     * @param itemCount       the item count.
-     * @param estimatedSizeMB the estimated size in megabytes.
+     * @param catalogName      the catalog name, never null.
+     * @param available        whether the catalog is bootstrapped.
+     * @param version          the snapshot version.
+     * @param hash             the snapshot hash, never null.
+     * @param hashComparable   whether the hash is comparable across nodes.
+     * @param itemCount        the item count.
+     * @param estimatedSizeMB  the estimated size in megabytes.
+     * @param syncState        the sync state, never null.
+     * @param lastReconciledAt the last reconciliation instant, never null.
      */
     public CatalogStatus {
       Objects.requireNonNull(catalogName, "catalogName must not be null");
       Objects.requireNonNull(hash, "hash must not be null");
+      Objects.requireNonNull(syncState, "syncState must not be null");
+      Objects.requireNonNull(lastReconciledAt, "lastReconciledAt must not be null");
     }
   }
 }

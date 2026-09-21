@@ -45,7 +45,7 @@ final class PatchCoordinator {
     Catalog<?> requireCatalog(String catalogName);
     boolean isFailedCatalog(String catalogName);
     void reportIndexSizes(Catalog<?> catalog);
-    void saveSnapshotIfPossible(Catalog<?> catalog);
+    void saveSnapshot(Catalog<?> catalog);
     void refreshFromEvent(String catalogName, Catalog<?> catalog);
   }
 
@@ -366,7 +366,7 @@ final class PatchCoordinator {
   private void publish(final LeaderContext context, final String catalogName,
       final Supplier<PatchEvent> event) {
     callbacks.reportIndexSizes(context.catalog());
-    callbacks.saveSnapshotIfPossible(context.catalog());
+    callbacks.saveSnapshot(context.catalog());
 
     if (syncStrategy == null || !syncStrategy.supportsPatches()) {
       log.debug("Sync strategy does not support patches; skipping publish "

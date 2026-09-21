@@ -86,10 +86,15 @@ final class AsyncRefreshDispatcher {
 
   /**
    * Dispatches a refresh task for the given catalog to a virtual thread.
-   * If a refresh is already pending or running, the event is coalesced.
+   *
+   * <p>If a refresh is already queued for this catalog (dispatched but not
+   * yet started), the new event is coalesced: the imminent run loads the
+   * latest data anyway. Once a refresh has started running, the pending
+   * flag is cleared, so an event arriving mid-run re-arms the dispatcher
+   * and triggers a follow-up run rather than being lost.
    *
    * @param catalogName the catalog to refresh, never null
-   * @param refreshTask the refresh task, never null
+   * @param refreshTask the refresh task to execute, never null
    */
   void dispatch(final String catalogName, final Runnable refreshTask) {
     final AtomicBoolean pending = refreshPending.get(catalogName);

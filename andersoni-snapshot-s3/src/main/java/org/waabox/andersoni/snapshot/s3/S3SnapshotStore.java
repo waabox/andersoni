@@ -13,6 +13,7 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.waabox.andersoni.snapshot.SerializedSnapshot;
+import org.waabox.andersoni.snapshot.SnapshotMetadata;
 import org.waabox.andersoni.snapshot.SnapshotStore;
 
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
@@ -21,8 +22,11 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
 import software.amazon.awssdk.services.sts.auth.StsWebIdentityTokenFileCredentialsProvider;
@@ -46,6 +50,10 @@ import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
  *   <li>{@code x-amz-meta-created-at} - ISO-8601 creation timestamp</li>
  *   <li>{@code x-amz-meta-catalog-name} - the catalog name</li>
  * </ul>
+ *
+ * <p>{@link #describe(String)} issues a {@code HeadObject} request instead of
+ * downloading the object, so reconciliation can check the stored hash and
+ * version cheaply.
  *
  * <p>Supports AWS STS credential acquisition. When a {@code roleArn} is
  * configured, the store obtains temporary credentials via
@@ -83,6 +91,9 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
 
   /** S3 user metadata key for the catalog name. */
   private static final String META_CATALOG_NAME = "catalog-name";
+
+  /** HTTP status code S3 returns for a missing object on some error paths. */
+  private static final int HTTP_NOT_FOUND = 404;
 
   /** The S3 bucket name. */
   private final String bucket;
@@ -255,6 +266,48 @@ public final class S3SnapshotStore implements SnapshotStore, AutoCloseable {
     } catch (final IOException e) {
       throw new UncheckedIOException(
           "Failed to read snapshot for catalog: " + catalogName, e);
+    }
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Issues a {@code HeadObject} request and reads the user metadata
+   * headers written by {@link #save}. An object without the expected
+   * headers is reported as absent so the leader re-saves it on its next
+   * reconciliation pass.
+   */
+  @Override
+  public Optional<SnapshotMetadata> describe(final String catalogName) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    final String key = buildKey(catalogName);
+
+    final HeadObjectRequest request = HeadObjectRequest.builder()
+        .bucket(bucket)
+        .key(key)
+        .build();
+    try {
+      final HeadObjectResponse response = s3Client.headObject(request);
+      final Map<String, String> metadata = response.metadata();
+      final String hash = metadata.get(META_HASH);
+      final String version = metadata.get(META_VERSION);
+      final String createdAt = metadata.get(META_CREATED_AT);
+      if (hash == null || version == null || createdAt == null) {
+        log.warn("Snapshot object s3://{}/{} lacks Andersoni metadata headers;"
+            + " treating catalog '{}' as having no snapshot", bucket, key, catalogName);
+        return Optional.empty();
+      }
+      return Optional.of(new SnapshotMetadata(catalogName, hash,
+          Long.parseLong(version), Instant.parse(createdAt)));
+    } catch (final NoSuchKeyException e) {
+      log.debug("No snapshot found for catalog '{}' at s3://{}/{}", catalogName, bucket, key);
+      return Optional.empty();
+    } catch (final S3Exception e) {
+      if (e.statusCode() == HTTP_NOT_FOUND) {
+        log.debug("No snapshot found for catalog '{}' at s3://{}/{}", catalogName, bucket, key);
+        return Optional.empty();
+      }
+      throw e;
     }
   }
 
