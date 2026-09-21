@@ -187,6 +187,10 @@ public final class Andersoni {
             storeBridge.markUnknown(catalog.name());
             storeBridge.save(catalog);
           }
+          @Override public void markStoreHashApplied(final String name,
+              final String storeHash) {
+            storeBridge.markApplied(name, storeHash);
+          }
           @Override public void refreshFromEvent(final String name,
               final Catalog<?> catalog) {
             Andersoni.this.refreshFromEvent(name, catalog);
@@ -928,6 +932,10 @@ public final class Andersoni {
    * Adds an item to a catalog locally, without coordinating across the
    * cluster.
    *
+   * <p>With reconciliation active this is treated like a local
+   * {@link #refresh(String)}: on the leader the next pass uploads and
+   * broadcasts the change, on a follower the store overwrites it.
+   *
    * @param catalogName the catalog to add to, never null
    * @param newItem     the item to add, never null
    *
@@ -950,12 +958,17 @@ public final class Andersoni {
       throw new CatalogNotAvailableException(catalogName);
     }
     ((Catalog<Object>) catalog).insert(newItem);
+    storeBridge.markUnknown(catalogName);
     reportIndexSizes(catalog);
   }
 
   /**
    * Removes an item from a catalog locally, without coordinating across the
    * cluster.
+   *
+   * <p>With reconciliation active this is treated like a local
+   * {@link #refresh(String)}: on the leader the next pass uploads and
+   * broadcasts the change, on a follower the store overwrites it.
    *
    * @param catalogName the catalog to remove from, never null
    * @param indexName   the index to look the item up in, never null
@@ -985,6 +998,7 @@ public final class Andersoni {
     }
     final boolean removed = catalog.remove(indexName, key);
     if (removed) {
+      storeBridge.markUnknown(catalogName);
       reportIndexSizes(catalog);
     }
     return removed;
@@ -993,6 +1007,10 @@ public final class Andersoni {
   /**
    * Replaces an item in a catalog locally, without coordinating across the
    * cluster.
+   *
+   * <p>With reconciliation active this is treated like a local
+   * {@link #refresh(String)}: on the leader the next pass uploads and
+   * broadcasts the change, on a follower the store overwrites it.
    *
    * @param catalogName the catalog to replace in, never null
    * @param indexName   the index to look the item up in, never null
@@ -1019,6 +1037,7 @@ public final class Andersoni {
     final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
     final boolean replaced = typedCatalog.replace(indexName, key, newItem);
     if (replaced) {
+      storeBridge.markUnknown(catalogName);
       reportIndexSizes(catalog);
     }
     return replaced;

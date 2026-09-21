@@ -89,6 +89,24 @@ class SnapshotStoreBridgeTest {
   }
 
   @Test
+  void whenMarkingApplied_givenStore_shouldReportTheHashAsApplied() {
+    final SnapshotStoreBridge bridge = new SnapshotStoreBridge(new InMemorySnapshotStore());
+
+    bridge.markApplied("cities", "abc123");
+
+    assertEquals("abc123", bridge.appliedStoreHash("cities").orElseThrow());
+  }
+
+  @Test
+  void whenMarkingApplied_givenNoStore_shouldStayInert() {
+    final SnapshotStoreBridge bridge = new SnapshotStoreBridge(null);
+
+    bridge.markApplied("cities", "abc123");
+
+    assertTrue(bridge.appliedStoreHash("cities").isEmpty());
+  }
+
+  @Test
   void whenCheckingSupport_givenCatalogWithoutSerializer_shouldBeFalse() {
     final SnapshotStoreBridge bridge = new SnapshotStoreBridge(new InMemorySnapshotStore());
     final Catalog<String> catalog = Catalog.of(String.class)

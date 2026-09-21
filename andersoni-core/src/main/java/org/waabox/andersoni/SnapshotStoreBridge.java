@@ -20,7 +20,9 @@ import org.waabox.andersoni.snapshot.SnapshotStore;
  * <em>applied store hash</em>.
  *
  * <p>The applied store hash is the hash of the store object this node last
- * loaded or wrote for a catalog. Reconciliation compares the store's current
+ * loaded or wrote for a catalog, or reached by applying a patch the leader
+ * published right after saving that object ({@link #markApplied}).
+ * Reconciliation compares the store's current
  * hash against it, never against the in-memory snapshot hash, because the
  * in-memory hash is recomputed after deserializing and may differ from the
  * stored one when a serializer's round trip is not byte-stable. An absent
@@ -100,6 +102,23 @@ final class SnapshotStoreBridge {
    */
   void markUnknown(final String catalogName) {
     appliedStoreHash.remove(catalogName);
+  }
+
+  /**
+   * Records a store hash this node reached without loading or writing the
+   * store: a follower that applied a snapshot patch surgically now holds the
+   * snapshot the leader saved under that hash before publishing the patch,
+   * so the next reconciliation pass must not read it as drift.
+   *
+   * @param catalogName the catalog name, never null
+   * @param storeHash   the store hash the local state corresponds to, never
+   *                    null
+   */
+  void markApplied(final String catalogName, final String storeHash) {
+    if (store == null) {
+      return;
+    }
+    appliedStoreHash.put(catalogName, storeHash);
   }
 
   /**
