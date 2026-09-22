@@ -29,8 +29,7 @@ released together with the library.
      `engine-and-operations`, `cluster-modules`, `spring-boot`.
 4. Every class, method, property, default and exception in the skill must
    match the code of the documented version. Documented behavior follows the
-   code, including known defects (e.g. FAILED catalogs not cleared by a
-   manual refresh), until the code changes.
+   code, including known defects, until the code changes.
 5. Any change to the public API, defaults, properties, module wiring or
    observable behavior must update the affected skill files in the same
    change.
@@ -151,8 +150,7 @@ and answered operational questions correctly.
   since 1.5.1, build hooks since 1.9.0) for users on older releases?
 - Library defects surfaced while writing the references are documented as
   current behavior; each needs a decision (fix or keep): graph `CompositeKey`
-  collisions between hotpaths of one index, FAILED catalogs not cleared by a
-  successful leader refresh, silent empty result when no hotpath leads with a
+  collisions between hotpaths of one index, silent empty result when no hotpath leads with a
   queried field, `search` vs `query` inconsistency on unknown indexes,
   `startsWith` `ClassCastException` on non-String sorted keys, unused
   `syncReceiveFailed`, `stop()` not closing the `SnapshotStore`, no Kafka

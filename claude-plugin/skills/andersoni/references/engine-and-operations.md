@@ -103,6 +103,7 @@ Per-catalog bootstrap (store is used only when a store is configured AND the cat
 - Worst-case follower wait with defaults: 30 attempts x 2s = ~60s per catalog, sequential across catalogs, before the DataLoader fallback.
 - Interrupt during backoff -> catalog marked FAILED, interrupt flag restored.
 - A FAILED catalog does not abort `start()`; other catalogs continue.
+- A FAILED catalog leaves the FAILED set on any later successful reload (`refresh`, leader `refreshAndSync`, EVENT reload, promotion refresh, follower store repair). In 1.12.0 only promotion refresh and follower store repair cleared it.
 - Before `start()` a catalog holds an empty snapshot (version 0, hash `""`): queries return empty results, not exceptions.
 
 ### Threads
@@ -355,7 +356,7 @@ All unchecked. Package `org.waabox.andersoni`.
 | Follower `refreshAndSync` never reaches the leader | No `syncStrategy`, or DB polling sync (drops requests), or non-broadcast transport | Use Kafka/HTTP sync, or call `refreshAndSync` on the leader, or `reconcile()` |
 | `refreshEvery` never fires on some pods | Scheduled refresh is leader-only by design | Expected. Followers converge via `EVENT` / reconciliation |
 | Follower's `refresh(name)` reverts after ~30s | Reconciliation restores the store's snapshot | Use `refreshAndSync` so the leader updates the store |
-| `CatalogNotAvailableException` right after deploy | Bootstrap exhausted retries (DataLoader down, or follower waited `maxRetries*10` and fallback failed) | Check logs for "Marking as FAILED". Follower recovers once the store has a snapshot (reconciliation). Leader recovers only on promotion refresh or restart (a later successful `refreshAndSync` does not clear FAILED); raise `RetryPolicy` |
+| `CatalogNotAvailableException` right after deploy | Bootstrap exhausted retries (DataLoader down, or follower waited `maxRetries*10` and fallback failed) | Check logs for "Marking as FAILED". Follower recovers once the store has a snapshot (reconciliation). Any successful reload clears FAILED: `refresh(name)`, leader `refreshAndSync(name)`, an EVENT-triggered reload, promotion refresh or follower store repair. In 1.12.0 only the last two (or a restart) clear it. Raise `RetryPolicy` to ride out short outages |
 | `start()` blocks for a long time on followers | Follower waits for the leader's upload: `maxRetries*10` attempts x `backoff` per catalog, sequential | Ensure the leader starts/uploads; tune `RetryPolicy`; pre-seed the store |
 | `status().inSync()` false / `syncState=DRIFTED` persists | Repair keeps failing (store unreachable, deserialize error) or leader catalog FAILED | Look for `reconcileFailed` metric and "repair failed" logs; fix store/serializer |
 | Reconcile repairs every pass | Store `describe` returns a hash different from the saved one; or two leaders re-saving during lease handover | `describe` must return the stored `SerializedSnapshot.hash()`; ensure single leader |

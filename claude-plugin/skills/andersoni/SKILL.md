@@ -79,7 +79,7 @@ final List<PublicationCard> cards = andersoni.graphQuery("publications", Publica
 | Missing `.serializer(...)` with a snapshot store | catalog is not persisted/reconciled | Add `JacksonSnapshotSerializer` (deterministic output) |
 | Non-deterministic serializer or unordered `DataLoader` | hashes differ across nodes → every event/reconciliation pass reloads | Deterministic serializer + `ORDER BY` a stable key |
 | Same or missing `nodeId` across nodes | nodes ignore each other's events; Kafka creates orphan consumer groups | Set `nodeId` (and `andersoni.sync.kafka.node-id`) to the pod name |
-| Bootstrap exhausted retries | catalog FAILED, `CatalogNotAvailableException` on queries; a later manual `refresh` does not clear it in 1.12.0 | Fix the loader, restart or wait for leader promotion / follower reconciliation |
+| Bootstrap exhausted retries | catalog FAILED, `CatalogNotAvailableException` on queries until a reload succeeds | Fix the source, then `refreshAndSync(name)` (leader) or `refresh(name)`; followers also recover on the next EVENT or reconciliation pass. In 1.12.0 only a leader promotion, a follower store repair or a restart clears it |
 | Large `traverseMany` × deep paths | `IndexKeyLimitExceededException` (default `maxKeysPerItem` 100) → catalog FAILED | Put fan-out fields last, raise `maxKeysPerItem` with headroom |
 
 More per-area mistakes are at the end of each reference file.
