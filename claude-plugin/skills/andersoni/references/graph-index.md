@@ -85,7 +85,7 @@ Traversals do not have to be used by any hotpath. A catalog with only a graph in
 
 ## 4. Key generation
 
-For each item and each hotpath `(f1..fn)`, the index adds the **cartesian product for every prefix length** k = 1..n as `CompositeKey(v1..vk)`. Keys from all hotpaths of one index go into **one map**, and the key set is de-duplicated per item.
+For each item and each hotpath `(f1..fn)`, the index adds the **cartesian product for every prefix length** k = 1..n as a key of the values `(v1..vk)` **qualified by the field names `(f1..fk)`**. Keys from all hotpaths of one index go into one map and are de-duplicated per item: two hotpaths sharing a leading prefix (e.g. `(country, category)` and `(country, slug)`) share the `(country)` keys, while equal values on different fields (`country=AR` vs `slug=AR`) are different keys.
 
 ```
 country={"AR"}, competition="football/liga-pro" -> {"football","football/liga-pro"}, status={"LIVE"}
@@ -96,8 +96,7 @@ hotpath("country","competition","status") produces 5 keys:
 - **Empty traversal** (null, empty collection, null/empty path): key generation for that hotpath stops at that field. Prefix keys for the earlier fields are still generated. If the **first** field is empty, the hotpath adds nothing for that item.
 - **Keys per item** = |union over hotpaths of sum over k of product(|v1|..|vk|)|. Example: country 1, competition path depth 2, teams 2 gives 1 + 2 + 4 = 7 keys.
 - **Limit**: if the count is greater than `maxKeysPerItem` (default 100), the build throws `IndexKeyLimitExceededException` (extends `AndersoniException`, which extends `RuntimeException`). The message is `Graph index 'g' generated 7 keys for item [<toString>], exceeding limit of 4. ...`. The build fails fast: `catalog.bootstrap()` throws it. Under `Andersoni.start()` the retry policy runs, then the catalog is marked FAILED and queries throw `CatalogNotAvailableException`.
-- `CompositeKey.of(Object... components)` / `CompositeKey.ofList(List<Object>)`: non-empty, no null components, value equality by component list and order. `components()` and `size()` are available.
-- **Direct lookup**, which bypasses the planner: `catalog.search("event-graph", CompositeKey.of("AR", "football"))`. It also works with `andersoni.search(catalog, index, key)` and with `compound().where("event-graph").equalTo(CompositeKey.of("AR"))`.
+- Graph keys are internal. Query a graph index only through `graphQuery()`. A lookup with a public `CompositeKey.of(...)` / `ofList(...)` key (`search("event-graph", key)`, `compound().where("event-graph").equalTo(key)`) finds nothing since 1.12.2, because those keys carry no field names; up to 1.12.1 it matched, ambiguously across fields.
 
 ## 5. Querying
 
@@ -151,11 +150,11 @@ Consequences:
 2. Define one traversal per field.
 3. Cover each query with a hotpath whose **first k fields are exactly that query's field set**, in any order. Merge queries that are prefixes of each other into one hotpath, most selective or always-present field first: Q1 and Q2 give `("country","competition","status")`.
 4. Queries that cannot share a prefix get their own hotpath: Q3 `("team","status")`, Q4 `("status")`.
-5. **Put hotpaths whose leading value domains can overlap in separate graph indexes** (see mistake 1). Several hotpaths in one index are safe only when their values cannot collide.
+5. Several hotpaths can share one graph index: keys are qualified by field, so equal values on different fields never mix (since 1.12.2; see mistake 1 for older versions).
 6. Put high-fan-out traversals (`traverseMany`, deep paths) **late** in a hotpath. Their product multiplies every later field.
 7. Estimate keys per item with the formula in section 4. Set `maxKeysPerItem` above the worst real item, with headroom.
 8. Rough memory cost: every unique key adds a map entry, plus one reference per item per key. Deep paths multiplied by fan-out grow fast. Check with `catalog.info()` / index sizes (CompositeKey sizes are estimated per component).
-9. Fields that need ranges: put them in an `indexSorted` and combine with `compound().where("<graph-index>").equalTo(CompositeKey.of(...))`.
+9. Fields that need ranges (dates, prices): run the `graphQuery()` for the equality fields and filter the (usually small) result in Java, or query the range on an `indexSorted` and intersect the two lists by identity.
 
 ## 8. Worked example
 
@@ -165,7 +164,6 @@ Verified against 1.12.1.
 import java.util.List;
 import java.util.function.Function;
 import org.waabox.andersoni.Catalog;
-import org.waabox.andersoni.CompositeKey;
 
 public final class EventsCatalog {
 
@@ -184,6 +182,7 @@ public final class EventsCatalog {
             .traversePath("competition", "/", Event::competitionPath)
             .traverse("status", Event::status)
             .hotpath("country", "competition", "status")
+            .hotpath("country", "status")
             .done()
         .indexGraph("team-graph")
             .traverseMany("team", Event::teams, Team::code)
@@ -207,10 +206,10 @@ public final class EventsCatalog {
         .where("status").eq("LIVE")
         .and("team").eq("BOC")
         .execute(EventCard.class);
-    // country + status skips "competition": use compound over the graph key instead
-    final List<Event> arLive = catalog.compound()
-        .where("event-graph").equalTo(CompositeKey.of("AR"))
-        .and("by-status").equalTo("LIVE")
+    // country + status: served by the second hotpath of event-graph
+    final List<Event> arLive = catalog.graphQuery()
+        .where("country").eq("AR")
+        .and("status").eq("LIVE")
         .execute();
   }
 }
@@ -218,13 +217,13 @@ public final class EventsCatalog {
 
 With Andersoni: `andersoni.graphQuery("events", Event.class).where("country").eq("AR").execute();`
 
-In this example, `where("country").eq("AR").and("status").eq("LIVE")` throws `UnsupportedOperationException`, and `where("status").eq("LIVE")` alone returns `[]`.
+Without the `("country", "status")` hotpath, `where("country").eq("AR").and("status").eq("LIVE")` would throw `UnsupportedOperationException` (it skips `competition`). `where("status").eq("LIVE")` alone returns `[]`, because no hotpath of either index starts with `status`.
 
 ## 9. Common mistakes
 
-1. **Key collisions between hotpaths of one index.** A `CompositeKey` holds only values, not field names. `hotpath("country")` and `hotpath("team")` in the same index both produce `CompositeKey("AR")` when a team code is `"AR"`, so `where("country").eq("AR")` also returns that team's items. This was verified. Fix: use separate `indexGraph`s, or make the value domains disjoint.
+1. **On 1.12.1 or earlier: key collisions between hotpaths of one index.** Keys held only values, so `hotpath("country")` + `hotpath("team")`, or `("country","category")` + `("country","slug")`, mixed items when values were equal across fields. Fixed in 1.12.2. On older versions, put such hotpaths in separate `indexGraph`s.
 2. Expecting a non-leading field to work alone. It returns an **empty list**, not an error. Add a hotpath that starts with that field.
-3. Skipping a middle hotpath field. The query throws `UnsupportedOperationException`. Reorder the fields, add a hotpath, or use `compound()` over a direct `CompositeKey`.
+3. Skipping a middle hotpath field. The query throws `UnsupportedOperationException`. Reorder the fields or add a hotpath that covers exactly those fields.
 4. Expecting post-filtering of uncovered fields. It is not implemented.
 5. Querying a path with a partial segment (`eq("foot")`). Only whole-segment prefixes are keys.
 6. Type mismatches (`Integer` vs `Long`, enum vs `String`). The lookup silently finds nothing.

@@ -150,7 +150,7 @@ public final class GraphIndexDefinition<T> {
         }
         for (int prefixLen = 1; prefixLen <= traversalValues.size(); prefixLen++) {
           final List<Set<?>> prefixValues = traversalValues.subList(0, prefixLen);
-          generateCartesianKeys(prefixValues, allKeys);
+          generateCartesianKeys(hotpath.prefix(prefixLen), prefixValues, allKeys);
         }
       }
       if (allKeys.size() > maxKeysPerItem) {
@@ -198,7 +198,7 @@ public final class GraphIndexDefinition<T> {
       }
       for (int prefixLen = 1; prefixLen <= traversalValues.size(); prefixLen++) {
         final List<Set<?>> prefixValues = traversalValues.subList(0, prefixLen);
-        generateCartesianKeys(prefixValues, allKeys);
+        generateCartesianKeys(hotpath.prefix(prefixLen), prefixValues, allKeys);
       }
     }
     if (allKeys.size() > maxKeysPerItem) {
@@ -213,36 +213,39 @@ public final class GraphIndexDefinition<T> {
 
   /**
    * Generates the cartesian product of the given value sets and adds each
-   * combination as a {@link CompositeKey} to the target set.
+   * combination as a {@link CompositeKey} qualified by the given fields to
+   * the target set.
    *
+   * @param fields the traversal names of the value sets, in order
    * @param valueSets the ordered list of value sets to combine
    * @param target the set to add generated keys to
    */
-  private void generateCartesianKeys(final List<Set<?>> valueSets,
-      final Set<CompositeKey> target) {
-    generateCartesianKeysRecursive(valueSets, 0, new ArrayList<>(), target);
+  private void generateCartesianKeys(final List<String> fields,
+      final List<Set<?>> valueSets, final Set<CompositeKey> target) {
+    generateCartesianKeysRecursive(fields, valueSets, 0, new ArrayList<>(), target);
   }
 
   /**
    * Recursive helper that builds composite keys by iterating through each
    * depth level of the value sets.
    *
+   * @param fields the traversal names of the value sets, in order
    * @param valueSets the ordered list of value sets
    * @param depth the current recursion depth (value set index)
    * @param current the components accumulated so far
    * @param target the set to add completed keys to
    */
-  private void generateCartesianKeysRecursive(
+  private void generateCartesianKeysRecursive(final List<String> fields,
       final List<Set<?>> valueSets, final int depth,
       final List<Object> current, final Set<CompositeKey> target) {
     if (depth == valueSets.size()) {
-      target.add(CompositeKey.ofList(current));
+      target.add(CompositeKey.qualified(fields, current));
       return;
     }
     for (final Object value : valueSets.get(depth)) {
       final List<Object> next = new ArrayList<>(current);
       next.add(value);
-      generateCartesianKeysRecursive(valueSets, depth + 1, next, target);
+      generateCartesianKeysRecursive(fields, valueSets, depth + 1, next, target);
     }
   }
 

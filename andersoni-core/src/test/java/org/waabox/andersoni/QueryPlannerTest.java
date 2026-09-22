@@ -39,7 +39,7 @@ class QueryPlannerTest {
         QueryPlanner.plan(List.of(index), conditions);
 
     assertEquals("by-country-cat", plan.graphIndexName());
-    assertEquals(List.of(CompositeKey.of("AR", "deportes/futbol")), plan.keys());
+    assertEquals(List.of(key("AR", "deportes/futbol")), plan.keys());
     assertTrue(plan.postFilterConditions().isEmpty());
   }
 
@@ -53,7 +53,7 @@ class QueryPlannerTest {
     final QueryPlanner.Plan<Pub> plan =
         QueryPlanner.plan(List.of(index), conditions);
 
-    assertEquals(List.of(CompositeKey.of("AR")), plan.keys());
+    assertEquals(List.of(key("AR")), plan.keys());
     assertTrue(plan.postFilterConditions().isEmpty());
   }
 
@@ -82,7 +82,7 @@ class QueryPlannerTest {
     final QueryPlanner.Plan<Pub> plan =
         QueryPlanner.plan(List.of(index), conditions);
 
-    assertEquals(List.of(CompositeKey.of("AR")), plan.keys());
+    assertEquals(List.of(key("AR")), plan.keys());
     assertEquals(1, plan.postFilterConditions().size());
     assertEquals("organizer",
         plan.postFilterConditions().getFirst().fieldName());
@@ -107,7 +107,7 @@ class QueryPlannerTest {
         QueryPlanner.plan(List.of(index1, index2), conditions);
 
     assertEquals("by-country-cat", plan.graphIndexName());
-    assertEquals(List.of(CompositeKey.of("AR", "deportes")), plan.keys());
+    assertEquals(List.of(key("AR", "deportes")), plan.keys());
   }
 
   @Test
@@ -124,7 +124,7 @@ class QueryPlannerTest {
         QueryPlanner.plan(List.of(index), conditions);
 
     assertEquals(
-        List.of(CompositeKey.of("AR", "deportes"), CompositeKey.of("AR", "musica")),
+        List.of(key("AR", "deportes"), key("AR", "musica")),
         plan.keys());
     assertTrue(plan.postFilterConditions().isEmpty());
   }
@@ -144,10 +144,14 @@ class QueryPlannerTest {
 
     assertEquals(
         List.of(
-            CompositeKey.of("AR", "deportes"),
-            CompositeKey.of("AR", "musica"),
-            CompositeKey.of("MX", "deportes"),
-            CompositeKey.of("MX", "musica")),
+            key("AR", "deportes"),
+            key("AR", "musica"),
+            key("MX", "deportes"),
+            key("MX", "musica")),
         plan.keys());
+  }
+
+  private static CompositeKey key(final Object... values) {
+    return CompositeKey.qualified(List.of("country", "category").subList(0, values.length), List.of(values));
   }
 }

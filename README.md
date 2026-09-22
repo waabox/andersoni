@@ -144,13 +144,15 @@ A hotpath declares which traversals to combine. The engine generates the **carte
 Publication with country=["AR","MX"] and categoryPath="deportes/futbol"
 
 Hotpath ("country", "category") generates:
-  CompositeKey("AR")                        ← prefix (country only)
-  CompositeKey("MX")                        ← prefix (country only)
-  CompositeKey("AR", "deportes")            ← country + top category
-  CompositeKey("AR", "deportes/futbol")     ← country + full path
-  CompositeKey("MX", "deportes")            ← country + top category
-  CompositeKey("MX", "deportes/futbol")     ← country + full path
+  CompositeKey[country=AR]                                ← prefix (country only)
+  CompositeKey[country=MX]                                ← prefix (country only)
+  CompositeKey[country=AR, category=deportes]             ← country + top category
+  CompositeKey[country=AR, category=deportes/futbol]      ← country + full path
+  CompositeKey[country=MX, category=deportes]             ← country + top category
+  CompositeKey[country=MX, category=deportes/futbol]      ← country + full path
 ```
+
+Keys are qualified by traversal name, so several hotpaths can share one graph index: equal values on different fields (a slug `"deportes"` and a category `"deportes"`) never mix.
 
 This enables progressive drill-down queries: by country only, by country + top category, by country + full subcategory path — all O(1).
 

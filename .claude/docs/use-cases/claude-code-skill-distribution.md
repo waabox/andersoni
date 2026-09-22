@@ -149,8 +149,7 @@ and answered operational questions correctly.
 - Should the skill note per-version differences (e.g. `graphQuery` typed
   since 1.5.1, build hooks since 1.9.0) for users on older releases?
 - Library defects surfaced while writing the references are documented as
-  current behavior; each needs a decision (fix or keep): graph `CompositeKey`
-  collisions between hotpaths of one index, silent empty result when no hotpath leads with a
+  current behavior; each needs a decision (fix or keep): silent empty result when no hotpath leads with a
   queried field, `search` vs `query` inconsistency on unknown indexes,
   `startsWith` `ClassCastException` on non-String sorted keys, unused
   `syncReceiveFailed`, `stop()` not closing the `SnapshotStore`, no Kafka

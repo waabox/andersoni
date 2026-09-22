@@ -168,4 +168,58 @@ class CatalogGraphIndexTest {
                 .done()
             .build());
   }
+
+  record Article(String id, String country, String categoryPath, String slug) {}
+
+  @Test
+  void whenQuerying_givenHotpathsWithSameValuesOnDifferentFields_shouldNotMixResults() {
+    final Article news = new Article("news", "AR", "news/politics", "sports");
+    final Article match = new Article("match", "AR", "sports/football", "river-boca");
+
+    final Catalog<Article> catalog = Catalog.of(Article.class)
+        .named("articles")
+        .data(List.of(news, match))
+        .indexGraph("by-country")
+            .traverse("country", Article::country)
+            .traversePath("category", "/", Article::categoryPath)
+            .traverse("slug", Article::slug)
+            .hotpath("country", "category")
+            .hotpath("country", "slug")
+            .done()
+        .build();
+
+    catalog.bootstrap();
+
+    assertEquals(List.of(match), catalog.graphQuery()
+        .where("country").eq("AR")
+        .and("category").eq("sports")
+        .execute());
+    assertEquals(List.of(news), catalog.graphQuery()
+        .where("country").eq("AR")
+        .and("slug").eq("sports")
+        .execute());
+    assertEquals(2, catalog.graphQuery().where("country").eq("AR").execute().size());
+  }
+
+  @Test
+  void whenQuerying_givenSingleFieldHotpathsWithSameValues_shouldNotMixResults() {
+    final Article inArgentina = new Article("in-ar", "AR", "sports", "mx");
+    final Article slugAr = new Article("slug-ar", "MX", "sports", "AR");
+
+    final Catalog<Article> catalog = Catalog.of(Article.class)
+        .named("articles")
+        .data(List.of(inArgentina, slugAr))
+        .indexGraph("by-country-or-slug")
+            .traverse("country", Article::country)
+            .traverse("slug", Article::slug)
+            .hotpath("country")
+            .hotpath("slug")
+            .done()
+        .build();
+
+    catalog.bootstrap();
+
+    assertEquals(List.of(inArgentina), catalog.graphQuery().where("country").eq("AR").execute());
+    assertEquals(List.of(slugAr), catalog.graphQuery().where("slug").eq("AR").execute());
+  }
 }

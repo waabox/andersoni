@@ -70,7 +70,7 @@ final List<PublicationCard> cards = andersoni.graphQuery("publications", Publica
 |---|---|---|
 | Graph query whose fields don't start with a hotpath's first field | **empty list, no error** | Every query's field set must be the leading fields of some hotpath |
 | Graph query skipping a middle hotpath field | `UnsupportedOperationException` | Add a hotpath with that exact prefix |
-| Two hotpaths in one `indexGraph` whose values can be equal (e.g. country code vs team code) | wrong items returned: `CompositeKey` stores values only | Put them in separate `indexGraph`s |
+| Looking up a graph index with `search`/`compound` and a `CompositeKey.of(...)` | finds nothing (graph keys are internal and field-qualified) | Always query graph indexes with `graphQuery()` |
 | Key of a different type than the extracted value (`1` vs `1L`, `LocalDate` vs `String`) | no match | Query with the exact extracted type |
 | `search` on a misspelled index | empty list (while `query`/`compound` throw) | Use constants for index names |
 | `refreshAndSync` on a follower | only publishes a `REQUEST`; with DB polling sync it is a no-op | Expected; the leader does the reload |
