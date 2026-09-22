@@ -429,6 +429,30 @@ List<EventSummary> results = andersoni.compound("events")
 
 For graph indexes, Spring Boot, sync strategies, snapshot persistence, cluster self-healing, K8s deployment, and more — see the **[Wiki](https://github.com/waabox/andersoni/wiki)**.
 
+## Claude Code Skill
+
+This repository is also a [Claude Code](https://code.claude.com) plugin marketplace. The `andersoni` plugin ships a skill that teaches Claude the whole API — catalog DSL, all index types, compound and graph queries, views, Spring Boot, sync strategies, leader election, snapshots and reconciliation — so it writes working integration code instead of guessing.
+
+Install it for yourself:
+
+```
+/plugin marketplace add waabox/andersoni
+/plugin install andersoni@andersoni
+```
+
+Or make it available to everyone working on your project by committing this to `.claude/settings.json`; Claude Code offers to install it when the project is opened:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "andersoni": { "source": { "source": "github", "repo": "waabox/andersoni" } }
+  },
+  "enabledPlugins": { "andersoni@andersoni": true }
+}
+```
+
+Without the plugin system, copy `claude-plugin/skills/andersoni/` into your project's `.claude/skills/andersoni/`. The skill's version matches the library version.
+
 ## Modules
 
 | Module | Purpose |
