@@ -440,7 +440,7 @@ Install it for yourself:
 /plugin install andersoni@andersoni
 ```
 
-Or make it available to everyone working on your project by committing this to `.claude/settings.json`; Claude Code offers to install it when the project is opened:
+Or make it available to everyone working on your project by committing this to `.claude/settings.json`. Claude Code adds the marketplace once the folder is trusted and shows each teammate the install command for the plugin:
 
 ```json
 {
