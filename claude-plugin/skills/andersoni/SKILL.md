@@ -7,7 +7,7 @@ description: Use when a Java project depends on or wants to adopt Andersoni (io.
 
 In-memory indexed cache for Java 21. A `Catalog<T>` loads a dataset with a `DataLoader`, builds every index into an immutable `Snapshot<T>`, and swaps it atomically: reads are lock-free map lookups, refreshes rebuild the whole snapshot (no per-item updates, no TTL). Multi-node consistency comes from pluggable sync + leader election + an authoritative snapshot store.
 
-**Never guess this API.** Method names are not what you would expect (`indexGraph`, not `graphIndex`; `graphQuery().where(f).eq(v)`, not `search(...).graph(...)`; catalogs are registered through `CatalogRegistrar`, not as `Catalog` beans; there are only three `andersoni.*` Spring properties). Before writing code, open the reference for the area you touch. Version documented: **1.12.1**.
+**Never guess this API.** Method names are not what you would expect (`indexGraph`, not `graphIndex`; `graphQuery().where(f).eq(v)`, not `search(...).graph(...)`; catalogs are registered through `CatalogRegistrar`, not as `Catalog` beans; there are only three `andersoni.*` Spring properties). Before writing code, open the reference for the area you touch. Version documented: **1.12.2**.
 
 ## Reference map
 
@@ -41,7 +41,7 @@ In-memory indexed cache for Java 21. A `Catalog<T>` loads a dataset with a `Data
 5. **Cluster** (only if >1 node): stable unique `nodeId` per node (pod name), one sync strategy, a leader election, a snapshot store, and a `.serializer(...)` on every catalog. Trigger reloads after writes with `andersoni.refreshAndSync(name)`.
 6. **Verify**: `andersoni.status()` (per-catalog `available`, `syncState`, `inSync()`), `andersoni.info(name)` for index sizes and memory.
 
-## Minimal shape (compiles against 1.12.1)
+## Minimal shape (compiles against 1.12.2)
 
 ```java
 // import org.waabox.andersoni.*;  (Andersoni, Catalog, DataLoader, CompositeKey, RetryPolicy, ... all live in the root package)

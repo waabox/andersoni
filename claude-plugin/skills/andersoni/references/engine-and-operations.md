@@ -1,4 +1,4 @@
-# Andersoni engine and operations (core, 1.12.1)
+# Andersoni engine and operations (core, 1.12.2)
 
 Artifact `io.github.waabox:andersoni-core`. Engine class `org.waabox.andersoni.Andersoni`.
 Concrete sync / leader / snapshot modules are in `cluster-modules.md`; this file covers the core API they plug into.
@@ -365,4 +365,4 @@ All unchecked. Package `org.waabox.andersoni`.
 | High store traffic/cost | Custom `SnapshotStore` without `describe` override downloads full snapshots every interval | Override `describe`; or raise `ReconciliationPolicy.of(...)` interval |
 | `syncState` always `UNKNOWN` | No store, `ReconciliationPolicy.disabled()`, catalog has no serializer, or first pass not run yet | Configure store + serializer |
 | `IllegalStateException` "Cannot refresh a catalog created with static data" | Catalog built with `.data(List)` | Use `.loadWith(loader)`, or `catalog(name, T.class).refresh(list)` |
-| `refreshAndSync` slow/blocking with broker down | Transport `publish` blocks (e.g. Kafka producer metadata wait) | Raw `KafkaSyncStrategy` does not expose producer timeouts in 1.12.1 (Kafka default `max.block.ms` = 60s applies). With Spring Kafka sync, define your own `ProducerFactory<String, String>` bean named `andersoniProducerFactory` (the auto-config backs off by name) and set `max.block.ms` / `delivery.timeout.ms` there. Call `refreshAndSync` off the request thread. |
+| `refreshAndSync` slow/blocking with broker down | Transport `publish` blocks (e.g. Kafka producer metadata wait) | Raw `KafkaSyncStrategy` does not expose producer timeouts in 1.12.2 (Kafka default `max.block.ms` = 60s applies). With Spring Kafka sync, define your own `ProducerFactory<String, String>` bean named `andersoniProducerFactory` (the auto-config backs off by name) and set `max.block.ms` / `delivery.timeout.ms` there. Call `refreshAndSync` off the request thread. |

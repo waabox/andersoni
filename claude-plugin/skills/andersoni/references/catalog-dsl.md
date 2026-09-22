@@ -1,4 +1,4 @@
-# Catalog DSL Reference (Andersoni 1.12.1)
+# Catalog DSL Reference (Andersoni 1.12.2)
 
 1. [Builder chain](#builder-chain) and [build() validation](#build-validation)
 2. [Index types](#index-types): `index`, `indexSorted`, `indexMulti` (graph: see `graph-index.md`)
@@ -6,7 +6,7 @@
 4. [Lifecycle, Snapshot, CatalogInfo](#lifecycle)
 5. [Common mistakes](#common-mistakes)
 
-All types live in `org.waabox.andersoni` unless noted. Maven: `io.github.waabox:andersoni-core:1.12.1`.
+All types live in `org.waabox.andersoni` unless noted. Maven: `io.github.waabox:andersoni-core:1.12.2`.
 
 ## Builder chain
 

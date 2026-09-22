@@ -3,7 +3,7 @@
 Reading data from a registered catalog: `search`, `query(...)` / `QueryStep`, `compound(...)` / `CompoundQuery`.
 Graph indexes (`indexGraph`, `graphQuery()`) are covered in [graph-index.md](graph-index.md).
 
-Verified against Andersoni 1.12.1 (`io.github.waabox`, package `org.waabox.andersoni`).
+Verified against Andersoni 1.12.2 (`io.github.waabox`, package `org.waabox.andersoni`).
 
 ## Contents
 

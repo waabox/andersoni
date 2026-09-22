@@ -1,7 +1,7 @@
-# Andersoni cluster modules (1.12.1)
+# Andersoni cluster modules (1.12.2)
 
 Pluggable modules for multi-node sync, leader election, snapshot persistence, serialization and metrics.
-All artifacts: groupId `io.github.waabox`, version `1.12.1`. Every module depends on `andersoni-core` transitively.
+All artifacts: groupId `io.github.waabox`, version `1.12.2`. Every module depends on `andersoni-core` transitively.
 
 ## Contents
 
@@ -57,7 +57,7 @@ Rules of thumb: Kafka already in the stack -> Kafka. Few static nodes, no broker
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-sync-kafka</artifactId>
-  <version>1.12.1</version>
+  <version>1.12.2</version>
 </dependency>
 ```
 Runtime: brings `org.apache.kafka:kafka-clients:3.9.0` (compile scope). No Spring.
@@ -103,7 +103,7 @@ Infra: create the topic (or rely on broker auto-create). Any partition count wor
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-spring-sync-kafka</artifactId>
-  <version>1.12.1</version>
+  <version>1.12.2</version>
 </dependency>
 ```
 Runtime: `org.springframework.kafka:spring-kafka:3.3.2`; `spring-boot-autoconfigure` is optional (the Boot app provides it).
@@ -115,7 +115,7 @@ Summary only (details in `spring-boot.md`): `SpringKafkaSyncAutoConfiguration` a
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-sync-http</artifactId>
-  <version>1.12.1</version>
+  <version>1.12.2</version>
 </dependency>
 ```
 Runtime: none beyond the JDK (`com.sun.net.httpserver.HttpServer` + `java.net.http.HttpClient`).
@@ -155,7 +155,7 @@ final Andersoni andersoni = Andersoni.builder()
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-sync-db</artifactId>
-  <version>1.12.1</version>
+  <version>1.12.2</version>
 </dependency>
 ```
 Runtime: you provide a `javax.sql.DataSource` and the JDBC driver (no driver is shipped; H2 is test scope only).
@@ -207,7 +207,7 @@ final Andersoni andersoni = Andersoni.builder()
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-leader-k8s</artifactId>
-  <version>1.12.1</version>
+  <version>1.12.2</version>
 </dependency>
 ```
 Runtime: brings `io.kubernetes:client-java:21.0.2` and `io.kubernetes:client-java-extended:21.0.2` (official Kubernetes Java client, not fabric8). Credentials via `Config.defaultClient()`: in-cluster service account, else `KUBECONFIG` / `~/.kube/config`.
@@ -264,7 +264,7 @@ subjects:
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-snapshot-s3</artifactId>
-  <version>1.12.1</version>
+  <version>1.12.2</version>
 </dependency>
 ```
 Runtime: brings `software.amazon.awssdk:s3:2.29.51` and `software.amazon.awssdk:sts:2.29.51`. Region type: `software.amazon.awssdk.regions.Region`.
@@ -313,7 +313,7 @@ In Spring, a `S3SnapshotStore` bean is closed automatically (inferred `close()`)
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-snapshot-fs</artifactId>
-  <version>1.12.1</version>
+  <version>1.12.2</version>
 </dependency>
 ```
 Runtime: none. Dev/test, or nodes sharing one volume.
@@ -335,7 +335,7 @@ final Andersoni andersoni = Andersoni.builder()
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-json-serializer</artifactId>
-  <version>1.12.1</version>
+  <version>1.12.2</version>
 </dependency>
 ```
 Runtime: brings `jackson-databind:2.18.2` and `jackson-datatype-jsr310:2.18.2`.
@@ -374,7 +374,7 @@ Requirements on `T`:
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-metrics-datadog</artifactId>
-  <version>1.12.1</version>
+  <version>1.12.2</version>
 </dependency>
 ```
 Runtime: brings `com.datadoghq:java-dogstatsd-client:4.4.5`. Needs a DogStatsD agent (UDP).
@@ -416,7 +416,7 @@ Metrics (names before prefix; every metric also carries `node:<nodeId>` once sta
 | `sync.requested` | count | `catalog` | follower published a `REQUEST` |
 | `sync.received` | count | `catalog` | accepted an incoming `EVENT` |
 | `sync.publish.failed` | count | `catalog` | publish threw |
-| `sync.receive.failed` | count | - | declared; not emitted by core 1.12.1 |
+| `sync.receive.failed` | count | - | declared; not emitted by core 1.12.2 |
 | `reconcile.drift_detected` | count | `catalog` | reconciler found drift |
 | `reconcile.drift_repaired` | count | `catalog` | drift repaired |
 | `reconcile.failed` | count | `catalog` | reconciliation pass failed |
