@@ -21,5 +21,14 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      - name: Check Claude Code plugin version matches the library version
+        run: |
+          POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout --batch-mode --no-transfer-progress)
+          PLUGIN_VERSION=$(jq -r .version claude-plugin/.claude-plugin/plugin.json)
+          if [ "$POM_VERSION" != "$PLUGIN_VERSION" ]; then
+            echo "claude-plugin/.claude-plugin/plugin.json version ($PLUGIN_VERSION) must match pom.xml version ($POM_VERSION)"
+            exit 1
+          fi
+
       - name: Build and test
         run: mvn clean verify --batch-mode --no-transfer-progress
