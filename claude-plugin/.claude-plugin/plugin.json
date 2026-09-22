@@ -1,7 +1,7 @@
 {
   "name": "andersoni",
   "description": "Integrate, query and operate the Andersoni in-memory indexed cache for Java 21: catalogs, regular/sorted/multi/graph indexes, compound and graph queries, views, hooks, Spring Boot, Kafka/HTTP/DB sync, K8s leader election, S3 snapshots and cluster reconciliation.",
-  "version": "1.12.0",
+  "version": "1.12.1",
   "author": {
     "name": "waabox",
     "url": "https://github.com/waabox"

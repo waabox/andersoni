@@ -1,4 +1,4 @@
-# Andersoni + Spring Boot (1.12.0)
+# Andersoni + Spring Boot (1.12.1)
 
 1. [Dependencies](#dependencies)
 2. [What the starter auto-configures](#what-the-starter-auto-configures)
@@ -16,13 +16,13 @@
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-spring-boot-starter</artifactId>
-  <version>1.12.0</version>
+  <version>1.12.1</version>
 </dependency>
 <!-- optional: Spring Kafka broadcast sync, auto-configured -->
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-spring-sync-kafka</artifactId>
-  <version>1.12.0</version>
+  <version>1.12.1</version>
 </dependency>
 ```
 
