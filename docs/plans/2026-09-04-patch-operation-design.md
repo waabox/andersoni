@@ -170,7 +170,7 @@ falls back to a reload rather than dropping it.
 ## 4b. Upgrading a running cluster
 
 A patch is a new sync message type, and it is **not readable by a node running
-1.12.0 or earlier**. The payload carries `fromHash`/`toHash` where the older
+1.12.2 or earlier**. The payload carries `fromHash`/`toHash` where the older
 `RefreshEventCodec` requires `version` and `hash`, so it throws.
 
 Neither transport fails loudly enough to notice. `KafkaSyncStrategy` catches

@@ -264,6 +264,8 @@ After a write (service method, `@KafkaListener` on your domain topic, `@Schedule
 - Throws `IllegalStateException` after `stop()`, and on the leader for a catalog built with `.data(...)` (no loader). Unknown catalog -> `IllegalArgumentException`.
 - Run it after the transaction commits (e.g. `@TransactionalEventListener(phase = AFTER_COMMIT)`), otherwise the loader may read pre-commit data.
 
+Single-item writes (1.13.0): `andersoni.replaceAndSync(name, index, key, item)`, `insertAndSync`, `removeAndSync`, `upsertAndSync` and `applyAndSync(name, List<PatchOp<T>>)` patch the snapshot on the leader, save it, and broadcast only the delta (Kafka or HTTP sync; not DB polling). They return `PatchOutcome` (`APPLIED`, `NOT_FOUND`, `NOT_LEADER`): a follower gets `NOT_LEADER` and nothing is forwarded, so call them where the leader runs or keep `refreshAndSync` for follower-originated writes. The catalog needs `.serializer(...)`, and every node must run 1.13.0+ before the first patch call.
+
 Other ops: `andersoni.refresh(name)` = local only, no sync (a follower's result is overwritten by the store on the next reconciliation pass); `andersoni.reconcile()` = asynchronous anti-entropy pass, never calls the loader, no-op when reconciliation is inactive. `status().catalogs()` entries expose `catalogName, available, version, hash, hashComparable, itemCount, estimatedSizeMB, syncState (IN_SYNC|DRIFTED|UNKNOWN), lastReconciledAt (Optional<Instant>)`. The starter ships no actuator integration; if you use actuator, wrap `status()` in your own `HealthIndicator`.
 
 ## Testing
