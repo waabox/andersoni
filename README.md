@@ -406,7 +406,7 @@ A catalog cannot inspect a lambda to tell which kind it has, so `supportsPatch()
 })
 ```
 
-`replaceAndSync` only runs on the leader; on followers it returns `false`. After the local replace, the leader saves the full snapshot to the snapshot store and publishes a `PatchEvent` carrying the serialized old item, the serialized new item, and version/hash preconditions captured atomically under the catalog's refresh lock.
+`replaceAndSync` only runs on the leader; on followers it returns `NOT_LEADER`. After the local replace, the leader saves the full snapshot to the snapshot store and publishes a `PatchEvent` carrying the serialized old item, the serialized new item, and version/hash preconditions captured atomically under the catalog's refresh lock.
 
 **Follower dispatch** keys on content hashes:
 
@@ -426,13 +426,13 @@ Patches are queued per catalog in arrival order and are never coalesced: a patch
 
 - ✅ `andersoni-sync-kafka` and `andersoni-spring-sync-kafka` — patch events flow over the same topic, type-discriminated in the JSON envelope.
 - ✅ `andersoni-sync-http` — patch events POST to the same endpoint as refresh events.
-- ❌ `andersoni-sync-db` — the polling table is keyed by catalog with one row per catalog, so it has no per-event log to deliver patches over. Followers on this transport learn about leader-side patches at the next polling interval via the updated hash.
+- ❌ `andersoni-sync-db` — the polling table is keyed by catalog with one row per catalog, so it has no per-event log to deliver patches over. A leader patch on this transport publishes nothing, not even a refresh row: followers converge through reconciliation from the snapshot store, or on the next full `refreshAndSync` / `refreshEvery` refresh.
 
 The catalog must have a `SnapshotSerializer` configured — cross-node patches cannot be built without one.
 
 > ### ⚠️ Every node must be upgraded before you patch
 >
-> A patch is a new kind of sync message. A node running **1.12.0 or earlier cannot decode it**: the payload carries `fromHash`/`toHash` rather than the `version`/`hash` an older codec requires, so parsing fails.
+> A patch is a new kind of sync message. A node running **1.12.2 or earlier cannot decode it**: the payload carries `fromHash`/`toHash` rather than the `version`/`hash` an older codec requires, so parsing fails.
 >
 > Nothing crashes. The Kafka consumer logs an error per message and keeps polling; the HTTP endpoint answers `500` and stays up. But an old node never learns the leader patched, so **it goes on serving stale data** until some later full refresh happens to correct it — which looks like a mysteriously stale pod rather than an obvious failure. The symptom to grep for is a deserialization error naming a `refresh event`.
 >
