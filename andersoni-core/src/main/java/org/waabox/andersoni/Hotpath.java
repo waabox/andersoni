@@ -21,9 +21,15 @@ import java.util.Set;
 public final class Hotpath {
 
   private final List<String> fieldNames;
+  private final List<List<String>> prefixes;
 
   private Hotpath(final List<String> fieldNames) {
     this.fieldNames = fieldNames;
+    final List<List<String>> all = new ArrayList<>(fieldNames.size());
+    for (int length = 1; length <= fieldNames.size(); length++) {
+      all.add(List.copyOf(fieldNames.subList(0, length)));
+    }
+    this.prefixes = List.copyOf(all);
   }
 
   /**
@@ -66,6 +72,17 @@ public final class Hotpath {
    */
   public List<String> fieldNames() {
     return fieldNames;
+  }
+
+  /**
+   * Returns the first {@code length} field names, shared across calls so
+   * every key built for the same prefix references the same list.
+   *
+   * @param length the prefix length, between 1 and {@link #size()}
+   * @return an unmodifiable list of the leading field names, never null
+   */
+  List<String> prefix(final int length) {
+    return prefixes.get(length - 1);
   }
 
   /**

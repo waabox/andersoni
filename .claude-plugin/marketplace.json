@@ -1,0 +1,15 @@
+{
+  "name": "andersoni",
+  "owner": {
+    "name": "waabox",
+    "url": "https://github.com/waabox"
+  },
+  "description": "Claude Code plugins for the Andersoni in-memory indexed cache library",
+  "plugins": [
+    {
+      "name": "andersoni",
+      "source": "./claude-plugin",
+      "description": "Skill to integrate, query and operate Andersoni catalogs (indexes, graph queries, views, Spring Boot, cluster sync)"
+    }
+  ]
+}

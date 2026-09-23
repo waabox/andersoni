@@ -32,9 +32,9 @@ class GraphIndexDefinitionTest {
     final Publication pub = new Publication("deportes/futbol",
         List.of(new Event(new Country("AR"))));
     final Map<Object, List<Publication>> index = def.buildIndex(List.of(pub));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("AR")));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("AR", "deportes")));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("AR", "deportes/futbol")));
+    assertEquals(List.of(pub), index.get(key("AR")));
+    assertEquals(List.of(pub), index.get(key("AR", "deportes")));
+    assertEquals(List.of(pub), index.get(key("AR", "deportes/futbol")));
   }
 
   @Test
@@ -43,10 +43,10 @@ class GraphIndexDefinitionTest {
     final Publication pub = new Publication("deportes",
         List.of(new Event(new Country("AR")), new Event(new Country("MX"))));
     final Map<Object, List<Publication>> index = def.buildIndex(List.of(pub));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("AR")));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("MX")));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("AR", "deportes")));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("MX", "deportes")));
+    assertEquals(List.of(pub), index.get(key("AR")));
+    assertEquals(List.of(pub), index.get(key("MX")));
+    assertEquals(List.of(pub), index.get(key("AR", "deportes")));
+    assertEquals(List.of(pub), index.get(key("MX", "deportes")));
   }
 
   @Test
@@ -55,7 +55,7 @@ class GraphIndexDefinitionTest {
     final Publication pub = new Publication("deportes",
         List.of(new Event(new Country("AR")), new Event(new Country("AR"))));
     final Map<Object, List<Publication>> index = def.buildIndex(List.of(pub));
-    assertEquals(1, index.get(CompositeKey.of("AR")).size());
+    assertEquals(1, index.get(key("AR")).size());
   }
 
   @Test
@@ -64,7 +64,7 @@ class GraphIndexDefinitionTest {
     final Publication pub = new Publication(null,
         List.of(new Event(new Country("AR"))));
     final Map<Object, List<Publication>> index = def.buildIndex(List.of(pub));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("AR")));
+    assertEquals(List.of(pub), index.get(key("AR")));
     assertEquals(1, index.size());
   }
 
@@ -76,9 +76,9 @@ class GraphIndexDefinitionTest {
     final Publication pub2 = new Publication("deportes",
         List.of(new Event(new Country("AR"))));
     final Map<Object, List<Publication>> index = def.buildIndex(List.of(pub1, pub2));
-    assertEquals(2, index.get(CompositeKey.of("AR", "deportes")).size());
-    assertTrue(index.get(CompositeKey.of("AR", "deportes")).contains(pub1));
-    assertTrue(index.get(CompositeKey.of("AR", "deportes")).contains(pub2));
+    assertEquals(2, index.get(key("AR", "deportes")).size());
+    assertTrue(index.get(key("AR", "deportes")).contains(pub1));
+    assertTrue(index.get(key("AR", "deportes")).contains(pub2));
   }
 
   @Test
@@ -120,8 +120,8 @@ class GraphIndexDefinitionTest {
     final Publication pub = new Publication("deportes",
         List.of(new Event(new Country("AR")), new Event(new Country("MX"))));
     final Map<Object, List<Publication>> index = def.buildIndex(List.of(pub));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("AR", "deportes")));
-    assertEquals(List.of(pub), index.get(CompositeKey.of("MX")));
+    assertEquals(List.of(pub), index.get(CompositeKey.qualified(List.of("first-country", "category"), List.of("AR", "deportes"))));
+    assertEquals(List.of(pub), index.get(CompositeKey.qualified(List.of("all-countries"), List.of("MX"))));
   }
 
   @Test
@@ -133,12 +133,13 @@ class GraphIndexDefinitionTest {
             .traverseMany("countries", Publication::events,
                 event -> event.country().code())
             .hotpath("country")
-            .hotpath("countries")
+            .hotpath("country", "countries")
             .build();
     final Publication pub = new Publication("deportes",
         List.of(new Event(new Country("AR"))));
     final Map<Object, List<Publication>> index = def.buildIndex(List.of(pub));
-    assertEquals(1, index.get(CompositeKey.of("AR")).size());
+    assertEquals(1, index.get(key("AR")).size());
+    assertEquals(1, index.get(CompositeKey.qualified(List.of("country", "countries"), List.of("AR", "AR"))).size());
   }
 
   @Test
@@ -190,13 +191,17 @@ class GraphIndexDefinitionTest {
         new HashMap<>();
     def.accumulate(item, accumulator);
 
-    assertTrue(accumulator.containsKey(CompositeKey.of("AR")));
-    assertTrue(accumulator.containsKey(CompositeKey.of("AR", "deportes")));
-    assertTrue(accumulator.containsKey(CompositeKey.of("AR", "deportes/futbol")));
+    assertTrue(accumulator.containsKey(key("AR")));
+    assertTrue(accumulator.containsKey(key("AR", "deportes")));
+    assertTrue(accumulator.containsKey(key("AR", "deportes/futbol")));
     assertEquals(3, accumulator.size());
 
-    assertTrue(accumulator.get(CompositeKey.of("AR")).contains(item));
-    assertTrue(accumulator.get(CompositeKey.of("AR", "deportes")).contains(item));
-    assertTrue(accumulator.get(CompositeKey.of("AR", "deportes/futbol")).contains(item));
+    assertTrue(accumulator.get(key("AR")).contains(item));
+    assertTrue(accumulator.get(key("AR", "deportes")).contains(item));
+    assertTrue(accumulator.get(key("AR", "deportes/futbol")).contains(item));
+  }
+
+  private static CompositeKey key(final Object... values) {
+    return CompositeKey.qualified(List.of("country", "category").subList(0, values.length), List.of(values));
   }
 }

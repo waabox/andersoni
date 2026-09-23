@@ -108,11 +108,11 @@ public final class QueryPlanner {
       }
       combinations = expanded;
     }
+    final List<String> coveredFields = hotpathFields.subList(0, coverage);
     final List<CompositeKey> keys = new ArrayList<>(combinations.size());
     for (final List<Object> components : combinations) {
-      keys.add(CompositeKey.ofList(components));
+      keys.add(CompositeKey.qualified(coveredFields, components));
     }
-    final List<String> coveredFields = hotpathFields.subList(0, coverage);
     final List<GraphQueryCondition> postFilters = conditions.entrySet().stream()
         .filter(e -> !coveredFields.contains(e.getKey()))
         .map(Map.Entry::getValue)

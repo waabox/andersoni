@@ -2884,4 +2884,97 @@ class AndersoniTest {
 
     andersoni.stop();
   }
+
+  @Test
+  void whenRefreshing_givenCatalogFailedAtBootstrap_shouldMakeCatalogAvailable() {
+    final AtomicBoolean sourceUp = new AtomicBoolean(false);
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final Andersoni andersoni = failedAtBootstrap(catalogLoadedWhen(sourceUp, e1), null);
+    try {
+      assertThrows(CatalogNotAvailableException.class,
+          () -> andersoni.search("events", "by-sport", "Football"));
+      sourceUp.set(true);
+
+      andersoni.refresh("events");
+
+      assertEquals(List.of(e1), andersoni.search("events", "by-sport", "Football"));
+      assertTrue(catalogStatus(andersoni, "events").available());
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenRefreshingAndSyncing_givenLeaderCatalogFailedAtBootstrap_shouldMakeCatalogAvailable() {
+    final AtomicBoolean sourceUp = new AtomicBoolean(false);
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final Andersoni andersoni = failedAtBootstrap(catalogLoadedWhen(sourceUp, e1), null);
+    try {
+      sourceUp.set(true);
+
+      andersoni.refreshAndSync("events");
+
+      assertEquals(List.of(e1), andersoni.search("events", "by-sport", "Football"));
+      assertTrue(catalogStatus(andersoni, "events").available());
+    } finally {
+      andersoni.stop();
+    }
+  }
+
+  @Test
+  void whenReceivingRefreshEvent_givenCatalogFailedAtBootstrap_shouldMakeCatalogAvailable()
+      throws InterruptedException {
+    final Capture<RefreshListener> listenerCapture = newCapture();
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(false).anyTimes();
+    syncStrategy.subscribe(capture(listenerCapture));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+    replay(syncStrategy);
+
+    final AtomicBoolean sourceUp = new AtomicBoolean(false);
+    final Event e1 = new Event("1", new Sport("Football"), new Venue("Maracana"));
+    final Andersoni andersoni = failedAtBootstrap(catalogLoadedWhen(sourceUp, e1), syncStrategy);
+    try {
+      sourceUp.set(true);
+
+      listenerCapture.getValue().onRefresh(
+          new RefreshEvent("events", "node-2", 1L, "other-hash", Instant.now()));
+
+      awaitUntil(() -> catalogStatus(andersoni, "events").available(), Duration.ofSeconds(5));
+      assertEquals(List.of(e1), andersoni.search("events", "by-sport", "Football"));
+    } finally {
+      andersoni.stop();
+    }
+    verify(syncStrategy);
+  }
+
+  private static Catalog<Event> catalogLoadedWhen(final AtomicBoolean sourceUp, final Event item) {
+    return Catalog.of(Event.class)
+        .named("events")
+        .loadWith(() -> {
+          if (!sourceUp.get()) {
+            throw new IllegalStateException("source is down");
+          }
+          return List.of(item);
+        })
+        .index("by-sport").by(Event::sport, Sport::name)
+        .build();
+  }
+
+  private static Andersoni failedAtBootstrap(final Catalog<Event> catalog, final SyncStrategy syncStrategy) {
+    final Andersoni.Builder builder = Andersoni.builder()
+        .nodeId("node-1")
+        .retryPolicy(RetryPolicy.of(1, Duration.ofMillis(1)));
+    if (syncStrategy != null) {
+      builder.syncStrategy(syncStrategy);
+    }
+    final Andersoni andersoni = builder.build();
+    andersoni.register(catalog);
+    andersoni.start();
+    return andersoni;
+  }
 }

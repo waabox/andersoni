@@ -89,9 +89,18 @@ org.waabox.andersoni.example            # Example app
 - **Refresh request propagation**: `RefreshEvent` carries a `RefreshKind` (`EVENT` = result, `REQUEST` = command). The authoritative refresh runs **only on the leader**. `refreshAndSync` on a follower publishes a `REQUEST`; **only the leader acts on requests**, followers ignore them, so the propagation graph `REQUEST → EVENT → reload` stays acyclic (no loop). DB polling is a state channel and cannot carry requests — it drops them (follower refresh becomes a no-op there). See `.claude/docs/use-cases/cluster-refresh-request-propagation.md`
 - **Snapshot reconciliation (anti-entropy)**: the `SnapshotStore` is the cluster's authoritative state. `SnapshotReconciler` runs every `ReconciliationPolicy.interval()` (default 30s, on by default when a store is configured): followers reload from the store when its hash differs from the hash they last applied (`SnapshotStoreBridge.appliedStoreHash`), the leader re-saves and re-publishes when its applied hash is missing or differs, a promoted leader runs an authoritative refresh of every catalog. Repairs go through `AsyncRefreshDispatcher`. `Andersoni.reconcile()` forces a pass; `status()` exposes `syncState` per catalog. A follower's local `refresh()` is overwritten by the store on the next pass; a leader repair never publishes a `REQUEST`. Use case: `.claude/docs/use-cases/cluster-snapshot-reconciliation.md`. Design: `docs/superpowers/specs/2026-09-11-snapshot-reconciliation-design.md`
 
+## Claude Code Skill
+
+The repo is a Claude Code plugin marketplace (`.claude-plugin/marketplace.json`) shipping the `andersoni` skill in `claude-plugin/skills/andersoni/` (`SKILL.md` + `references/*.md`). Rules:
+
+- Any change to the public API, defaults, Spring properties, module wiring or observable behavior MUST update the affected skill files in the same change. Everything documented there must match the code.
+- `claude-plugin/.claude-plugin/plugin.json` `version` MUST equal the pom version; bump both together (CI enforces it).
+- Validate with `claude plugin validate .` and `claude plugin validate ./claude-plugin`.
+- Use case: `.claude/docs/use-cases/claude-code-skill-distribution.md`.
+
 ## CI/CD
 
-- **ci.yml**: runs `mvn clean verify` on push to main and PRs
+- **ci.yml**: runs `mvn clean verify` on push to main and PRs; fails if the plugin version differs from the pom version
 - **publish.yml**: triggered on GitHub release → sets version from tag → `mvn deploy -Prelease` to Maven Central
 
 ## Git Conventions
