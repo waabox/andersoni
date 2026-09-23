@@ -128,8 +128,8 @@ public final class GraphQueryBuilder<T> {
           .collect(Collectors.joining(", "));
       throw new UnsupportedOperationException(
           "Graph query has conditions not covered by any hotpath: ["
-              + uncovered + "]. Define a graph index that covers all"
-              + " query fields, or use compound() for uncovered fields.");
+              + uncovered + "]. Add a hotpath whose leading fields are exactly"
+              + " the query fields.");
     }
 
     final List<CompositeKey> keys = plan.keys();
@@ -187,8 +187,8 @@ public final class GraphQueryBuilder<T> {
           .collect(Collectors.joining(", "));
       throw new UnsupportedOperationException(
           "Graph query has conditions not covered by any hotpath: ["
-              + uncovered + "]. Define a graph index that covers all"
-              + " query fields, or use compound() for uncovered fields.");
+              + uncovered + "]. Add a hotpath whose leading fields are exactly"
+              + " the query fields.");
     }
 
     final List<CompositeKey> keys = plan.keys();

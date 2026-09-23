@@ -14,6 +14,10 @@ import java.util.StringJoiner;
  * {@link Object#hashCode()}. All lookups use {@link java.util.HashMap},
  * so this class does not implement {@link Comparable}.
  *
+ * <p>Keys stored in a graph index are also qualified by the traversal names
+ * they were built from, so equal values on different fields never collide.
+ * Keys created through the public factories carry no field names.
+ *
  * <p>This class is immutable and thread-safe.
  *
  * @author waabox(waabox[at]gmail[dot]com)
@@ -21,11 +25,13 @@ import java.util.StringJoiner;
 public final class CompositeKey {
 
   private final List<Object> components;
+  private final List<String> fields;
   private final int hash;
 
-  private CompositeKey(final List<Object> components) {
+  private CompositeKey(final List<Object> components, final List<String> fields) {
     this.components = components;
-    this.hash = components.hashCode();
+    this.fields = fields;
+    this.hash = 31 * components.hashCode() + Objects.hashCode(fields);
   }
 
   /**
@@ -50,7 +56,7 @@ public final class CompositeKey {
       Objects.requireNonNull(c, "component must not be null");
       list.add(c);
     }
-    return new CompositeKey(Collections.unmodifiableList(list));
+    return new CompositeKey(Collections.unmodifiableList(list), null);
   }
 
   /**
@@ -75,7 +81,25 @@ public final class CompositeKey {
       Objects.requireNonNull(c, "component must not be null");
       list.add(c);
     }
-    return new CompositeKey(Collections.unmodifiableList(list));
+    return new CompositeKey(Collections.unmodifiableList(list), null);
+  }
+
+  /**
+   * Creates a graph index key qualified by the traversal names its components
+   * belong to.
+   *
+   * @param fields     the traversal names, one per component, never null
+   * @param components the key components, never null, no null elements
+   * @return a new qualified key, never null
+   * @throws IllegalArgumentException if the sizes differ
+   */
+  static CompositeKey qualified(final List<String> fields, final List<Object> components) {
+    Objects.requireNonNull(fields, "fields must not be null");
+    final CompositeKey key = ofList(components);
+    if (fields.size() != key.size()) {
+      throw new IllegalArgumentException("fields and components must have the same size");
+    }
+    return new CompositeKey(key.components, List.copyOf(fields));
   }
 
   /**
@@ -107,7 +131,7 @@ public final class CompositeKey {
     if (!(o instanceof CompositeKey other)) {
       return false;
     }
-    return components.equals(other.components);
+    return components.equals(other.components) && Objects.equals(fields, other.fields);
   }
 
   /** {@inheritDoc} */
@@ -120,8 +144,9 @@ public final class CompositeKey {
   @Override
   public String toString() {
     final StringJoiner joiner = new StringJoiner(", ", "CompositeKey[", "]");
-    for (final Object c : components) {
-      joiner.add(c.toString());
+    for (int i = 0; i < components.size(); i++) {
+      final String value = components.get(i).toString();
+      joiner.add(fields == null ? value : fields.get(i) + "=" + value);
     }
     return joiner.toString();
   }

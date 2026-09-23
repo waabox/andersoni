@@ -397,7 +397,6 @@ public final class Andersoni {
     }
     try {
       refreshAndSync(name);
-      failedCatalogs.remove(name);
     } catch (final RuntimeException e) {
       log.error("Promotion refresh failed for catalog '{}': {}", name, e.getMessage(), e);
       metrics.refreshFailed(name, e);
@@ -682,6 +681,9 @@ public final class Andersoni {
    * has a serializer, the refreshed data is serialized and saved to the
    * snapshot store before publishing the event.
    *
+   * <p>A successful leader refresh makes a catalog whose bootstrap failed
+   * available again.
+   *
    * @param catalogName the name of the catalog to refresh, never null
    *
    * @throws IllegalArgumentException if no catalog with the given name
@@ -703,6 +705,7 @@ public final class Andersoni {
     }
 
     catalog.refresh();
+    failedCatalogs.remove(catalogName);
     storeBridge.markUnknown(catalogName);
     reportIndexSizes(catalog);
     storeBridge.save(catalog);
@@ -777,6 +780,9 @@ public final class Andersoni {
    * by the store's snapshot on the next pass; on the leader, the next pass
    * re-saves and re-publishes the refreshed data.
    *
+   * <p>A successful refresh makes a catalog whose bootstrap failed available
+   * again.
+   *
    * @param catalogName the name of the catalog to refresh, never null
    *
    * @throws IllegalArgumentException if no catalog with the given name
@@ -790,6 +796,7 @@ public final class Andersoni {
     }
     final Catalog<?> catalog = requireCatalog(catalogName);
     catalog.refresh();
+    failedCatalogs.remove(catalogName);
     storeBridge.markUnknown(catalogName);
     reportIndexSizes(catalog);
   }
@@ -1507,11 +1514,13 @@ public final class Andersoni {
       final Catalog<?> catalog) {
     try {
       if (storeBridge.load(catalog)) {
+        failedCatalogs.remove(catalogName);
         log.info("Refreshed catalog '{}' from snapshot store", catalogName);
         reportIndexSizes(catalog);
         return;
       }
       catalog.refresh();
+      failedCatalogs.remove(catalogName);
       storeBridge.markUnknown(catalogName);
       log.info("Refreshed catalog '{}' from DataLoader", catalogName);
       reportIndexSizes(catalog);

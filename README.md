@@ -144,13 +144,15 @@ A hotpath declares which traversals to combine. The engine generates the **carte
 Publication with country=["AR","MX"] and categoryPath="deportes/futbol"
 
 Hotpath ("country", "category") generates:
-  CompositeKey("AR")                        ← prefix (country only)
-  CompositeKey("MX")                        ← prefix (country only)
-  CompositeKey("AR", "deportes")            ← country + top category
-  CompositeKey("AR", "deportes/futbol")     ← country + full path
-  CompositeKey("MX", "deportes")            ← country + top category
-  CompositeKey("MX", "deportes/futbol")     ← country + full path
+  CompositeKey[country=AR]                                ← prefix (country only)
+  CompositeKey[country=MX]                                ← prefix (country only)
+  CompositeKey[country=AR, category=deportes]             ← country + top category
+  CompositeKey[country=AR, category=deportes/futbol]      ← country + full path
+  CompositeKey[country=MX, category=deportes]             ← country + top category
+  CompositeKey[country=MX, category=deportes/futbol]      ← country + full path
 ```
+
+Keys are qualified by traversal name, so several hotpaths can share one graph index: equal values on different fields (a slug `"deportes"` and a category `"deportes"`) never mix.
 
 This enables progressive drill-down queries: by country only, by country + top category, by country + full subcategory path — all O(1).
 
@@ -504,7 +506,7 @@ Andersoni fits when you have **read-heavy reference data** queried by multiple c
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-core</artifactId>
-    <version>1.12.0</version>
+    <version>1.12.2</version>
 </dependency>
 ```
 
@@ -548,6 +550,30 @@ List<EventSummary> results = andersoni.compound("events")
 ```
 
 For graph indexes, Spring Boot, sync strategies, snapshot persistence, cluster self-healing, K8s deployment, and more — see the **[Wiki](https://github.com/waabox/andersoni/wiki)**.
+
+## Claude Code Skill
+
+This repository is also a [Claude Code](https://code.claude.com) plugin marketplace. The `andersoni` plugin ships a skill that teaches Claude the whole API — catalog DSL, all index types, compound and graph queries, views, Spring Boot, sync strategies, leader election, snapshots and reconciliation — so it writes working integration code instead of guessing.
+
+Install it for yourself:
+
+```
+/plugin marketplace add waabox/andersoni
+/plugin install andersoni@andersoni
+```
+
+Or make it available to everyone working on your project by committing this to `.claude/settings.json`. Claude Code adds the marketplace once the folder is trusted and shows each teammate the install command for the plugin:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "andersoni": { "source": { "source": "github", "repo": "waabox/andersoni" } }
+  },
+  "enabledPlugins": { "andersoni@andersoni": true }
+}
+```
+
+Without the plugin system, copy `claude-plugin/skills/andersoni/` into your project's `.claude/skills/andersoni/`. The skill's version matches the library version.
 
 ## Modules
 
