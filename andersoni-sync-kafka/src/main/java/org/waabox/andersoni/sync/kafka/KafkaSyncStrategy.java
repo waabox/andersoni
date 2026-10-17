@@ -34,7 +34,7 @@ import org.waabox.andersoni.sync.SyncStrategy;
  *
  * <p>This strategy uses a unique consumer group per instance (broadcast
  * pattern) so that every node receives every refresh event. Messages are
- * serialized as JSON strings using {@link RefreshEventCodec}.
+ * serialized as JSON strings using {@link SyncMessageCodec}.
  *
  * <p><strong>Delivery semantics:</strong> the consumer starts at
  * {@code auto.offset.reset=latest}, so events published in the brief window
