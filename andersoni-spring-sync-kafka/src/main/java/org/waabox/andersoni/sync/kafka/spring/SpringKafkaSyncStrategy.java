@@ -24,7 +24,7 @@ import org.waabox.andersoni.sync.SyncStrategy;
  * {@link KafkaListener} for consuming. The consumer group is unique per
  * instance (broadcast pattern) so that every node receives every refresh
  * event. Messages are serialized as JSON strings using
- * {@link RefreshEventCodec}.
+ * {@link SyncMessageCodec}.
  *
  * <p>Spring manages the full Kafka listener lifecycle, so {@link #start()}
  * and {@link #stop()} are no-ops.
