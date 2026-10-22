@@ -71,6 +71,12 @@ public final class Andersoni {
   /** The class logger. */
   private static final Logger log = LoggerFactory.getLogger(Andersoni.class);
 
+  /**
+   * Default ceiling for an encoded patch payload: 256 KB, comfortably
+   * under Kafka's 1 MB default message limit.
+   */
+  public static final int DEFAULT_MAX_PATCH_PAYLOAD_BYTES = 256 * 1024;
+
   /** The unique identifier for this node. */
   private final String nodeId;
 
@@ -119,6 +125,9 @@ public final class Andersoni {
    *  read from transport/dispatch threads; volatile for visibility. */
   private volatile AsyncRefreshDispatcher asyncRefreshDispatcher;
 
+  /** Cross-node patch coordination (publish + dispatch). */
+  private final PatchCoordinator patchCoordinator;
+
   /** The reconciliation policy. */
   private final ReconciliationPolicy reconciliationPolicy;
 
@@ -143,6 +152,7 @@ public final class Andersoni {
       final SnapshotStore snapshotStore,
       final RetryPolicy retryPolicy,
       final AndersoniMetrics metrics,
+      final int maxPatchPayloadBytes,
       final ReconciliationPolicy reconciliationPolicy) {
     this.nodeId = nodeId;
     this.syncStrategy = syncStrategy;
@@ -155,6 +165,37 @@ public final class Andersoni {
     this.pendingPromotionRefresh = ConcurrentHashMap.newKeySet();
     this.scheduledFutures = new ConcurrentHashMap<>();
     this.reconciliationPolicy = reconciliationPolicy;
+    this.patchCoordinator = new PatchCoordinator(nodeId, syncStrategy,
+        leaderElection, metrics, catalogsByName, maxPatchPayloadBytes,
+        new PatchCoordinator.Callbacks() {
+          @Override public boolean isStopped() {
+            return stopped.get();
+          }
+          @Override public Catalog<?> requireCatalog(final String name) {
+            return Andersoni.this.requireCatalog(name);
+          }
+          @Override public boolean isFailedCatalog(final String name) {
+            return failedCatalogs.contains(name);
+          }
+          @Override public void reportIndexSizes(final Catalog<?> catalog) {
+            Andersoni.this.reportIndexSizes(catalog);
+          }
+          @Override public void saveSnapshot(final Catalog<?> catalog) {
+            // A patch changes local state from a source other than the
+            // store. Forgetting the applied hash first makes a failed save
+            // visible to reconciliation, which re-saves and re-publishes.
+            storeBridge.markUnknown(catalog.name());
+            storeBridge.save(catalog);
+          }
+          @Override public void markStoreHashApplied(final String name,
+              final String storeHash) {
+            storeBridge.markApplied(name, storeHash);
+          }
+          @Override public void refreshFromEvent(final String name,
+              final Catalog<?> catalog) {
+            Andersoni.this.refreshFromEvent(name, catalog);
+          }
+        });
   }
 
   /**
@@ -244,6 +285,7 @@ public final class Andersoni {
     bootstrapAllCatalogs();
     asyncRefreshDispatcher = new AsyncRefreshDispatcher(
         catalogsByName.keySet());
+    patchCoordinator.setDispatcher(asyncRefreshDispatcher);
     registerPromotionRefresh();
     wireSyncListener();
     schedulePeriodicRefreshes();
@@ -760,6 +802,255 @@ public final class Andersoni {
   }
 
   /**
+   * Replaces a single item in the named catalog and broadcasts the patch
+   * to other nodes via the configured sync strategy.
+   *
+   * <p>Mirrors {@link #refreshAndSync(String)} for the patch path: leader-
+   * gated, saves the snapshot, then publishes a
+   * {@link org.waabox.andersoni.sync.PatchEvent}. See
+   * {@link PatchCoordinator#replaceAndSync} for the full contract.
+   *
+   * @return {@code true} if a single item was found and replaced;
+   *         {@code false} if no item matched, this node is not the leader,
+   *         or Andersoni has been stopped
+   */
+  public PatchOutcome replaceAndSync(final String catalogName,
+      final String indexName, final Object key, final Object newItem) {
+    return patchCoordinator.replaceAndSync(catalogName, indexName, key,
+        newItem);
+  }
+
+  /**
+   * Applies a batch of changes on the leader and broadcasts them as one
+   * event.
+   *
+   * <p>Runs only on the leader; on a follower this is a no-op returning
+   * {@link PatchOutcome#NOT_LEADER}. The batch is one snapshot swap and one message, and
+   * followers apply it atomically: the whole batch lands or none of it
+   * does, so no node is ever seen holding half of it.
+   *
+   * @param catalogName the catalog to write to, never null
+   * @param ops         the operations to apply in order, never null
+   * @param <T>         the catalog item type
+   *
+   * @return {@link PatchOutcome#APPLIED} when something changed,
+   *         {@link PatchOutcome#NOT_FOUND} when no operation matched,
+   *         {@link PatchOutcome#NOT_LEADER} on a follower
+   *
+   * @throws IllegalStateException         if stopped, or the catalog has no
+   *                                       serializer
+   * @throws IllegalArgumentException      if no such catalog is registered
+   * @throws AmbiguousPatchTargetException if a lookup matched more than one
+   * @throws PatchTargetNotFoundException  if a replace matched nothing
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public <T> PatchOutcome applyAndSync(final String catalogName,
+      final List<PatchOp<T>> ops) {
+    return patchCoordinator.applyAndSync(catalogName,
+        (List<PatchOp<Object>>) (List<?>) ops);
+  }
+
+  /**
+   * Adds an item to a catalog on the leader and broadcasts the insert to
+   * the cluster.
+   *
+   * <p>Runs only on the leader; on a follower this is a no-op returning
+   * {@link PatchOutcome#NOT_LEADER}. No lookup is performed, so this cannot notice that an
+   * equivalent item is already present — {@link #upsertAndSync} is the
+   * operation that decides.
+   *
+   * @param catalogName the catalog to add to, never null
+   * @param newItem     the item to add, never null
+   *
+   * @return {@link PatchOutcome#APPLIED} when this node is the leader,
+   *         {@link PatchOutcome#NOT_LEADER} otherwise
+   *
+   * @throws IllegalStateException    if stopped, or the catalog has no
+   *                                  serializer
+   * @throws IllegalArgumentException if no such catalog is registered
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public PatchOutcome insertAndSync(final String catalogName,
+      final Object newItem) {
+    return patchCoordinator.insertAndSync(catalogName, newItem);
+  }
+
+  /**
+   * Removes the item resolved by {@code (indexName, key)} on the leader and
+   * broadcasts the removal to the cluster.
+   *
+   * <p>Runs only on the leader; on a follower this is a no-op returning
+   * {@link PatchOutcome#NOT_LEADER}. A lookup matching nothing also returns {@code false} and
+   * broadcasts nothing.
+   *
+   * @param catalogName the catalog to remove from, never null
+   * @param indexName   the index to look the item up in, never null
+   * @param key         the lookup key, never null
+   *
+   * @return {@link PatchOutcome#APPLIED} when an item was removed,
+   *         {@link PatchOutcome#NOT_FOUND} when the lookup matched nothing,
+   *         {@link PatchOutcome#NOT_LEADER} on a follower
+   *
+   * @throws IllegalStateException         if stopped, or the catalog has no
+   *                                       serializer
+   * @throws IllegalArgumentException      if no such catalog is registered
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public PatchOutcome removeAndSync(final String catalogName,
+      final String indexName, final Object key) {
+    return patchCoordinator.removeAndSync(catalogName, indexName, key);
+  }
+
+  /**
+   * Replaces the item resolved by {@code (indexName, key)} on the leader if
+   * one exists and inserts {@code newItem} otherwise, then broadcasts
+   * whichever change actually happened.
+   *
+   * <p>Runs only on the leader; on a follower this is a no-op returning
+   * {@link PatchOutcome#NOT_LEADER}.
+   *
+   * @param catalogName the catalog to write to, never null
+   * @param indexName   the index to look the item up in, never null
+   * @param key         the lookup key, never null
+   * @param newItem     the item to store, never null
+   *
+   * @return {@link PatchOutcome#APPLIED} when this node is the leader,
+   *         {@link PatchOutcome#NOT_LEADER} otherwise
+   *
+   * @throws IllegalStateException         if stopped, or the catalog has no
+   *                                       serializer
+   * @throws IllegalArgumentException      if no such catalog is registered
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public PatchOutcome upsertAndSync(final String catalogName,
+      final String indexName, final Object key, final Object newItem) {
+    return patchCoordinator.upsertAndSync(catalogName, indexName, key,
+        newItem);
+  }
+
+  /**
+   * Adds an item to a catalog locally, without coordinating across the
+   * cluster.
+   *
+   * <p>With reconciliation active this is treated like a local
+   * {@link #refresh(String)}: on the leader the next pass uploads and
+   * broadcasts the change, on a follower the store overwrites it.
+   *
+   * @param catalogName the catalog to add to, never null
+   * @param newItem     the item to add, never null
+   *
+   * @throws IllegalStateException        if stopped
+   * @throws IllegalArgumentException     if no such catalog is registered
+   * @throws CatalogNotAvailableException if the catalog failed to bootstrap
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  @SuppressWarnings("unchecked")
+  public void insert(final String catalogName, final Object newItem) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException(
+          "Cannot insert after stop() has been called");
+    }
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    ((Catalog<Object>) catalog).insert(newItem);
+    storeBridge.markUnknown(catalogName);
+    reportIndexSizes(catalog);
+  }
+
+  /**
+   * Removes an item from a catalog locally, without coordinating across the
+   * cluster.
+   *
+   * <p>With reconciliation active this is treated like a local
+   * {@link #refresh(String)}: on the leader the next pass uploads and
+   * broadcasts the change, on a follower the store overwrites it.
+   *
+   * @param catalogName the catalog to remove from, never null
+   * @param indexName   the index to look the item up in, never null
+   * @param key         the lookup key, never null
+   *
+   * @return true if an item was removed, false if nothing matched
+   *
+   * @throws IllegalStateException         if stopped
+   * @throws IllegalArgumentException      if no such catalog is registered
+   * @throws CatalogNotAvailableException  if the catalog failed to bootstrap
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean remove(final String catalogName, final String indexName,
+      final Object key) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException(
+          "Cannot remove after stop() has been called");
+    }
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    final boolean removed = catalog.remove(indexName, key);
+    if (removed) {
+      storeBridge.markUnknown(catalogName);
+      reportIndexSizes(catalog);
+    }
+    return removed;
+  }
+
+  /**
+   * Replaces an item in a catalog locally, without coordinating across the
+   * cluster.
+   *
+   * <p>With reconciliation active this is treated like a local
+   * {@link #refresh(String)}: on the leader the next pass uploads and
+   * broadcasts the change, on a follower the store overwrites it.
+   *
+   * @param catalogName the catalog to replace in, never null
+   * @param indexName   the index to look the item up in, never null
+   * @param key         the lookup key, never null
+   * @param newItem     the replacement item, never null
+   *
+   * @return true if an item was replaced, false if nothing matched
+   */
+  @SuppressWarnings("unchecked")
+  public boolean replace(final String catalogName, final String indexName,
+      final Object key, final Object newItem) {
+    Objects.requireNonNull(catalogName, "catalogName must not be null");
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+    if (stopped.get()) {
+      throw new IllegalStateException(
+          "Cannot replace after stop() has been called");
+    }
+    final Catalog<?> catalog = requireCatalog(catalogName);
+    if (failedCatalogs.contains(catalogName)) {
+      throw new CatalogNotAvailableException(catalogName);
+    }
+    final Catalog<Object> typedCatalog = (Catalog<Object>) catalog;
+    final boolean replaced = typedCatalog.replace(indexName, key, newItem);
+    if (replaced) {
+      storeBridge.markUnknown(catalogName);
+      reportIndexSizes(catalog);
+    }
+    return replaced;
+  }
+
+  /**
    * Runs a reconciliation pass as soon as possible on the reconciler thread
    * and returns without waiting.
    *
@@ -813,6 +1104,10 @@ public final class Andersoni {
     final SnapshotReconciler current = reconciler;
     if (current != null) {
       current.stop();
+    }
+
+    if (asyncRefreshDispatcher != null) {
+      asyncRefreshDispatcher.stop();
     }
 
     if (syncStrategy != null) {
@@ -1199,6 +1494,10 @@ public final class Andersoni {
           () -> refreshFromEvent(event.catalogName(), catalog));
     });
 
+    if (syncStrategy.supportsPatches()) {
+      syncStrategy.subscribePatch(patchCoordinator::handlePatch);
+    }
+
     syncStrategy.start();
   }
 
@@ -1365,6 +1664,9 @@ public final class Andersoni {
     /** The optional metrics reporter. */
     private AndersoniMetrics metrics;
 
+    /** The patch payload ceiling, defaulting to {@link #DEFAULT_MAX_PATCH_PAYLOAD_BYTES}. */
+    private int maxPatchPayloadBytes = DEFAULT_MAX_PATCH_PAYLOAD_BYTES;
+
     /** The optional reconciliation policy. */
     private ReconciliationPolicy reconciliation;
 
@@ -1469,15 +1771,41 @@ public final class Andersoni {
     }
 
     /**
-     * Sets the metrics reporter for operational metrics collection.
+     * Sets the largest encoded patch payload this node will broadcast.
      *
-     * <p>If not set, {@link NoopAndersoniMetrics} is used.
+     * <p>A patch carries the changed items, so an unusually large entity —
+     * or a large batch — can produce a message the transport refuses.
+     * Kafka's default {@code max.message.bytes} is 1 MB, and a refused
+     * publish is worse than a slow one: the leader has applied the change
+     * and nothing tells the followers, so they stay silently stale.
+     * Exceeding this limit publishes a full-refresh event instead, which
+     * carries no payload and therefore always fits.
      *
-     * @param theMetrics the metrics reporter, never null
+     * <p>Defaults to {@value #DEFAULT_MAX_PATCH_PAYLOAD_BYTES} bytes,
+     * comfortably under Kafka's default. Raise it if the transport is
+     * configured for larger messages.
+     *
+     * @param bytes the ceiling in bytes, must be positive
      *
      * @return this builder for chaining, never null
      *
-     * @throws NullPointerException if theMetrics is null
+     * @throws IllegalArgumentException if bytes is not positive
+     */
+    public Builder maxPatchPayloadBytes(final int bytes) {
+      if (bytes <= 0) {
+        throw new IllegalArgumentException(
+            "maxPatchPayloadBytes must be positive, got " + bytes);
+      }
+      this.maxPatchPayloadBytes = bytes;
+      return this;
+    }
+
+    /**
+     * Sets the metrics implementation.
+     *
+     * @param theMetrics the metrics, never null
+     *
+     * @return this builder, never null
      */
     public Builder metrics(final AndersoniMetrics theMetrics) {
       Objects.requireNonNull(theMetrics, "metrics must not be null");
@@ -1543,6 +1871,7 @@ public final class Andersoni {
           snapshotStore,
           resolvedRetry,
           resolvedMetrics,
+          maxPatchPayloadBytes,
           resolvedReconciliation);
     }
   }

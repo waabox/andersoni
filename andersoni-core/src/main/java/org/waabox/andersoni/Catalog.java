@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
+import org.waabox.andersoni.CatalogPatcher.PatchResult;
+import org.waabox.andersoni.CatalogPatcher.ReplaceOutcome;
 import org.waabox.andersoni.snapshot.SnapshotSerializer;
 
 /**
@@ -91,6 +93,46 @@ public final class Catalog<T> {
    *  collisions between concatenated toString() representations. */
   private static final byte[] ITEM_DELIMITER = new byte[]{0x00};
 
+  /**
+   * One operation of a batch, as it actually resolved.
+   *
+   * <p>An upsert resolves here into the concrete change it made, and the
+   * displaced item is recorded because a follower re-derives its lookup key
+   * from it rather than having a key shipped over the wire.
+   *
+   * @param operation the concrete change, never null
+   * @param indexName the index the lookup used, null for an insert
+   * @param oldItem   the item displaced, null for an insert
+   * @param newItem   the item stored, null for a removal
+   * @param <T>       the catalog item type
+   */
+  record AppliedOp<T>(org.waabox.andersoni.sync.PatchOperation operation,
+      String indexName, T oldItem, T newItem) {
+  }
+
+  /**
+   * What a batch did: the snapshot metadata, plus the operations that
+   * actually changed something, in the order they were applied.
+   *
+   * @param outcome the snapshot metadata for the batch, never null
+   * @param applied the operations that changed something, never null
+   * @param <T>     the catalog item type
+   */
+  record BatchCapture<T>(ReplaceOutcome<T> outcome, List<AppliedOp<T>> applied) {
+  }
+
+  /**
+   * What an upsert did: the snapshot metadata, plus whether it replaced an
+   * existing item or inserted a new one.
+   *
+   * @param outcome  the snapshot metadata for the change, never null
+   * @param replaced true if an existing item was replaced, false if the
+   *                 item was inserted
+   * @param <T>      the catalog item type
+   */
+  record UpsertCapture<T>(ReplaceOutcome<T> outcome, boolean replaced) {
+  }
+
   /** The current snapshot, atomically swapped on refresh. */
   private final AtomicReference<Snapshot<T>> current;
 
@@ -117,6 +159,17 @@ public final class Catalog<T> {
 
   /** The build hooks sorted by priority, never null. */
   private final List<PrioritizedHook<T>> hooks;
+
+  /**
+   * Whether a patch may derive the next snapshot surgically, or has to
+   * rebuild it. False when any registered hook has not opted in via
+   * {@link SnapshotBuildHook#supportsPatch()}, because a patch runs hooks
+   * only for the item it changes.
+   */
+  private final boolean surgicalPatchAllowed;
+
+  /** The surgical snapshot patcher (lazy-initialized once defs are frozen). */
+  private final CatalogPatcher<T> patcher;
 
   /** The data loader, null if using static data. */
   private final DataLoader<T> dataLoader;
@@ -183,9 +236,19 @@ public final class Catalog<T> {
         new ArrayList<>(hooks));
     this.serializer = serializer;
     this.refreshInterval = refreshInterval;
+    this.surgicalPatchAllowed = hooks.stream()
+        .allMatch(hook -> hook.hook().supportsPatch());
     this.current = new AtomicReference<>(Snapshot.empty());
     this.refreshLock = new ReentrantLock();
     this.versionCounter = new AtomicLong(0);
+    // When a patch has to rebuild, the rebuild runs every hook for every
+    // item — so the patcher must not also run them for the patched one, or
+    // a hook that counts would count it twice.
+    this.patcher = new CatalogPatcher<>(this.name,
+        this.indexDefinitions, this.sortedIndexDefinitions,
+        this.multiKeyIndexDefinitions, this.graphIndexDefinitions,
+        this.viewDefinitions,
+        this.surgicalPatchAllowed ? this.hooks : List.of());
   }
 
   /**
@@ -278,6 +341,642 @@ public final class Catalog<T> {
     } finally {
       refreshLock.unlock();
     }
+  }
+
+  /**
+   * Replaces a single item in this catalog by looking it up through the
+   * specified index and key, then atomically swapping the resulting
+   * snapshot.
+   *
+   * <p>The lookup is the standard equality search on the named index:
+   * {@code search(indexName, key)}. The outcome depends on how many items
+   * the lookup resolves to:
+   * <ul>
+   *   <li>If the bucket is empty, the catalog is left untouched and
+   *       {@code false} is returned.</li>
+   *   <li>If the bucket contains exactly one item, that item is replaced
+   *       with {@code newItem}. The new snapshot rebuilds only the index
+   *       buckets affected by the change; all other buckets are shared
+   *       by reference with the previous snapshot.</li>
+   *   <li>If the bucket contains more than one item, the operation is
+   *       ambiguous and an {@link AmbiguousPatchTargetException} is thrown.
+   *       The caller should pick an index whose keys are unique for the
+   *       intended item (typically an id-based index).</li>
+   * </ul>
+   *
+   * <p>Views are recomputed for {@code newItem} via the registered view
+   * mappers. Snapshot build hooks are executed against {@code newItem}
+   * for their side effects, matching the build path.
+   *
+   * <p>This method is serialized against {@link #refresh()} and
+   * {@link #refresh(List)} via the same refresh lock — a replace cannot
+   * interleave with a full rebuild. Read operations remain lock-free.
+   *
+   * @param indexName the index name used to locate the item, never null
+   * @param key       the lookup key, never null
+   * @param newItem   the replacement domain object, never null
+   *
+   * @return {@code true} if a single item was found and replaced,
+   *         {@code false} if the lookup returned no items
+   *
+   * @throws NullPointerException        if any argument is null
+   * @throws IndexNotFoundException      if no index with the given name is
+   *                                     registered on this catalog
+   * @throws AmbiguousPatchTargetException   if the lookup returned more than
+   *                                     one item
+   */
+  public boolean replace(final String indexName, final Object key,
+      final T newItem) {
+    return replaceAndCapture(indexName, key, newItem).isPresent();
+  }
+
+  /**
+   * Adds an item to the catalog, indexing it under every key its index
+   * definitions yield, without touching anything already present.
+   *
+   * <p>No lookup is performed, so an insert cannot be ambiguous and cannot
+   * miss — and equally cannot notice that an equivalent item is already
+   * there. Inserting the same item twice yields two items. When the caller
+   * does not know whether the item exists, {@link #upsert} is the operation
+   * that decides.
+   *
+   * <p>Views are computed and build hooks run for the new item, matching
+   * the build path. Serialized against {@link #refresh()} by the refresh
+   * lock; reads stay lock-free.
+   *
+   * @param item the item to add, never null
+   *
+   * @throws NullPointerException if item is null
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void insert(final T item) {
+    Objects.requireNonNull(item, "item must not be null");
+    refreshLock.lock();
+    try {
+      if (surgicalPatchAllowed) {
+        applyPatch(snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      } else {
+        final Snapshot<T> snapshot = current.get();
+        final List<T> data = new ArrayList<>(snapshot.data());
+        data.add(item);
+        rebuildAfterPatch(snapshot, data, null);
+      }
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Removes the single item resolved by {@code (indexName, key)} from the
+   * catalog and from every index it appears in.
+   *
+   * <p>A lookup that matches nothing is a no-op returning {@code false},
+   * not an error: removal is idempotent by nature, and with at-least-once
+   * sync delivery a repeated removal is ordinary rather than exceptional.
+   * A lookup matching more than one item throws, because guessing which to
+   * drop would corrupt the catalog silently.
+   *
+   * @param indexName the index to look the item up in, never null
+   * @param key       the lookup key, never null
+   *
+   * @return true if an item was removed, false if nothing matched
+   *
+   * @throws NullPointerException          if any argument is null
+   * @throws IndexNotFoundException        if the index is not declared
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean remove(final String indexName, final Object key) {
+    return removeAndCapture(indexName, key).isPresent();
+  }
+
+  /**
+   * Replaces the item resolved by {@code (indexName, key)} when one exists,
+   * and inserts {@code item} when none does.
+   *
+   * <p>The lookup and the write happen under one hold of the refresh lock,
+   * which is the reason this exists rather than leaving callers to write
+   * {@code if (!replace(...)) insert(...)}: that version races a concurrent
+   * refresh between the two calls, and can insert a duplicate or lose a
+   * write.
+   *
+   * @param indexName the index to look the item up in, never null
+   * @param key       the lookup key, never null
+   * @param item      the item to store, never null
+   *
+   * @return true if an existing item was replaced, false if the item was
+   *         inserted
+   *
+   * @throws NullPointerException          if any argument is null
+   * @throws IndexNotFoundException        if the index is not declared
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean upsert(final String indexName, final Object key,
+      final T item) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+
+    refreshLock.lock();
+    try {
+      final boolean replaced = applyPatch(indexName, key, item).isPresent();
+      if (!replaced) {
+        applyPatch(snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      }
+      return replaced;
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Applies a list of changes as one unit: one snapshot swap, one version
+   * bump, one content hash, and — across a cluster — one sync message.
+   *
+   * <p>Operations apply in order against the accumulating state, so a later
+   * one sees what an earlier one did; inserting an item and replacing it in
+   * the same batch works. Each operation keeps the contract of its
+   * standalone counterpart with one exception: a {@link PatchOp.Replace}
+   * that matches nothing throws {@link PatchTargetNotFoundException} rather
+   * than reporting {@code false}, because a batch applies as a unit and
+   * partial success is not a state the caller can act on. A
+   * {@link PatchOp.Remove} that matches nothing is still skipped, keeping
+   * removal idempotent.
+   *
+   * <p>Failure is atomic and costs nothing to unwind. The batch is computed
+   * against candidate snapshots and only the last one is published, so
+   * abandoning it means not swapping — the live snapshot was never touched,
+   * and readers never saw a half-applied batch.
+   *
+   * <p>A batch in which nothing changed — empty, or only removals that
+   * matched nothing — swaps no snapshot, so it neither bumps the version
+   * nor moves the hash.
+   *
+   * @param ops the operations to apply in order, never null
+   *
+   * @throws NullPointerException          if ops is null or holds a null
+   * @throws IndexNotFoundException        if an operation names an unknown
+   *                                       index
+   * @throws AmbiguousPatchTargetException if a lookup matched more than one
+   * @throws PatchTargetNotFoundException  if a replace matched nothing
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public void apply(final List<PatchOp<T>> ops) {
+    applyAndCapture(ops);
+  }
+
+  /**
+   * Performs the same batch as {@link #apply(List)} and additionally
+   * returns the from/to snapshot version and hash pair, for building a
+   * cross-node patch event.
+   *
+   * @param ops the operations to apply in order, never null
+   *
+   * @return the outcome, or empty when nothing changed
+   */
+  Optional<BatchCapture<T>> applyAndCapture(final List<PatchOp<T>> ops) {
+    Objects.requireNonNull(ops, "ops must not be null");
+    for (final PatchOp<T> op : ops) {
+      Objects.requireNonNull(op, "ops must not contain null");
+    }
+    if (ops.isEmpty()) {
+      return Optional.empty();
+    }
+
+    refreshLock.lock();
+    try {
+      return applyBatch(ops, current.get().hash());
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Applies a batch, optionally gated on the snapshot hash.
+   *
+   * <p>Each operation is computed against the result of the previous one,
+   * held as a candidate snapshot that is never published. Only the last
+   * candidate becomes real, with the version and hash computed once.
+   *
+   * <p>Must be called while holding the refresh lock.
+   *
+   * @param ops          the operations to apply in order, never null
+   * @param expectedHash the hash the batch was computed against; the batch
+   *                     is abandoned if the live snapshot has moved on
+   *
+   * @return the outcome, or empty when nothing changed
+   */
+  private Optional<BatchCapture<T>> applyBatch(final List<PatchOp<T>> ops,
+      final String expectedHash) {
+    final Snapshot<T> start = current.get();
+    if (!expectedHash.equals(start.hash())) {
+      return Optional.empty();
+    }
+
+    Snapshot<T> working = start;
+    PatchResult<T> last = null;
+    final List<AppliedOp<T>> applied = new ArrayList<>(ops.size());
+
+    // One scope for the whole batch: the first operation to touch an index
+    // copies its map, the rest mutate that copy. Without this a batch of K
+    // pays K map copies per index and costs about what a full rebuild does.
+    final CatalogPatcher.PatchScope scope = new CatalogPatcher.PatchScope();
+    scope.openBatch();
+
+    for (final PatchOp<T> op : ops) {
+      final Optional<Computed<T>> computed = computeOne(working, op, scope);
+      if (computed.isEmpty()) {
+        continue;
+      }
+      last = computed.get().result();
+      applied.add(new AppliedOp<>(computed.get().operation(),
+          computed.get().indexName(), last.oldItem(),
+          computed.get().newItem()));
+      // A candidate, never published: the version and hash are placeholders,
+      // and its index maps are still mutable because the batch is not
+      // finished with them.
+      working = Snapshot.ofPatched(last.newItems(), last.newIndices(),
+          last.newSorted(), last.newReversed(), start.version(),
+          start.hash());
+    }
+
+    if (last == null) {
+      return Optional.empty();
+    }
+
+    scope.closeBatch();
+    last = patcher.freeze(last);
+
+    final List<T> newData = new ArrayList<>(last.newItems().size());
+    for (final AndersoniCatalogItem<T> item : last.newItems()) {
+      newData.add(item.item());
+    }
+    if (!surgicalPatchAllowed) {
+      return Optional.of(new BatchCapture<>(
+          rebuildAfterPatch(start, newData, applied.get(0).oldItem()),
+          List.copyOf(applied)));
+    }
+
+    final long newVersion = versionCounter.incrementAndGet();
+    final String newHash = computeHash(newData);
+    current.set(Snapshot.ofPatched(last.newItems(), last.newIndices(),
+        last.newSorted(), last.newReversed(), newVersion, newHash));
+
+    return Optional.of(new BatchCapture<>(
+        new ReplaceOutcome<>(applied.get(0).oldItem(), start.version(),
+            start.hash(), newVersion, newHash),
+        List.copyOf(applied)));
+  }
+
+  /**
+   * One computed operation: the patched components, plus what the operation
+   * resolved to, which an upsert only settles at this point.
+   *
+   * @param result    the patched components, never null
+   * @param operation the concrete change, never null
+   * @param indexName the index the lookup used, null for an insert
+   * @param newItem   the item stored, null for a removal
+   * @param <T>       the catalog item type
+   */
+  private record Computed<T>(PatchResult<T> result,
+      org.waabox.andersoni.sync.PatchOperation operation, String indexName,
+      T newItem) {
+  }
+
+  /**
+   * Computes one operation of a batch against the state it sees.
+   *
+   * @param snapshot the state this operation applies to, never null
+   * @param op       the operation, never null
+   *
+   * @return the patched components, or empty when the operation changed
+   *         nothing
+   *
+   * @throws PatchTargetNotFoundException if a replace matched nothing
+   */
+  private Optional<Computed<T>> computeOne(final Snapshot<T> snapshot,
+      final PatchOp<T> op, final CatalogPatcher.PatchScope scope) {
+    return switch (op) {
+      case PatchOp.Insert<T> insert -> Optional.of(new Computed<>(
+          patcher.insert(snapshot, insert.item(), scope),
+          org.waabox.andersoni.sync.PatchOperation.INSERT, null,
+          insert.item()));
+      case PatchOp.Remove<T> remove ->
+          patcher.remove(snapshot, remove.indexName(), remove.key(), scope)
+              .map(result -> new Computed<>(result,
+                  org.waabox.andersoni.sync.PatchOperation.REMOVE,
+                  remove.indexName(), null));
+      case PatchOp.Replace<T> replace -> Optional.of(new Computed<>(
+          patcher.patch(snapshot, replace.indexName(), replace.key(),
+                  replace.item(), scope)
+              .orElseThrow(() -> new PatchTargetNotFoundException(name,
+                  replace.indexName(), replace.key())),
+          org.waabox.andersoni.sync.PatchOperation.REPLACE,
+          replace.indexName(), replace.item()));
+      case PatchOp.Upsert<T> upsert -> {
+        final Optional<PatchResult<T>> replaced = patcher.patch(snapshot,
+            upsert.indexName(), upsert.key(), upsert.item(), scope);
+        yield Optional.of(replaced
+            .map(result -> new Computed<>(result,
+                org.waabox.andersoni.sync.PatchOperation.REPLACE,
+                upsert.indexName(), upsert.item()))
+            .orElseGet(() -> new Computed<>(
+                patcher.insert(snapshot, upsert.item(), scope),
+                org.waabox.andersoni.sync.PatchOperation.INSERT, null,
+                upsert.item())));
+      }
+    };
+  }
+
+  /**
+   * Applies a batch only if the current snapshot still hashes to
+   * {@code expectedHash}.
+   *
+   * <p>This is the single entry point the follower-side patch dispatch
+   * uses, for one operation and for many alike: a single patch is a batch
+   * of one, so there is no second code path that could drift from this one.
+   *
+   * @param ops          the operations to apply in order, never null
+   * @param expectedHash the snapshot hash the batch was computed against,
+   *                     never null
+   *
+   * @return the outcome, or empty when the precondition failed or nothing
+   *         changed
+   */
+  Optional<BatchCapture<T>> applyWithPrecondition(
+      final List<PatchOp<T>> ops, final String expectedHash) {
+    Objects.requireNonNull(ops, "ops must not be null");
+    Objects.requireNonNull(expectedHash, "expectedHash must not be null");
+
+    refreshLock.lock();
+    try {
+      return applyBatch(ops, expectedHash);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Performs the same removal as {@link #remove(String, Object)} but
+   * additionally returns metadata about the operation — the removed item
+   * and the from/to snapshot version and hash pair — for building
+   * cross-node patch events.
+   *
+   * @param indexName the index name, never null
+   * @param key       the lookup key, never null
+   *
+   * @return the outcome, or empty when the lookup matched nothing
+   *
+   * @throws NullPointerException          if any argument is null
+   * @throws IndexNotFoundException        if the index is not declared
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
+   */
+  Optional<ReplaceOutcome<T>> removeAndCapture(final String indexName,
+      final Object key) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+
+    refreshLock.lock();
+    try {
+      if (surgicalPatchAllowed) {
+        return applyPatch(
+            snapshot -> patcher.remove(snapshot, indexName, key));
+      }
+      return replaceByRebuild(indexName, key, null);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Performs the same patch as {@link #replace(String, Object, T)} but
+   * additionally returns metadata about the operation — the replaced
+   * item and the from/to snapshot version/hash pair. Used by
+   * {@code Andersoni.replaceAndSync} to build cross-node patch events
+   * with a consistent precondition snapshot.
+   *
+   * <p>Returns an empty optional when the lookup found no items (a no-op
+   * leaves the snapshot untouched). Throws
+   * {@link AmbiguousPatchTargetException} on a multi-element bucket exactly
+   * like {@link #replace}.
+   *
+   * @param indexName the index name, never null
+   * @param key       the lookup key, never null
+   * @param newItem   the replacement item, never null
+   *
+   * @return an outcome describing the replaced item plus the snapshot
+   *         metadata, or empty when the lookup found nothing
+   *
+   * @throws NullPointerException        if any argument is null
+   * @throws IndexNotFoundException      if the index is not declared
+   * @throws AmbiguousPatchTargetException   on a multi-element bucket
+   */
+  Optional<ReplaceOutcome<T>> replaceAndCapture(final String indexName,
+      final Object key, final T newItem) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(newItem, "newItem must not be null");
+
+    refreshLock.lock();
+    try {
+      return applyPatch(indexName, key, newItem);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Runs a patch computation, but only if the current snapshot still
+   * hashes to {@code expectedHash}.
+   *
+   * <p>The check and the swap happen under one hold of the refresh lock,
+   * so nothing can move the snapshot in between — which is the whole point
+   * of the precondition.
+   *
+   * @param expectedHash the required snapshot hash, never null
+   * @param computation  the patch computation, never null
+   *
+   * @return the outcome, or empty when the precondition failed or the
+   *         computation matched nothing
+   */
+  private Optional<ReplaceOutcome<T>> applyWithPrecondition(
+      final String expectedHash,
+      final Function<Snapshot<T>, Optional<PatchResult<T>>> computation) {
+    refreshLock.lock();
+    try {
+      if (!expectedHash.equals(current.get().hash())) {
+        return Optional.empty();
+      }
+      return applyPatch(computation);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Performs the same insert as {@link #insert(Object)} but additionally
+   * returns the from/to snapshot version and hash pair, for building
+   * cross-node patch events.
+   *
+   * @param item the item to add, never null
+   *
+   * @return the outcome, never empty
+   */
+  Optional<ReplaceOutcome<T>> insertAndCapture(final T item) {
+    Objects.requireNonNull(item, "item must not be null");
+    refreshLock.lock();
+    try {
+      if (surgicalPatchAllowed) {
+        return applyPatch(
+            snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      }
+      final Snapshot<T> snapshot = current.get();
+      final List<T> data = new ArrayList<>(snapshot.data());
+      data.add(item);
+      return Optional.of(rebuildAfterPatch(snapshot, data, null));
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Performs the same upsert as {@link #upsert(String, Object, Object)} and
+   * reports both the snapshot metadata and which concrete operation it
+   * resolved to, so a caller can broadcast what actually happened rather
+   * than making every node repeat a decision that depends on local state.
+   *
+   * @param indexName the index to look the item up in, never null
+   * @param key       the lookup key, never null
+   * @param item      the item to store, never null
+   *
+   * @return the capture, never null
+   */
+  UpsertCapture<T> upsertAndCapture(final String indexName, final Object key,
+      final T item) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(key, "key must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+
+    refreshLock.lock();
+    try {
+      final Optional<ReplaceOutcome<T>> replaced =
+          applyPatch(indexName, key, item);
+      if (replaced.isPresent()) {
+        return new UpsertCapture<>(replaced.get(), true);
+      }
+      final Optional<ReplaceOutcome<T>> inserted = applyPatch(
+          snapshot -> Optional.of(patcher.insert(snapshot, item)));
+      return new UpsertCapture<>(inserted.orElseThrow(), false);
+    } finally {
+      refreshLock.unlock();
+    }
+  }
+
+  /**
+   * Delegates to {@link CatalogPatcher#extractKeyFor}. Exposed package-
+   * private so the patch dispatch can re-derive the lookup key from a
+   * deserialized oldItem without shipping it on the wire.
+   */
+  Object extractKeyFor(final String indexName, final T item) {
+    Objects.requireNonNull(indexName, "indexName must not be null");
+    Objects.requireNonNull(item, "item must not be null");
+    return patcher.extractKeyFor(indexName, item);
+  }
+
+  /**
+   * Computes the patch via the patcher, wraps the result into a new
+   * {@link Snapshot} with a fresh version and hash, and swaps the atomic
+   * reference. Must be called while holding the refresh lock.
+   */
+  private Optional<ReplaceOutcome<T>> applyPatch(final String indexName,
+      final Object key, final T newItem) {
+    if (surgicalPatchAllowed) {
+      return applyPatch(snapshot -> patcher.patch(snapshot, indexName, key,
+          newItem));
+    }
+    return replaceByRebuild(indexName, key, newItem);
+  }
+
+  /**
+   * Replaces one item on a catalog whose hooks force a rebuild.
+   *
+   * <p>Going through the patcher here would compute every affected bucket
+   * and then discard all of it, so this resolves the lookup, derives the
+   * new item list, and rebuilds — measurably cheaper than a plain rebuild's
+   * worth of wasted work on top of the rebuild itself.
+   *
+   * <p>Must be called while holding the refresh lock.
+   *
+   * @param indexName the index to look the item up in, never null
+   * @param key       the lookup key, never null
+   * @param newItem   the replacement, or null to remove the item
+   *
+   * @return the outcome, or empty when the lookup matched nothing
+   */
+  private Optional<ReplaceOutcome<T>> replaceByRebuild(final String indexName,
+      final Object key, final T newItem) {
+    final Snapshot<T> snapshot = current.get();
+    final Optional<AndersoniCatalogItem<T>> found =
+        patcher.resolveSingle(snapshot, indexName, key);
+    if (found.isEmpty()) {
+      return Optional.empty();
+    }
+
+    final AndersoniCatalogItem<T> target = found.get();
+    final List<T> data = new ArrayList<>(snapshot.items().size());
+    for (final AndersoniCatalogItem<T> existing : snapshot.items()) {
+      if (existing != target) {
+        data.add(existing.item());
+      } else if (newItem != null) {
+        data.add(newItem);
+      }
+    }
+    return Optional.of(rebuildAfterPatch(snapshot, data, target.item()));
+  }
+
+  /**
+   * Runs a patch computation against the current snapshot and, when it
+   * yields a result, swaps in the derived snapshot.
+   *
+   * <p>The three operations differ only in how they derive the patched
+   * components; versioning, hashing and the atomic swap are identical, so
+   * they live here once. Must be called while holding the refresh lock.
+   *
+   * @param computation derives the patched components from the snapshot it
+   *                    is given, or empty when nothing matched, never null
+   *
+   * @return the outcome, or empty when the computation matched nothing
+   */
+  private Optional<ReplaceOutcome<T>> applyPatch(
+      final Function<Snapshot<T>, Optional<PatchResult<T>>> computation) {
+    final Snapshot<T> snapshot = current.get();
+    final Optional<PatchResult<T>> patched = computation.apply(snapshot);
+    if (patched.isEmpty()) {
+      return Optional.empty();
+    }
+    final PatchResult<T> result = patched.get();
+    final List<T> newData = new ArrayList<>(result.newItems().size());
+    for (final AndersoniCatalogItem<T> item : result.newItems()) {
+      newData.add(item.item());
+    }
+    if (!surgicalPatchAllowed) {
+      return Optional.of(rebuildAfterPatch(snapshot, newData,
+          result.oldItem()));
+    }
+
+    final long newVersion = versionCounter.incrementAndGet();
+    final String newHash = computeHash(newData);
+    final Snapshot<T> newSnapshot = Snapshot.ofPatched(result.newItems(),
+        result.newIndices(), result.newSorted(), result.newReversed(),
+        newVersion, newHash);
+    current.set(newSnapshot);
+    return Optional.of(new ReplaceOutcome<>(result.oldItem(),
+        snapshot.version(), snapshot.hash(), newVersion, newHash));
   }
 
   /**
@@ -613,6 +1312,47 @@ public final class Catalog<T> {
     final Snapshot<T> snapshot = Snapshot.ofWithItems(wrappedItems,
         finalIndices, finalSortedIndices, finalReversedKeyIndices, version, hash);
     current.set(snapshot);
+  }
+
+  /**
+   * Rebuilds the whole snapshot from the patched data, for catalogs whose
+   * hooks have not opted into per-item execution.
+   *
+   * <p>The patched item list is already computed, so this skips the
+   * DataLoader entirely — it is a rebuild, not a refresh — but it runs
+   * every hook for every item, which is what a hook that accumulates
+   * across a build needs in order to stay correct.
+   *
+   * <p>Must be called while holding the refresh lock.
+   *
+   * @param before   the snapshot the patch was computed against, never null
+   * @param newData  the patched data, never null
+   * @param displaced the item the patch displaced, may be null
+   *
+   * @return the outcome describing the swap, never null
+   */
+  private ReplaceOutcome<T> rebuildAfterPatch(final Snapshot<T> before,
+      final List<T> newData, final T displaced) {
+    buildAndSwapSnapshot(newData);
+    final Snapshot<T> rebuilt = current.get();
+    return new ReplaceOutcome<>(displaced, before.version(), before.hash(),
+        rebuilt.version(), rebuilt.hash());
+  }
+
+  /**
+   * Returns whether patches on this catalog derive the next snapshot
+   * surgically, or rebuild it because a registered hook has not opted into
+   * per-item execution via {@link SnapshotBuildHook#supportsPatch()}.
+   *
+   * <p>Patches behave identically either way; this reports how much work
+   * they cost.
+   *
+   * @return true if patches are applied surgically
+   *
+   * @author waabox(waabox[at]gmail[dot]com)
+   */
+  public boolean appliesPatchesSurgically() {
+    return surgicalPatchAllowed;
   }
 
   /**

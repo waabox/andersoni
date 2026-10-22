@@ -330,6 +330,126 @@ Datadog: counters `reconcile.drift_detected`, `reconcile.drift_repaired`, `recon
 
 Decision table, leader-promotion semantics, cost and the Docker-verified failure scenarios are on the wiki: **[Cluster Self-Healing](https://github.com/waabox/andersoni/wiki/Cluster-Self-Healing)**.
 
+## Snapshot Patches
+
+> **Since 1.13.0**
+
+Replace a single item in a catalog without re-loading the dataset. The snapshot is rebuilt copy-on-write — only the index buckets whose keys change for the patched item are recomputed; everything else is shared by reference with the previous snapshot.
+
+```java
+// local-only: apply within this node
+boolean replaced = catalog.replace("by-id", eventId, updatedEvent);
+catalog.insert(newEvent);
+boolean removed  = catalog.remove("by-id", eventId);
+boolean replaced = catalog.upsert("by-id", eventId, event);
+
+// cluster-wide: the leader applies locally and broadcasts a PatchEvent
+PatchOutcome outcome = andersoni.replaceAndSync("events", "by-id", eventId, updatedEvent);
+PatchOutcome outcome = andersoni.insertAndSync("events", newEvent);
+PatchOutcome outcome = andersoni.removeAndSync("events", "by-id", eventId);
+PatchOutcome outcome = andersoni.upsertAndSync("events", "by-id", eventId, event);
+```
+
+The cluster-coordinated calls return a `PatchOutcome` rather than a boolean, because "nothing happened" has two unrelated causes worth telling apart:
+
+| Outcome | Meaning |
+|---|---|
+| `APPLIED` | this node is the leader and the change went in |
+| `NOT_FOUND` | leader, but the lookup matched nothing — usually a wrong key or a missed create |
+| `NOT_LEADER` | this node is a follower; the leader owns the write |
+
+On a five-pod cluster four pods see `NOT_LEADER` on every call and should ignore it, while `NOT_FOUND` is normally worth logging. A single boolean forces you to alert on both or on neither. `outcome.applied()` is there for call sites that only need the one bit. The local, uncoordinated methods keep returning `boolean`, since without a leader question only found and not-found are possible.
+
+Every operation that locates its target does so through an ordinary index lookup, which must resolve to **exactly one item**:
+
+| Matches | `replace` | `remove` | `upsert` |
+|---|---|---|---|
+| `0` | `false`, no-op | `false`, no-op | inserts |
+| `1` | swap | drop | swap |
+| `>1` | `AmbiguousPatchTargetException` | same | same |
+
+Zero matches is not an error for `remove` — removal is idempotent by nature, and with at-least-once delivery a repeated removal is ordinary. More than one match always is: guessing which item was meant would corrupt the catalog silently. Pick a uniquely-keyed index (typically id-based) as the lookup handle.
+
+`insert` performs no lookup at all, so it can neither miss nor be ambiguous — and equally cannot notice that an equivalent item is already present. `upsert` is the operation that decides, and it belongs in the library rather than being written caller-side as `if (!replace(...)) insert(...)`: that version races a concurrent refresh between the two calls and can insert a duplicate or lose a write.
+
+There is no `UPSERT` on the wire. An upsert resolves on the leader into whichever concrete change happened, and followers are told what was done rather than what was asked for — so they never repeat a decision that depends on state they may not share.
+
+### Batches
+
+Several changes can be applied as one unit — one snapshot swap, one version bump, one content hash, one sync message:
+
+```java
+catalog.apply(List.of(
+    new PatchOp.Replace<>("by-id", "a", updatedEvent),
+    new PatchOp.Insert<>(newEvent),
+    new PatchOp.Remove<>("by-id", "b")));
+
+andersoni.applyAndSync("events", ops);   // leader-only, broadcasts once
+```
+
+Operations apply in order against the accumulating state, so a later one sees what an earlier one did — inserting an item and replacing it in the same batch works.
+
+A batch is atomic, and that changes one contract: a `Replace` that matches nothing throws `PatchTargetNotFoundException` instead of reporting `false`, because "operation 37 did nothing while the rest applied" is not a state a caller can act on. A `Remove` that matches nothing is still skipped, keeping removal idempotent. Failure costs nothing to unwind: the batch is computed against candidate snapshots and only the last one is published, so abandoning it means not swapping — readers never see a half-applied batch, on the leader or on a follower.
+
+A batch in which nothing changed swaps no snapshot, so it neither bumps the version nor moves the hash.
+
+### Hooks and patches
+
+A patch runs `SnapshotBuildHook`s only for the item it changes, because that is the only item it builds. That suits a hook which observes one item at a time, and breaks a hook which accumulates across a build — a count, a sum, an index of its own — since it would see a single delta and conclude the catalog holds one item.
+
+A catalog cannot inspect a lambda to tell which kind it has, so `supportsPatch()` defaults to `false` and any catalog holding a hook that has not opted in **rebuilds fully on every patch**. Still correct, and still cheaper than a refresh because the data is not re-loaded, but without the surgical index work. `catalog.appliesPatchesSurgically()` reports which mode a catalog is in.
+
+```java
+.hook(new SnapshotBuildHook<Event>() {
+    @Override public Event process(final Event item) { metrics.observe(item); return item; }
+    @Override public boolean supportsPatch() { return true; }   // per-item effect only
+})
+```
+
+`replaceAndSync` only runs on the leader; on followers it returns `NOT_LEADER`. After the local replace, the leader saves the full snapshot to the snapshot store and publishes a `PatchEvent` carrying the serialized old item, the serialized new item, and version/hash preconditions captured atomically under the catalog's refresh lock.
+
+**Follower dispatch** keys on content hashes:
+
+| Local state vs event | Action |
+|---|---|
+| `event.toHash == localHash` | Discard — this node already applied the patch. |
+| `event.fromHash == localHash` | Apply the patch surgically. |
+| otherwise | Fall back to a full reload via the snapshot store (or the data loader as last resort). |
+
+Snapshot versions are deliberately *not* preconditions. A version is a per-node counter that starts at zero in every process and is never adopted from another node, so two nodes holding identical data can report different versions — and a follower whose counter has run ahead of the leader’s (after a leader restart, say) would discard live patches as stale and silently stop converging. Hashes are derived from content, so they are comparable across nodes by construction. `fromVersion`/`toVersion` remain on the event for diagnostics.
+
+Patches are queued per catalog in arrival order and are never coalesced: a patch is a delta against one specific base state, so dropping one loses that change rather than merely delaying it. Full reloads keep their coalescing (a later reload subsumes an earlier one), on a separate path so neither can swallow the other. If the patch queue is saturated the event degrades to a full reload rather than being dropped. The leader saves the latest snapshot before publishing, so the fallback path always finds something useful.
+
+**Patches and reconciliation.** With a `SnapshotStore` configured, [reconciliation](#cluster-self-healing) keeps running underneath patches, and the two agree on what "in sync" means. The leader saves the patched snapshot before publishing, so the store's hash *is* the event's `toHash`; a follower that applies the patch surgically records that hash as applied and stays in sync without reloading. A follower that missed the patch, or whose reload landed on an older snapshot, is repaired from the store on the next pass — the store, not the event stream, is what the cluster converges on. A save that fails on the leader propagates to the caller, as it does for `refreshAndSync`: the local change stands and is not broadcast, and the next pass re-saves and re-publishes it as a full-refresh event. The local, uncoordinated `replace`, `insert` and `remove` on `Andersoni` are treated like a local `refresh`: on the leader the next pass uploads and broadcasts them, on a follower the store overwrites them.
+
+**Transport support:**
+
+- ✅ `andersoni-sync-kafka` and `andersoni-spring-sync-kafka` — patch events flow over the same topic, type-discriminated in the JSON envelope.
+- ✅ `andersoni-sync-http` — patch events POST to the same endpoint as refresh events.
+- ❌ `andersoni-sync-db` — the polling table is keyed by catalog with one row per catalog, so it has no per-event log to deliver patches over. A leader patch on this transport publishes nothing, not even a refresh row: followers converge through reconciliation from the snapshot store, or on the next full `refreshAndSync` / `refreshEvery` refresh.
+
+The catalog must have a `SnapshotSerializer` configured — cross-node patches cannot be built without one.
+
+> ### ⚠️ Every node must be upgraded before you patch
+>
+> A patch is a new kind of sync message. A node running **1.12.2 or earlier cannot decode it**: the payload carries `fromHash`/`toHash` rather than the `version`/`hash` an older codec requires, so parsing fails.
+>
+> Nothing crashes. The Kafka consumer logs an error per message and keeps polling; the HTTP endpoint answers `500` and stays up. But an old node never learns the leader patched, so **it goes on serving stale data** until some later full refresh happens to correct it — which looks like a mysteriously stale pod rather than an obvious failure. The symptom to grep for is a deserialization error naming a `refresh event`.
+>
+> Upgrading is safe on its own: **installing this version changes nothing until you call a patch method.** A fleet on the new version that still calls only `refreshAndSync` behaves exactly as before. So the safe order is:
+>
+> 1. Deploy the new version everywhere, keeping every call site on `refreshAndSync`.
+> 2. Confirm the fleet is fully upgraded.
+> 3. Switch call sites to the patch operations.
+>
+> Rolling back step 3 is a code change. Rolling back step 1 after patches are in flight is not: old nodes will not catch up on their own.
+
+**Payload ceiling.** A patch carries the changed items, so an unusually large entity or a big batch can produce a message the transport refuses — Kafka's default `max.message.bytes` is 1MB. A refused publish is worse than a slow one: the leader has applied the change and nothing tells the followers, so they stay silently stale. Exceeding the ceiling therefore publishes a full-refresh event instead, which carries no payload and always fits; followers reload onto the snapshot the leader saved just before. The limit defaults to 256KB and is configurable:
+
+```java
+Andersoni.builder().maxPatchPayloadBytes(512 * 1024).build();
+```
+
 ## How It Compares
 
 Andersoni is **not a general-purpose cache**. It solves a specific problem: multi-index search over domain datasets with consistent, lock-free reads.

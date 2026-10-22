@@ -92,6 +92,44 @@ public interface AndersoniMetrics {
   }
 
   /**
+   * Records a successful surgical patch application on the follower side.
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void patchApplied(final String catalogName) {
+  }
+
+  /**
+   * Records that an inbound patch event was discarded as stale (already
+   * applied or superseded by a newer snapshot).
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void patchDiscarded(final String catalogName) {
+  }
+
+  /**
+   * Records that a patch event triggered a full reload fallback because
+   * the local snapshot didn't satisfy the patch precondition.
+   *
+   * @param catalogName the name of the catalog, never null
+   */
+  default void patchFellBack(final String catalogName) {
+  }
+
+  /**
+   * Records that a patch was not broadcast because its encoded payload
+   * exceeded the configured limit, and a full-refresh event was published
+   * in its place.
+   *
+   * @param catalogName  the name of the catalog, never null
+   * @param payloadBytes the encoded size that exceeded the limit
+   */
+  default void patchOversized(final String catalogName,
+      final int payloadBytes) {
+  }
+
+  /**
    * Records that a reconciliation pass found this node's catalog differing
    * from the snapshot store.
    *

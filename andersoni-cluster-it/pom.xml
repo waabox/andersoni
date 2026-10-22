@@ -23,7 +23,7 @@
   <properties>
     <!-- This is an integration-test-only module: never publish it. -->
     <maven.deploy.skip>true</maven.deploy.skip>
-    <testcontainers.version>1.20.4</testcontainers.version>
+    <testcontainers.version>1.21.4</testcontainers.version>
     <postgresql.version>42.7.4</postgresql.version>
   </properties>
 
