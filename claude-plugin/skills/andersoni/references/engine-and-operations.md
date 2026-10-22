@@ -191,6 +191,10 @@ public sealed interface PatchOp<T> {
 }
 ```
 
+Lookups (`replace`/`remove`/`upsert` and their `PatchOp`s) go through a plain `.index(...)` whose key matches exactly one item. An `indexGraph` name is accepted, but graph keys are internal composite keys that no caller-supplied key matches, so the lookup silently comes back `NOT_FOUND` (and an upsert inserts a duplicate): give a graph-only catalog a plain `by-id` index for patching.
+
+A follower gets `NOT_LEADER` and nothing is forwarded. When the write can land on any node (an HTTP request behind a load balancer, a Kafka consumer in every pod), fall back to `refreshAndSync(name)` on `NOT_LEADER`: on a follower it publishes a `REQUEST`, and the leader runs a full reload and broadcasts it. The change still reaches every node, at the cost of one full reload; patches pay off when the leader takes the write.
+
 `upsertAndSync` resolves on the leader into the replace or insert that actually happened; there is no `UPSERT` on the wire, so followers never re-decide. A batch is one swap, one hash, one message: followers apply all of it or none.
 
 Follower handling of an incoming `PatchEvent` (keyed on content hashes; `version`s are node-local and never preconditions):
@@ -424,8 +428,8 @@ All unchecked. Package `org.waabox.andersoni`.
 | High store traffic/cost | Custom `SnapshotStore` without `describe` override downloads full snapshots every interval | Override `describe`; or raise `ReconciliationPolicy.of(...)` interval |
 | `syncState` always `UNKNOWN` | No store, `ReconciliationPolicy.disabled()`, catalog has no serializer, or first pass not run yet | Configure store + serializer |
 | `IllegalStateException` "Cannot refresh a catalog created with static data" | Catalog built with `.data(List)` | Use `.loadWith(loader)`, or `catalog(name, T.class).refresh(list)` |
-| `replaceAndSync`/`insertAndSync`/... returns `NOT_LEADER` and nothing changes | Node is a follower. Patches are not forwarded to the leader (no `REQUEST`) | Route the write to the leader (`status().leader()`), or publish a domain event the leader consumes |
-| `NOT_FOUND` from `replaceAndSync`/`removeAndSync` | Lookup key/index matched no item on the leader (wrong index, wrong key type, or the item was never inserted) | Query the leader with `search(catalog, index, key)`; use `upsertAndSync` when create-or-update is meant |
+| `replaceAndSync`/`insertAndSync`/... returns `NOT_LEADER` and nothing changes | Node is a follower. Patches are not forwarded to the leader (no `REQUEST`) | Route the write to the leader (`status().leader()`), publish a domain event the leader consumes, or call `refreshAndSync(name)` on `NOT_LEADER` (a follower publishes a `REQUEST`; the leader reloads fully) |
+| `NOT_FOUND` from `replaceAndSync`/`removeAndSync` | Lookup key/index matched no item on the leader (wrong index, wrong key type, or the item was never inserted) | Query the leader with `search(catalog, index, key)`; use `upsertAndSync` when create-or-update is meant. An `indexGraph` name never matches: patch through a plain `.index(...)` |
 | Some pods stay stale after a patch; their logs show deserialization errors on sync messages | Those pods run 1.12.2 or earlier and cannot decode `PatchEvent` | Upgrade every node before calling any patch method; until then keep call sites on `refreshAndSync` |
 | Every patch rebuilds the whole snapshot (`appliesPatchesSurgically()` false) | A registered `SnapshotBuildHook` (any lambda hook) has `supportsPatch()` = `false` | Override `supportsPatch()` to `true` on per-item hooks |
 | Patches over HTTP sync never reach peers, peers log `413` | Body > 64 KiB rejected by `HttpSyncStrategy`, below the 256 KB default `maxPatchPayloadBytes` | `maxPatchPayloadBytes(64 * 1024)` so oversized patches degrade to a full-refresh `EVENT` |

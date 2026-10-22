@@ -132,7 +132,7 @@ final Catalog<Event> catalog = Catalog.of(Event.class)
 | `void bootstrap()` | Loads from the `DataLoader` (or the static data), builds, and atomically swaps the snapshot. |
 | `void refresh()` | Re-runs the `DataLoader` and swaps. ISE `"Cannot refresh a catalog created with static data..."` if the catalog was built with `.data(...)`. |
 | `void refresh(List<T> newData)` | Rebuilds from the given list (works for both kinds of catalog). NPE if the list or an element is null. |
-| `boolean replace(String index, Object key, T newItem)` | Since 1.13.0. Looks the target up with an index lookup that must match **exactly one** item; swaps it copy-on-write (only buckets whose keys change are rebuilt). `false` when nothing matches; `AmbiguousPatchTargetException` when more than one matches; `IndexNotFoundException` for an unknown index. |
+| `boolean replace(String index, Object key, T newItem)` | Since 1.13.0. Looks the target up with an index lookup that must match **exactly one** item; swaps it copy-on-write (only buckets whose keys change are rebuilt). `false` when nothing matches; `AmbiguousPatchTargetException` when more than one matches; `IndexNotFoundException` for an unknown index. Look up through a plain `.index(...)`: an `indexGraph` name is accepted but its keys are internal, so the lookup never matches and returns `false`. |
 | `void insert(T item)` | Since 1.13.0. Adds the item under every key its indexes yield. No lookup, so it cannot notice a duplicate: inserting the same item twice yields two items. |
 | `boolean remove(String index, Object key)` | Since 1.13.0. Drops the single matching item from every index. `false` when nothing matches (idempotent); ambiguous match throws. |
 | `boolean upsert(String index, Object key, T item)` | Since 1.13.0. Replace when the lookup finds one item, insert when it finds none, in one hold of the lock. Returns `true` when it replaced, `false` when it inserted. |
@@ -195,5 +195,6 @@ public record IndexInfo(String name, int uniqueKeys, int totalEntries, long esti
 | Transforming items in a hook | Has no effect on what is stored or returned. Transform in the loader. |
 | Null search key | NPE. Null keys are never searchable, so model "missing" as a sentinel value if you need to query it. |
 | Patch lookup (`replace`/`remove`/`upsert`) on an index where the key maps to several items | `AmbiguousPatchTargetException`, nothing changes. Use a uniquely-keyed index (an id) as the lookup handle. |
+| Patch lookup through an `indexGraph` name | Never matches (graph keys are internal composite keys): `replace`/`remove` return `false`, `upsert` inserts a duplicate. A catalog queried only through a graph index needs a plain `.index("by-id")` to be patchable. |
 | `insert` used as "create or update" | Duplicates the item when it already exists. Use `upsert`, not `if (!replace) insert` (that races a concurrent refresh). |
 | Hook registered as a lambda on a catalog you patch | `supportsPatch()` stays `false`, so every patch rebuilds the whole snapshot. Implement the interface and override `supportsPatch()` for per-item hooks. |
