@@ -506,7 +506,7 @@ Andersoni fits when you have **read-heavy reference data** queried by multiple c
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-core</artifactId>
-    <version>1.12.2</version>
+    <version>1.13.0</version>
 </dependency>
 ```
 
