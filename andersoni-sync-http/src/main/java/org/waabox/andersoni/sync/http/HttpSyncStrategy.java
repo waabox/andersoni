@@ -128,6 +128,12 @@ public final class HttpSyncStrategy implements SyncStrategy {
 
   /** {@inheritDoc} */
   @Override
+  public int maxMessageBytes() {
+    return MAX_BODY_BYTES;
+  }
+
+  /** {@inheritDoc} */
+  @Override
   public void subscribe(final RefreshListener listener) {
     Objects.requireNonNull(listener, "listener cannot be null");
     listeners.add(listener);

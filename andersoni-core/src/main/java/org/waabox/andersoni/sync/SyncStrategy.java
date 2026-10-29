@@ -104,6 +104,21 @@ public interface SyncStrategy {
   }
 
   /**
+   * Returns the largest encoded message, in bytes, this transport delivers.
+   *
+   * <p>The leader publishes a patch whose encoded payload exceeds the
+   * smaller of this and the configured {@code maxPatchPayloadBytes} as a
+   * full-refresh event instead, since a message the transport refuses
+   * would leave followers silently stale. Transports with a hard body
+   * limit override this; the default imposes no limit of its own.
+   *
+   * @return the message size limit in bytes, always positive
+   */
+  default int maxMessageBytes() {
+    return Integer.MAX_VALUE;
+  }
+
+  /**
    * Starts the synchronization transport, enabling event reception.
    *
    * <p>After this method returns, the strategy is actively listening for

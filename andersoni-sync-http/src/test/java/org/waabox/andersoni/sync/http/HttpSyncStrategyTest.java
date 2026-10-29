@@ -43,6 +43,14 @@ class HttpSyncStrategyTest {
   }
 
   @Test
+  void whenAskingMaxMessageBytes_givenDefaultConfig_shouldReturnTheBodyLimit() {
+    final HttpSyncStrategy strategy = new HttpSyncStrategy(
+        HttpSyncConfig.create(19099, List.of("http://localhost:19100")));
+
+    assertEquals(64 * 1024, strategy.maxMessageBytes());
+  }
+
+  @Test
   void whenPublishing_givenPeerUrl_shouldSendHttpPost() throws Exception {
     // Arrange: two nodes, node1 publishes to node2
     final int port1 = 19081;

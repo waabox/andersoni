@@ -88,9 +88,10 @@ final class PatchCoordinator {
    * <p>Steps:
    * <ol>
    *   <li>If a {@link LeaderElectionStrategy} is configured and this node is
-   *       not the leader, the call is a no-op and returns {@code false}.</li>
+   *       not the leader, the call is a no-op and returns
+   *       {@link PatchOutcome#NOT_LEADER}.</li>
    *   <li>Replaces the item locally. If the lookup finds zero items, returns
-   *       {@code false} without publishing.</li>
+   *       {@link PatchOutcome#NOT_FOUND} without publishing.</li>
    *   <li>Saves the resulting snapshot to the configured snapshot store so
    *       followers that fall back to a full reload pick up the latest
    *       state.</li>
@@ -378,17 +379,20 @@ final class PatchCoordinator {
     final PatchEvent patch = event.get();
     final int payloadBytes = SyncMessageCodec.serialize(patch)
         .getBytes(StandardCharsets.UTF_8).length;
+    final int limit = Math.min(maxPayloadBytes,
+        syncStrategy.maxMessageBytes());
 
     try {
-      if (payloadBytes > maxPayloadBytes) {
+      if (payloadBytes > limit) {
         // Publishing it would be refused by the transport -- Kafka's
-        // default message limit is 1 MB -- and a refused publish leaves
+        // default message limit is 1 MB, HTTP peers take 64 KiB -- and a
+        // refused publish leaves
         // followers silently stale, since nothing else would tell them the
         // leader moved. A refresh event carries no payload, so it always
         // fits, and it lands them on the snapshot saved just above.
         log.warn("Patch payload for catalog '{}' is {} bytes, over the {} "
             + "byte limit; publishing a full-refresh event instead",
-            catalogName, payloadBytes, maxPayloadBytes);
+            catalogName, payloadBytes, limit);
         metrics.patchOversized(catalogName, payloadBytes);
         final Snapshot<?> snapshot = context.catalog().currentSnapshot();
         syncStrategy.publish(new RefreshEvent(catalogName, nodeId,

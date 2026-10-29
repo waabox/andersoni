@@ -810,9 +810,19 @@ public final class Andersoni {
    * {@link org.waabox.andersoni.sync.PatchEvent}. See
    * {@link PatchCoordinator#replaceAndSync} for the full contract.
    *
-   * @return {@code true} if a single item was found and replaced;
-   *         {@code false} if no item matched, this node is not the leader,
-   *         or Andersoni has been stopped
+   * @param catalogName the catalog to write to, never null
+   * @param indexName   the index to look the item up in, never null
+   * @param key         the lookup key, never null
+   * @param newItem     the replacement item, never null
+   *
+   * @return {@link PatchOutcome#APPLIED} when an item was replaced,
+   *         {@link PatchOutcome#NOT_FOUND} when the lookup matched nothing,
+   *         {@link PatchOutcome#NOT_LEADER} on a follower
+   *
+   * @throws IllegalStateException         if stopped, or the catalog has no
+   *                                       serializer
+   * @throws IllegalArgumentException      if no such catalog is registered
+   * @throws AmbiguousPatchTargetException if the lookup matched more than one
    */
   public PatchOutcome replaceAndSync(final String catalogName,
       final String indexName, final Object key, final Object newItem) {
@@ -883,8 +893,8 @@ public final class Andersoni {
    * broadcasts the removal to the cluster.
    *
    * <p>Runs only on the leader; on a follower this is a no-op returning
-   * {@link PatchOutcome#NOT_LEADER}. A lookup matching nothing also returns {@code false} and
-   * broadcasts nothing.
+   * {@link PatchOutcome#NOT_LEADER}. A lookup matching nothing returns
+   * {@link PatchOutcome#NOT_FOUND} and broadcasts nothing.
    *
    * @param catalogName the catalog to remove from, never null
    * @param indexName   the index to look the item up in, never null
@@ -1783,7 +1793,9 @@ public final class Andersoni {
      *
      * <p>Defaults to {@value #DEFAULT_MAX_PATCH_PAYLOAD_BYTES} bytes,
      * comfortably under Kafka's default. Raise it if the transport is
-     * configured for larger messages.
+     * configured for larger messages. A transport with a smaller hard limit
+     * ({@link SyncStrategy#maxMessageBytes()}, e.g. 64 KiB for HTTP) caps
+     * it further.
      *
      * @param bytes the ceiling in bytes, must be positive
      *

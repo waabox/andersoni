@@ -84,6 +84,8 @@ class AndersoniPatchDispatchTest {
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     expect(syncStrategy.supportsPatches()).andReturn(true).anyTimes();
+    expect(syncStrategy.maxMessageBytes()).andReturn(Integer.MAX_VALUE)
+        .anyTimes();
     syncStrategy.subscribe(anyObject(RefreshListener.class));
     expectLastCall().once();
     final Capture<PatchListener> listenerCapture = newCapture();

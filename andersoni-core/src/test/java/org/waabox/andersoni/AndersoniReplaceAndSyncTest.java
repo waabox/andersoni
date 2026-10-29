@@ -84,6 +84,8 @@ class AndersoniReplaceAndSyncTest {
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     expect(syncStrategy.supportsPatches()).andReturn(true).anyTimes();
+    expect(syncStrategy.maxMessageBytes()).andReturn(Integer.MAX_VALUE)
+        .anyTimes();
     syncStrategy.subscribe(anyObject(RefreshListener.class));
     expectLastCall().once();
     syncStrategy.subscribePatch(anyObject(PatchListener.class));
@@ -155,6 +157,8 @@ class AndersoniReplaceAndSyncTest {
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     expect(syncStrategy.supportsPatches()).andReturn(true).anyTimes();
+    expect(syncStrategy.maxMessageBytes()).andReturn(Integer.MAX_VALUE)
+        .anyTimes();
     syncStrategy.subscribe(anyObject(RefreshListener.class));
     expectLastCall().once();
     syncStrategy.subscribePatch(anyObject(PatchListener.class));
@@ -202,6 +206,8 @@ class AndersoniReplaceAndSyncTest {
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     expect(syncStrategy.supportsPatches()).andReturn(true).anyTimes();
+    expect(syncStrategy.maxMessageBytes()).andReturn(Integer.MAX_VALUE)
+        .anyTimes();
     syncStrategy.subscribe(anyObject(RefreshListener.class));
     expectLastCall().once();
     syncStrategy.subscribePatch(anyObject(PatchListener.class));
@@ -310,6 +316,8 @@ class AndersoniReplaceAndSyncTest {
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     expect(syncStrategy.supportsPatches()).andReturn(true).anyTimes();
+    expect(syncStrategy.maxMessageBytes()).andReturn(Integer.MAX_VALUE)
+        .anyTimes();
     syncStrategy.subscribe(anyObject(RefreshListener.class));
     expectLastCall().once();
     syncStrategy.subscribePatch(anyObject(PatchListener.class));
@@ -370,6 +378,8 @@ class AndersoniReplaceAndSyncTest {
 
     final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
     expect(syncStrategy.supportsPatches()).andReturn(true).anyTimes();
+    expect(syncStrategy.maxMessageBytes()).andReturn(Integer.MAX_VALUE)
+        .anyTimes();
     syncStrategy.subscribe(anyObject(RefreshListener.class));
     expectLastCall().once();
     syncStrategy.subscribePatch(anyObject(PatchListener.class));
@@ -408,6 +418,56 @@ class AndersoniReplaceAndSyncTest {
         new Event("a", new Sport("F"), new Venue("V2"))));
 
     assertEquals("events", patchCapture.getValue().catalogName());
+
+    andersoni.stop();
+    verify(syncStrategy, leader);
+  }
+
+  @Test
+  void whenReplaceAndSync_givenPayloadOverTheTransportLimit_shouldPublishRefreshInstead() {
+    final Event a = new Event("a", new Sport("F"), new Venue("V1"));
+
+    final SyncStrategy syncStrategy = createMock(SyncStrategy.class);
+    expect(syncStrategy.supportsPatches()).andReturn(true).anyTimes();
+    expect(syncStrategy.maxMessageBytes()).andReturn(32).anyTimes();
+    syncStrategy.subscribe(anyObject(RefreshListener.class));
+    expectLastCall().once();
+    syncStrategy.subscribePatch(anyObject(PatchListener.class));
+    expectLastCall().once();
+    syncStrategy.start();
+    expectLastCall().once();
+    // The configured ceiling allows the patch, the transport does not.
+    final Capture<RefreshEvent> refreshCapture = newCapture();
+    syncStrategy.publish(capture(refreshCapture));
+    expectLastCall().once();
+    syncStrategy.stop();
+    expectLastCall().once();
+
+    final LeaderElectionStrategy leader = createMock(
+        LeaderElectionStrategy.class);
+    leader.start();
+    expectLastCall().anyTimes();
+    leader.onLeaderChange(anyObject(LeaderChangeListener.class));
+    expectLastCall().once();
+    expect(leader.isLeader()).andReturn(true).anyTimes();
+    leader.stop();
+    expectLastCall().anyTimes();
+
+    replay(syncStrategy, leader);
+
+    final Andersoni andersoni = Andersoni.builder()
+        .nodeId("leader-1")
+        .syncStrategy(syncStrategy)
+        .leaderElection(leader)
+        .build();
+    andersoni.register(eventsCatalog(List.of(a)));
+    andersoni.start();
+
+    assertEquals(PatchOutcome.APPLIED,
+        andersoni.replaceAndSync("events", "by-id", "a",
+        new Event("a", new Sport("F"), new Venue("V2"))));
+
+    assertEquals("events", refreshCapture.getValue().catalogName());
 
     andersoni.stop();
     verify(syncStrategy, leader);

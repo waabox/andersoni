@@ -113,6 +113,12 @@ public final class FaultInjectingSyncStrategy implements SyncStrategy {
 
   /** {@inheritDoc} */
   @Override
+  public int maxMessageBytes() {
+    return delegate.maxMessageBytes();
+  }
+
+  /** {@inheritDoc} */
+  @Override
   public void start() {
     delegate.start();
   }
