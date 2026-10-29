@@ -1,4 +1,4 @@
-# Andersoni engine and operations (core, 1.12.2)
+# Andersoni engine and operations (core, 1.13.0)
 
 Artifact `io.github.waabox:andersoni-core`. Engine class `org.waabox.andersoni.Andersoni`.
 Concrete sync / leader / snapshot modules are in `cluster-modules.md`; this file covers the core API they plug into.
@@ -29,6 +29,7 @@ Concrete sync / leader / snapshot modules are in `cluster-modules.md`; this file
 | `retryPolicy(RetryPolicy)` | bootstrap retry | `RetryPolicy.defaultPolicy()` (3 attempts, 2s) |
 | `metrics(AndersoniMetrics)` | `org.waabox.andersoni.metrics.AndersoniMetrics` | `new NoopAndersoniMetrics()` |
 | `reconciliation(ReconciliationPolicy)` | anti-entropy loop | `ReconciliationPolicy.defaultPolicy()` (on, 30s; active only with a store) |
+| `maxPatchPayloadBytes(int)` | since 1.13.0; encoded-size ceiling above which a patch is published as a full-refresh `EVENT` instead (capped further by the transport's `maxMessageBytes()`); `<= 0` -> `IllegalArgumentException` | `262144` (256 KB) |
 | `build()` | returns `Andersoni` | |
 
 There are no executor/thread-pool setters. Threads are internal (see section 3).
@@ -63,6 +64,12 @@ Set an explicit, stable, unique `nodeId` per node: self-originated `EVENT`s are 
 | `GraphQueryBuilder<?> graphQuery(String)` / `<T> GraphQueryBuilder<T> graphQuery(String, Class<T>)` | |
 | `void refresh(String)` | local reload, no sync |
 | `void refreshAndSync(String)` | cluster-aware refresh |
+| `PatchOutcome replaceAndSync(String catalog, String index, Object key, Object newItem)` | since 1.13.0; leader-only single-item replace + broadcast (section 4, Patches) |
+| `PatchOutcome insertAndSync(String catalog, Object newItem)` | since 1.13.0; leader-only insert + broadcast |
+| `PatchOutcome removeAndSync(String catalog, String index, Object key)` | since 1.13.0; leader-only remove + broadcast |
+| `PatchOutcome upsertAndSync(String catalog, String index, Object key, Object newItem)` | since 1.13.0; leader-only replace-or-insert + broadcast |
+| `<T> PatchOutcome applyAndSync(String catalog, List<PatchOp<T>> ops)` | since 1.13.0; leader-only atomic batch + one broadcast |
+| `void insert(String catalog, Object item)` / `boolean remove(String catalog, String index, Object key)` / `boolean replace(String catalog, String index, Object key, Object newItem)` | since 1.13.0; local-only patches, no save, no publish; `CatalogNotAvailableException` on a FAILED catalog. There is no local `upsert` on `Andersoni` (use `catalog(name, T.class).upsert(...)`) |
 | `void reconcile()` | async on-demand reconciliation pass |
 | `AndersoniStatus status()` | never throws for an unhealthy catalog |
 | `CatalogInfo info(String)` | stats per catalog |
@@ -163,6 +170,48 @@ Incoming message handling (the single listener Andersoni subscribes):
 - Rolling upgrade: nodes older than 1.10 decode `REQUEST` as an `EVENT` with empty hash (one spurious refresh, no loop).
 - DB polling sync drops `REQUEST`s: follower `refreshAndSync` is a no-op there.
 
+### Patches (since 1.13.0)
+
+A patch changes one item (or a batch) without re-running the `DataLoader`. Local, uncoordinated patches live on `Catalog` (`catalog-dsl.md`, Lifecycle) and on `Andersoni` (`insert`/`remove`/`replace`); the cluster-coordinated ones are the `...AndSync` methods.
+
+Leader path of every `...AndSync` call (synchronous on the calling thread):
+1. Not leader -> return `PatchOutcome.NOT_LEADER` without touching anything and **without forwarding to the leader** (unlike `refreshAndSync`, no `REQUEST` is published). Stopped -> `IllegalStateException`; unknown catalog -> `IllegalArgumentException`; FAILED catalog -> `CatalogNotAvailableException`; catalog without `.serializer(...)` -> `IllegalStateException("... has no SnapshotSerializer; cross-node patches require one")`.
+2. Apply on the local catalog under its refresh lock (`AmbiguousPatchTargetException` / `PatchTargetNotFoundException` propagate; a lookup miss on replace/remove returns `NOT_FOUND`, nothing is saved or published).
+3. Save the full snapshot to the `SnapshotStore` (if configured) and record its hash as applied. A save failure propagates to the caller like `refreshAndSync`; the change stays live locally and the next reconciliation pass re-saves and re-publishes it.
+4. Publish: no sync strategy or `!syncStrategy.supportsPatches()` -> skip (followers converge through `refreshEvery`/reconciliation). Otherwise encode a `PatchEvent`; if its JSON is larger than `min(maxPatchPayloadBytes, syncStrategy.maxMessageBytes())` publish a plain full-refresh `EVENT` instead (`patchOversized` metric, followers reload from the store just saved). Publish failures are logged + `syncPublishFailed`, never thrown. `syncPublished` on success.
+
+```java
+public enum PatchOutcome { APPLIED, NOT_FOUND, NOT_LEADER; public boolean applied(); }
+// NOT_FOUND: leader, lookup matched nothing (never from insert/upsert). NOT_LEADER: follower, nothing done.
+public sealed interface PatchOp<T> {
+  record Replace<T>(String indexName, Object key, T item) implements PatchOp<T> {}
+  record Insert<T>(T item) implements PatchOp<T> {}
+  record Remove<T>(String indexName, Object key) implements PatchOp<T> {}
+  record Upsert<T>(String indexName, Object key, T item) implements PatchOp<T> {}
+}
+```
+
+Lookups (`replace`/`remove`/`upsert` and their `PatchOp`s) go through a plain `.index(...)` whose key matches exactly one item. An `indexGraph` name is accepted, but graph keys are internal composite keys that no caller-supplied key matches, so the lookup silently comes back `NOT_FOUND` (and an upsert inserts a duplicate): give a graph-only catalog a plain `by-id` index for patching.
+
+A follower gets `NOT_LEADER` and nothing is forwarded. When the write can land on any node (an HTTP request behind a load balancer, a Kafka consumer in every pod), fall back to `refreshAndSync(name)` on `NOT_LEADER`: on a follower it publishes a `REQUEST`, and the leader runs a full reload and broadcasts it. The change still reaches every node, at the cost of one full reload; patches pay off when the leader takes the write.
+
+`upsertAndSync` resolves on the leader into the replace or insert that actually happened; there is no `UPSERT` on the wire, so followers never re-decide. A batch is one swap, one hash, one message: followers apply all of it or none.
+
+Follower handling of an incoming `PatchEvent` (keyed on content hashes; `version`s are node-local and never preconditions):
+
+| Condition | Action |
+|---|---|
+| `sourceNodeId == nodeId` or unknown catalog | ignore |
+| `event.toHash == local hash` | discard, `patchDiscarded` (already applied) |
+| `event.fromHash == local hash` | `syncReceived`; apply surgically on a per-catalog ordered queue (arrival order, never coalesced); on success the applied store hash is set to `toHash`, so reconciliation sees no drift; `patchApplied` |
+| otherwise, or the patch queue cannot accept the event | `syncReceived`, `patchFellBack`; full reload through the coalescing dispatcher (store first, `DataLoader` last resort) |
+
+A follower without a serializer on that catalog cannot apply a patch and falls back to a reload as well.
+
+Wire format and transports: `PatchEvent(catalogName, sourceNodeId, fromVersion, toVersion, fromHash, toHash, List<Op> operations, Instant timestamp)` implements the sealed `SyncMessage` together with `RefreshEvent`; `SyncMessageCodec.serialize/deserialize` writes a JSON envelope with a `"type"` discriminator (a payload without `type` decodes as a `RefreshEvent`, so pre-1.13.0 refresh messages still parse). Kafka (`KafkaSyncStrategy`, `SpringKafkaSyncStrategy`) and HTTP (`HttpSyncStrategy`) carry patches (`supportsPatches()` = `true`); `DbPollingSyncStrategy` does not: with it, or with no sync strategy, a leader patch publishes nothing (no `EVENT` either), and followers converge through reconciliation from the store or the next full refresh. The effective ceiling is the smaller of `maxPatchPayloadBytes` and the transport's `SyncStrategy.maxMessageBytes()` (default `Integer.MAX_VALUE`; `HttpSyncStrategy` returns 64 KiB, its body limit), so over HTTP a patch above 64 KiB goes out as a full-refresh `EVENT` without any configuration. A custom `SyncStrategy` with a hard size limit should override `maxMessageBytes()`.
+
+**Rolling upgrade.** A node on 1.12.2 or earlier cannot decode a `PatchEvent` (its codec requires `version`/`hash`): Kafka logs an error per record and keeps polling, HTTP answers `500`, and the node keeps serving stale data with no other symptom. Installing 1.13.0 changes nothing until a patch method is called, so: deploy everywhere with call sites still on `refreshAndSync`, confirm the fleet, then switch call sites.
+
 ### Leader promotion
 On `onLeaderChange(true)`, Andersoni dispatches an authoritative `refreshAndSync` for every catalog (with or without a store). Skipped if demoted again before it runs. Success removes the catalog from the FAILED set; failure -> logged + `refreshFailed`. A promotion that happened during `start()` is not replayed (the first reconciliation pass covers it).
 
@@ -251,6 +300,10 @@ for (final AndersoniStatus.CatalogStatus c : status.catalogs()) {
 | `void driftDetected(String catalogName)` | default | once per drifted catalog per pass |
 | `void driftRepaired(String catalogName)` | default | repair succeeded |
 | `void reconcileFailed(String catalogName, Throwable cause)` | default | describe or repair failed |
+| `void patchApplied(String catalogName)` | default | since 1.13.0; follower applied a `PatchEvent` surgically |
+| `void patchDiscarded(String catalogName)` | default | since 1.13.0; incoming patch already applied (`toHash` matched) |
+| `void patchFellBack(String catalogName)` | default | since 1.13.0; patch precondition mismatch or saturated queue -> full reload |
+| `void patchOversized(String catalogName, int payloadBytes)` | default | since 1.13.0; leader published a full-refresh `EVENT` because the patch exceeded `maxPatchPayloadBytes` or the transport's `maxMessageBytes()` |
 | `void start(Collection<Catalog<?>> catalogs, String nodeId)` | default | end of `start()`; catalogs can be read lock-free for gauges |
 | `void stop()` | default | end of `stop()` |
 
@@ -279,8 +332,18 @@ public interface SyncStrategy {
   void subscribe(RefreshListener listener);  // called exactly once, before start()
   void start();
   void stop();
+  // since 1.13.0, all defaulted: supportsPatches() -> false; publishPatch throws UnsupportedOperationException;
+  // subscribePatch is a no-op; maxMessageBytes() -> Integer.MAX_VALUE. Andersoni calls subscribePatch (before start())
+  // and publishPatch only when supportsPatches() is true, and only for patches within maxMessageBytes().
+  default boolean supportsPatches();
+  default void publishPatch(PatchEvent event);
+  default void subscribePatch(PatchListener listener);
+  default int maxMessageBytes();                // transport's hard message limit in bytes (HttpSyncStrategy: 64 KiB)
 }
 @FunctionalInterface public interface RefreshListener { void onRefresh(RefreshEvent event); }
+@FunctionalInterface public interface PatchListener { void onPatch(PatchEvent event); }   // since 1.13.0
+public sealed interface SyncMessage permits RefreshEvent, PatchEvent { }                 // since 1.13.0
+// SyncMessageCodec.serialize(SyncMessage) / deserialize(String): JSON with a "type" discriminator; RefreshEventCodec remains for refresh-only transports
 
 // org.waabox.andersoni.leader
 public interface LeaderElectionStrategy {
@@ -308,7 +371,7 @@ public record SnapshotMetadata(String catalogName, String hash, long version, In
 ```
 
 Implementation rules:
-- `SyncStrategy`: duplicates and redelivery are safe (self and same-hash events are ignored). Listener runs on your transport thread; it returns fast. Serialize with `RefreshEventCodec`. A transport that cannot carry commands must drop `isRequest()` events in `publish`.
+- `SyncStrategy`: duplicates and redelivery are safe (self and same-hash events are ignored). Listener runs on your transport thread; it returns fast. Serialize with `SyncMessageCodec` (or `RefreshEventCodec` for a refresh-only transport). A transport that cannot carry commands must drop `isRequest()` events in `publish`. To carry patches, override `supportsPatches()` to `true`, override `maxMessageBytes()` if the transport refuses messages above some size, keep per-catalog ordering between a `PatchEvent` and the events around it, and deliver both message kinds from one decoder (`SyncMessageCodec.deserialize` + `instanceof`).
 - `LeaderElectionStrategy`: at most one leader; notify listeners only on real transitions; `onLeaderChange` may be called after `start()` (Andersoni registers its listener after `start()`).
 - `SnapshotStore`: **override `describe`** with a metadata-only read (object headers, file header, a DB row without the blob). It runs once per catalog per node per reconciliation interval. Return the exact `hash` that was saved (Andersoni writes SHA-256 hex of the stored bytes). I/O failures: throw a `RuntimeException`; do not return empty.
 - `SerializedSnapshot` defensively copies `data` on construction and on `data()`; equality is content-based.
@@ -344,9 +407,11 @@ All unchecked. Package `org.waabox.andersoni`.
 | `IndexNotFoundException` | `RuntimeException` | `QueryStep` / `CompoundQuery` operation on an unknown index name. Plain `search(...)` on an unknown index returns an empty list instead |
 | `UnsupportedIndexOperationException` | `RuntimeException` | range op on a non-sorted index, or text pattern op on a non-`String` key |
 | `IndexKeyLimitExceededException` | `AndersoniException` | graph index produced more keys per item than `maxKeysPerItem` (during snapshot build) |
+| `AmbiguousPatchTargetException` | `RuntimeException` | since 1.13.0; a patch lookup (`replace`/`remove`/`upsert`, local or `...AndSync`) matched more than one item. Nothing is changed |
+| `PatchTargetNotFoundException` | `RuntimeException` | since 1.13.0; a `PatchOp.Replace` inside `apply`/`applyAndSync` matched nothing. The whole batch is abandoned |
 | `AndersoniException` | `RuntimeException` | base class for infrastructure/config failures |
 | `IllegalArgumentException` | JDK | unknown catalog name; duplicate `register`; invalid policy values; empty `nodeId` |
-| `IllegalStateException` | JDK | `register` after `start`; second `start`; `refresh`/`refreshAndSync`/`reconcile` after `stop`; `refresh` on a `.data(List)` catalog |
+| `IllegalStateException` | JDK | `register` after `start`; second `start`; `refresh`/`refreshAndSync`/`reconcile`/patch methods after `stop`; `refresh` on a `.data(List)` catalog; `...AndSync` patch on a catalog without a serializer |
 
 ## 10. Troubleshooting
 
@@ -365,4 +430,9 @@ All unchecked. Package `org.waabox.andersoni`.
 | High store traffic/cost | Custom `SnapshotStore` without `describe` override downloads full snapshots every interval | Override `describe`; or raise `ReconciliationPolicy.of(...)` interval |
 | `syncState` always `UNKNOWN` | No store, `ReconciliationPolicy.disabled()`, catalog has no serializer, or first pass not run yet | Configure store + serializer |
 | `IllegalStateException` "Cannot refresh a catalog created with static data" | Catalog built with `.data(List)` | Use `.loadWith(loader)`, or `catalog(name, T.class).refresh(list)` |
-| `refreshAndSync` slow/blocking with broker down | Transport `publish` blocks (e.g. Kafka producer metadata wait) | Raw `KafkaSyncStrategy` does not expose producer timeouts in 1.12.2 (Kafka default `max.block.ms` = 60s applies). With Spring Kafka sync, define your own `ProducerFactory<String, String>` bean named `andersoniProducerFactory` (the auto-config backs off by name) and set `max.block.ms` / `delivery.timeout.ms` there. Call `refreshAndSync` off the request thread. |
+| `replaceAndSync`/`insertAndSync`/... returns `NOT_LEADER` and nothing changes | Node is a follower. Patches are not forwarded to the leader (no `REQUEST`) | Route the write to the leader (`status().leader()`), publish a domain event the leader consumes, or call `refreshAndSync(name)` on `NOT_LEADER` (a follower publishes a `REQUEST`; the leader reloads fully) |
+| `NOT_FOUND` from `replaceAndSync`/`removeAndSync` | Lookup key/index matched no item on the leader (wrong index, wrong key type, or the item was never inserted) | Query the leader with `search(catalog, index, key)`; use `upsertAndSync` when create-or-update is meant. An `indexGraph` name never matches: patch through a plain `.index(...)` |
+| Some pods stay stale after a patch; their logs show deserialization errors on sync messages | Those pods run 1.12.2 or earlier and cannot decode `PatchEvent` | Upgrade every node before calling any patch method; until then keep call sites on `refreshAndSync` |
+| Every patch rebuilds the whole snapshot (`appliesPatchesSurgically()` false) | A registered `SnapshotBuildHook` (any lambda hook) has `supportsPatch()` = `false` | Override `supportsPatch()` to `true` on per-item hooks |
+| Patches through a custom `SyncStrategy` never reach peers; the transport refuses large messages | The strategy does not override `maxMessageBytes()`, so the leader only caps at `maxPatchPayloadBytes` (256 KB) | Override `maxMessageBytes()` with the transport's limit, or lower `maxPatchPayloadBytes`, so oversized patches degrade to a full-refresh `EVENT` |
+| `refreshAndSync` slow/blocking with broker down | Transport `publish` blocks (e.g. Kafka producer metadata wait) | Raw `KafkaSyncStrategy` does not expose producer timeouts in 1.13.0 (Kafka default `max.block.ms` = 60s applies). With Spring Kafka sync, define your own `ProducerFactory<String, String>` bean named `andersoniProducerFactory` (the auto-config backs off by name) and set `max.block.ms` / `delivery.timeout.ms` there. Call `refreshAndSync` off the request thread. |

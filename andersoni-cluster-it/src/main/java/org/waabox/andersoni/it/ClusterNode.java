@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.sql.Connection;
@@ -14,17 +15,23 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.waabox.andersoni.AmbiguousPatchTargetException;
 import org.waabox.andersoni.Andersoni;
 import org.waabox.andersoni.AndersoniStatus;
 import org.waabox.andersoni.Catalog;
 import org.waabox.andersoni.DataLoader;
+import org.waabox.andersoni.PatchOp;
+import org.waabox.andersoni.PatchOutcome;
 import org.waabox.andersoni.ReconciliationPolicy;
 import org.waabox.andersoni.RetryPolicy;
 import org.waabox.andersoni.Snapshot;
@@ -60,8 +67,24 @@ import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
  *   <li>{@code GET  /health} — liveness, always {@code 200}.</li>
  *   <li>{@code GET  /state}  — JSON: {@code nodeId, leader, version, hash,
  *       itemCount, syncState, available, droppedEvents, storeHash}.</li>
+ *   <li>{@code GET  /items}  — JSON array of the items currently held, so a
+ *       test can assert on content and not only on the hash.</li>
  *   <li>{@code POST /refresh} — calls {@link Andersoni#refreshAndSync};
  *       responds {@code 500} with the exception message on failure.</li>
+ *   <li>{@code POST /local-refresh} — calls {@link Andersoni#refresh}, which
+ *       reloads from the DataLoader <em>without</em> broadcasting. Used to
+ *       drive one node out of sync with the rest on purpose.</li>
+ *   <li>{@code POST /replace?key=&id=&name=} — calls
+ *       {@link Andersoni#replaceAndSync} against the {@code by-name} index.
+ *       Answers {@code {"applied":bool,"outcome":name}}, or {@code 409} when
+ *       the lookup is ambiguous.</li>
+ *   <li>{@code POST /insert?id=&name=} — calls
+ *       {@link Andersoni#insertAndSync}.</li>
+ *   <li>{@code POST /remove?key=} — calls {@link Andersoni#removeAndSync}
+ *       against the {@code by-name} index.</li>
+ *   <li>{@code POST /batch?insertId=&insertName=&removeKey=} — calls
+ *       {@link Andersoni#applyAndSync} with one insert and one removal, so
+ *       a test can observe a multi-operation patch landing as a unit.</li>
  *   <li>{@code POST /reconcile} — calls {@link Andersoni#reconcile}.</li>
  *   <li>{@code POST /leader?value=true|false} — flips this node's
  *       leadership.</li>
@@ -69,7 +92,7 @@ import org.waabox.andersoni.sync.kafka.KafkaSyncStrategy;
  *       store fail (or stop failing) saves; {@code 400} if no store is
  *       configured.</li>
  *   <li>{@code POST /fault/sync?dropIncoming=true|false} — makes the sync
- *       strategy drop (or stop dropping) incoming refresh events.</li>
+ *       strategy drop (or stop dropping) incoming sync events.</li>
  * </ul>
  *
  * <p>Configuration is read from environment variables: {@code NODE_ID},
@@ -258,6 +281,15 @@ public final class ClusterNode {
       respond(exchange, 200, json.toString());
     });
 
+    server.createContext("/items", exchange -> {
+      final JSONArray items = new JSONArray();
+      for (final Item item : catalog.currentSnapshot().data()) {
+        items.put(new JSONObject().put("id", item.id())
+            .put("name", item.name()));
+      }
+      respond(exchange, 200, items.toString());
+    });
+
     server.createContext("/refresh", exchange -> {
       if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
         respond(exchange, 405, "{\"error\":\"POST only\"}");
@@ -271,6 +303,110 @@ public final class ClusterNode {
         return;
       }
       respond(exchange, 200, "{\"status\":\"ok\"}");
+    });
+
+    server.createContext("/insert", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final Map<String, String> params =
+          queryParams(exchange.getRequestURI().getRawQuery());
+      final String id = params.get("id");
+      final String name = params.get("name");
+      if (id == null || name == null) {
+        respond(exchange, 400, "{\"error\":\"id and name are required\"}");
+        return;
+      }
+      final PatchOutcome outcome = andersoni.insertAndSync(CATALOG,
+          new Item(Integer.parseInt(id), name));
+      respond(exchange, 200, new JSONObject()
+          .put("applied", outcome.applied())
+          .put("outcome", outcome.name()).toString());
+    });
+
+    server.createContext("/remove", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final Map<String, String> params =
+          queryParams(exchange.getRequestURI().getRawQuery());
+      final String key = params.get("key");
+      if (key == null) {
+        respond(exchange, 400, "{\"error\":\"key is required\"}");
+        return;
+      }
+      try {
+        final PatchOutcome outcome =
+            andersoni.removeAndSync(CATALOG, "by-name", key);
+        respond(exchange, 200, new JSONObject()
+            .put("applied", outcome.applied())
+            .put("outcome", outcome.name()).toString());
+      } catch (final AmbiguousPatchTargetException e) {
+        respond(exchange, 409,
+            new JSONObject().put("error", e.getMessage()).toString());
+      }
+    });
+
+    server.createContext("/batch", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final Map<String, String> params =
+          queryParams(exchange.getRequestURI().getRawQuery());
+      final String insertId = params.get("insertId");
+      final String insertName = params.get("insertName");
+      final String removeKey = params.get("removeKey");
+      if (insertId == null || insertName == null || removeKey == null) {
+        respond(exchange, 400, "{\"error\":\"insertId, insertName and "
+            + "removeKey are required\"}");
+        return;
+      }
+      final PatchOutcome outcome = andersoni.applyAndSync(CATALOG, List.of(
+          new PatchOp.Insert<>(
+              new Item(Integer.parseInt(insertId), insertName)),
+          new PatchOp.Remove<>("by-name", removeKey)));
+      respond(exchange, 200, new JSONObject()
+          .put("applied", outcome.applied())
+          .put("outcome", outcome.name()).toString());
+    });
+
+    server.createContext("/local-refresh", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      andersoni.refresh(CATALOG);
+      respond(exchange, 200, "{\"status\":\"ok\"}");
+    });
+
+    server.createContext("/replace", exchange -> {
+      if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        respond(exchange, 405, "{\"error\":\"POST only\"}");
+        return;
+      }
+      final Map<String, String> params =
+          queryParams(exchange.getRequestURI().getRawQuery());
+      final String key = params.get("key");
+      final String id = params.get("id");
+      final String name = params.get("name");
+      if (key == null || id == null || name == null) {
+        respond(exchange, 400,
+            "{\"error\":\"key, id and name are required\"}");
+        return;
+      }
+      try {
+        final PatchOutcome outcome = andersoni.replaceAndSync(CATALOG,
+            "by-name", key, new Item(Integer.parseInt(id), name));
+        respond(exchange, 200, new JSONObject()
+            .put("applied", outcome.applied())
+            .put("outcome", outcome.name()).toString());
+      } catch (final AmbiguousPatchTargetException e) {
+        respond(exchange, 409,
+            new JSONObject().put("error", e.getMessage()).toString());
+      }
     });
 
     server.createContext("/reconcile", exchange -> {
@@ -360,6 +496,28 @@ public final class ClusterNode {
     try (OutputStream os = exchange.getResponseBody()) {
       os.write(bytes);
     }
+  }
+
+  /**
+   * Parses a raw query string into decoded name/value pairs.
+   *
+   * @param rawQuery the raw query string, may be null.
+   * @return the decoded parameters, never null.
+   */
+  private static Map<String, String> queryParams(final String rawQuery) {
+    final Map<String, String> params = new HashMap<>();
+    if (rawQuery == null || rawQuery.isBlank()) {
+      return params;
+    }
+    for (final String pair : rawQuery.split("&")) {
+      final int eq = pair.indexOf('=');
+      if (eq > 0) {
+        params.put(
+            URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8),
+            URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8));
+      }
+    }
+    return params;
   }
 
   /**

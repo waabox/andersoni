@@ -1,7 +1,7 @@
-# Andersoni cluster modules (1.12.2)
+# Andersoni cluster modules (1.13.0)
 
 Pluggable modules for multi-node sync, leader election, snapshot persistence, serialization and metrics.
-All artifacts: groupId `io.github.waabox`, version `1.12.2`. Every module depends on `andersoni-core` transitively.
+All artifacts: groupId `io.github.waabox`, version `1.13.0`. Every module depends on `andersoni-core` transitively.
 
 ## Contents
 
@@ -30,6 +30,7 @@ All artifacts: groupId `io.github.waabox`, version `1.12.2`. Every module depend
 | `metrics(AndersoniMetrics)` | `org.waabox.andersoni.metrics` | `NoopAndersoniMetrics` |
 | `retryPolicy(RetryPolicy)` | `org.waabox.andersoni` | `RetryPolicy.defaultPolicy()` |
 | `reconciliation(ReconciliationPolicy)` | `org.waabox.andersoni` | `ReconciliationPolicy.defaultPolicy()` (30s) |
+| `maxPatchPayloadBytes(int)` (1.13.0) | `org.waabox.andersoni` | 256 KB; larger patches are published as a full-refresh `EVENT` |
 
 Lifecycle facts (verified in `Andersoni`):
 - `start()` order: `leaderElection.start()` -> bootstrap catalogs -> `syncStrategy.subscribe(...)` + `syncStrategy.start()` -> periodic refreshes -> reconciler -> `metrics.start(catalogs, nodeId)`.
@@ -38,16 +39,17 @@ Lifecycle facts (verified in `Andersoni`):
 - The reconciler runs only when a store is configured and the policy is enabled (`ReconciliationPolicy.disabled()` turns it off).
 - Incoming sync events are ignored when they come from this node (`sourceNodeId == nodeId`) or when their hash equals the local snapshot hash, so duplicates and self-delivery are harmless. `nodeId` must be unique per node.
 - `REQUEST` events (published by `refreshAndSync` on a follower) are acted on only by the leader; followers ignore them.
+- `PatchEvent`s (1.13.0, published by the leader's `replaceAndSync`/`insertAndSync`/`removeAndSync`/`upsertAndSync`/`applyAndSync`) are delivered only by strategies whose `supportsPatches()` is `true` (Kafka, Spring Kafka, HTTP). A follower applies one surgically when the event's `fromHash` equals its local hash, discards it when `toHash` already matches, and reloads fully otherwise. Details: `engine-and-operations.md`, section 4.
 
 ## Choosing a sync strategy
 
-| Strategy | Propagation latency | Infra needed | Carries `REQUEST` (follower `refreshAndSync`) | Ordering / delivery | Missed events |
-|---|---|---|---|---|---|
-| none | - | none | no (follower `refreshAndSync` is a logged no-op) | - | - |
-| `KafkaSyncStrategy` | ms (async send) | Kafka topic | yes | per catalog ordered (record key = catalog name); broadcast, one consumer group per node | `auto.offset.reset=latest`; stable `nodeId` group resumes from committed offset, random group loses them; reconciliation repairs |
-| `SpringKafkaSyncStrategy` | ms | Kafka + Spring Kafka | yes | same as Kafka | same as Kafka |
-| `HttpSyncStrategy` | ms (async POST per peer) | open port on every node, static peer list | yes, only if the leader is in the follower's `peerUrls` | fire-and-forget, no retry, no ordering | lost; reconciliation repairs |
-| `DbPollingSyncStrategy` | up to `pollInterval` (default 5s) | JDBC `DataSource`, one table | **no** (requests are dropped; follower `refreshAndSync` is a no-op) | last-write-wins per catalog row; intermediate states skipped | self-correcting: next poll sees current row |
+| Strategy | Propagation latency | Infra needed | Carries `REQUEST` (follower `refreshAndSync`) | Carries patches (1.13.0) | Ordering / delivery | Missed events |
+|---|---|---|---|---|---|---|
+| none | - | none | no (follower `refreshAndSync` is a logged no-op) | no (leader patches apply locally and are saved to the store; nothing is broadcast) | - | - |
+| `KafkaSyncStrategy` | ms (async send) | Kafka topic | yes | yes | per catalog ordered (record key = catalog name); broadcast, one consumer group per node | `auto.offset.reset=latest`; stable `nodeId` group resumes from committed offset, random group loses them; reconciliation repairs |
+| `SpringKafkaSyncStrategy` | ms | Kafka + Spring Kafka | yes | yes | same as Kafka | same as Kafka |
+| `HttpSyncStrategy` | ms (async POST per peer) | open port on every node, static peer list | yes, only if the leader is in the follower's `peerUrls` | yes, bodies up to 64 KiB (larger patches go out as a full refresh) | fire-and-forget, no retry, no ordering | lost; reconciliation repairs |
+| `DbPollingSyncStrategy` | up to `pollInterval` (default 5s) | JDBC `DataSource`, one table | **no** (requests are dropped; follower `refreshAndSync` is a no-op) | **no** (`supportsPatches()` false; a leader patch writes no row, followers converge via reconciliation or the next full refresh) | last-write-wins per catalog row; intermediate states skipped | self-correcting: next poll sees current row |
 
 Rules of thumb: Kafka already in the stack -> Kafka. Few static nodes, no broker -> HTTP (on a private network). Only a shared DB, tolerate seconds of lag and no follower-triggered refresh -> DB polling. Single node -> none.
 
@@ -57,7 +59,7 @@ Rules of thumb: Kafka already in the stack -> Kafka. Few static nodes, no broker
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-sync-kafka</artifactId>
-  <version>1.12.2</version>
+  <version>1.13.0</version>
 </dependency>
 ```
 Runtime: brings `org.apache.kafka:kafka-clients:3.9.0` (compile scope). No Spring.
@@ -74,7 +76,7 @@ Runtime: brings `org.apache.kafka:kafka-clients:3.9.0` (compile scope). No Sprin
 
 Factories: `KafkaSyncConfig.create(bootstrapServers)`, `KafkaSyncConfig.create(bootstrapServers, topic, consumerGroupPrefix)`, `KafkaSyncConfig.builder()`.
 
-Behavior: producer key = catalog name, value = JSON `RefreshEvent` (`catalogName`, `sourceNodeId`, `version`, `hash`, `timestamp`, `kind`). Consumer: `auto.offset.reset=latest`, auto commit on, daemon thread `andersoni-kafka-sync-poll`, poll errors back off 1s and keep polling. `publish()` before `start()` throws `IllegalStateException`; send failures are logged asynchronously (not thrown).
+Behavior: producer key = catalog name, value = JSON from `SyncMessageCodec` (1.13.0): a `RefreshEvent` (`catalogName`, `sourceNodeId`, `version`, `hash`, `timestamp`, `kind`) or a `PatchEvent` (`fromHash`, `toHash`, `operations`, ...), discriminated by a `type` field; messages without `type` decode as refresh events. Nodes on 1.12.2 or earlier cannot decode a `PatchEvent` (error logged per record, polling continues, node stays stale). Consumer: `auto.offset.reset=latest`, auto commit on, daemon thread `andersoni-kafka-sync-poll`, poll errors back off 1s and keep polling. `publish()` before `start()` throws `IllegalStateException`; send failures are logged asynchronously (not thrown).
 
 ```java
 import org.waabox.andersoni.Andersoni;
@@ -103,7 +105,7 @@ Infra: create the topic (or rely on broker auto-create). Any partition count wor
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-spring-sync-kafka</artifactId>
-  <version>1.12.2</version>
+  <version>1.13.0</version>
 </dependency>
 ```
 Runtime: `org.springframework.kafka:spring-kafka:3.3.2`; `spring-boot-autoconfigure` is optional (the Boot app provides it).
@@ -115,7 +117,7 @@ Summary only (details in `spring-boot.md`): `SpringKafkaSyncAutoConfiguration` a
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-sync-http</artifactId>
-  <version>1.12.2</version>
+  <version>1.13.0</version>
 </dependency>
 ```
 Runtime: none beyond the JDK (`com.sun.net.httpserver.HttpServer` + `java.net.http.HttpClient`).
@@ -130,7 +132,7 @@ Runtime: none beyond the JDK (`com.sun.net.httpserver.HttpServer` + `java.net.ht
 Behavior:
 - Peer discovery: **none**. `peerUrls` is a static list fixed at construction. Target URL = `peerUrl + path`, so give base URLs without trailing slash, e.g. `"http://node-b:8081"`.
 - List the other nodes (including self is harmless: self events are ignored). For `REQUEST` propagation, the leader must be reachable in every follower's list, so use a full mesh.
-- Exposes `POST <path>` on `0.0.0.0:<port>` (all interfaces). Responses: 200 ok, 405 non-POST, 413 body > 64 KiB, 500 on parse/handler failure.
+- Exposes `POST <path>` on `0.0.0.0:<port>` (all interfaces). Responses: 200 ok, 405 non-POST, 413 body > 64 KiB, 500 on parse/handler failure. Patch events (1.13.0) POST to the same path. `maxMessageBytes()` returns 64 KiB, so the leader publishes a patch whose JSON exceeds it as a full-refresh event instead, whatever `maxPatchPayloadBytes` is set to. Peers on 1.12.2 or earlier answer 500 to a patch and stay stale.
 - `publish()` sends async to every peer; non-200 or errors are only logged (no retry). `publish()` before `start()` throws `IllegalStateException`; a bind failure in `start()` throws `IllegalStateException`.
 
 Security: the endpoint is **unauthenticated and plain HTTP**. Anyone reaching it can make the leader run refreshes (`REQUEST`) or make nodes reload. Keep the port off public ingress (private network / K8s `NetworkPolicy`), and do not reuse the app's public port (it is a separate JDK server).
@@ -155,7 +157,7 @@ final Andersoni andersoni = Andersoni.builder()
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-sync-db</artifactId>
-  <version>1.12.2</version>
+  <version>1.13.0</version>
 </dependency>
 ```
 Runtime: you provide a `javax.sql.DataSource` and the JDBC driver (no driver is shipped; H2 is test scope only).
@@ -183,6 +185,7 @@ CREATE TABLE IF NOT EXISTS andersoni_sync_log (
 Behavior:
 - One row per catalog. `publish(EVENT)` = `UPDATE ... WHERE catalog_name = ?`, `INSERT` if 0 rows (retries the UPDATE on a concurrent insert clash). SQL failure -> `AndersoniException`.
 - `publish(REQUEST)` is **ignored** (logged at debug): it is a state channel, not a command channel. With DB polling a follower's `refreshAndSync` does nothing; trigger refreshes on the leader (or rely on `refreshEvery` / reconciliation).
+- Patches (1.13.0) are not carried (`supportsPatches()` is `false`): a leader `replaceAndSync` applies locally and saves to the snapshot store, but publishes nothing, not even a refresh row. Followers converge on the next reconciliation pass (store configured) or the next full `refreshAndSync` / `refreshEvery` refresh; without a store they stay stale until then.
 - Daemon thread `andersoni-db-poll` runs `SELECT` over the whole table every `pollInterval` (first poll after one interval) and emits an event when a row's hash changed since the last poll. The first poll after start emits every row once (filtered by hash in core).
 - Poll errors are logged, polling continues.
 
@@ -207,7 +210,7 @@ final Andersoni andersoni = Andersoni.builder()
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-leader-k8s</artifactId>
-  <version>1.12.2</version>
+  <version>1.13.0</version>
 </dependency>
 ```
 Runtime: brings `io.kubernetes:client-java:21.0.2` and `io.kubernetes:client-java-extended:21.0.2` (official Kubernetes Java client, not fabric8). Credentials via `Config.defaultClient()`: in-cluster service account, else `KUBECONFIG` / `~/.kube/config`.
@@ -264,7 +267,7 @@ subjects:
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-snapshot-s3</artifactId>
-  <version>1.12.2</version>
+  <version>1.13.0</version>
 </dependency>
 ```
 Runtime: brings `software.amazon.awssdk:s3:2.29.51` and `software.amazon.awssdk:sts:2.29.51`. Region type: `software.amazon.awssdk.regions.Region`.
@@ -313,7 +316,7 @@ In Spring, a `S3SnapshotStore` bean is closed automatically (inferred `close()`)
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-snapshot-fs</artifactId>
-  <version>1.12.2</version>
+  <version>1.13.0</version>
 </dependency>
 ```
 Runtime: none. Dev/test, or nodes sharing one volume.
@@ -335,7 +338,7 @@ final Andersoni andersoni = Andersoni.builder()
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-json-serializer</artifactId>
-  <version>1.12.2</version>
+  <version>1.13.0</version>
 </dependency>
 ```
 Runtime: brings `jackson-databind:2.18.2` and `jackson-datatype-jsr310:2.18.2`.
@@ -374,7 +377,7 @@ Requirements on `T`:
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-metrics-datadog</artifactId>
-  <version>1.12.2</version>
+  <version>1.13.0</version>
 </dependency>
 ```
 Runtime: brings `com.datadoghq:java-dogstatsd-client:4.4.5`. Needs a DogStatsD agent (UDP).
@@ -416,10 +419,11 @@ Metrics (names before prefix; every metric also carries `node:<nodeId>` once sta
 | `sync.requested` | count | `catalog` | follower published a `REQUEST` |
 | `sync.received` | count | `catalog` | accepted an incoming `EVENT` |
 | `sync.publish.failed` | count | `catalog` | publish threw |
-| `sync.receive.failed` | count | - | declared; not emitted by core 1.12.2 |
+| `sync.receive.failed` | count | - | declared; not emitted by core 1.13.0 |
 | `reconcile.drift_detected` | count | `catalog` | reconciler found drift |
 | `reconcile.drift_repaired` | count | `catalog` | drift repaired |
 | `reconcile.failed` | count | `catalog` | reconciliation pass failed |
+| (none) | - | - | the 1.13.0 patch callbacks (`patchApplied`, `patchDiscarded`, `patchFellBack`, `patchOversized`) are not overridden by this module, so no patch metric is emitted; `sync.published`/`sync.received`/`sync.publish.failed` still count patch traffic |
 | `index.memory.bytes` | gauge | `catalog`, `index` | after refresh/bootstrap and every poll |
 | `catalog.items` | gauge | `catalog` | every poll |
 | `catalog.memory.bytes` | gauge | `catalog` | every poll |
