@@ -29,7 +29,7 @@ import org.waabox.andersoni.snapshot.SnapshotSerializer;
  * guards, no fork isolation, no statistical rigour beyond a median. Treat the
  * numbers as ratios and orders of magnitude, not as precise figures.
  *
- * @author waabox(waabox[at]gmail[dot]com)
+ * @author borafael
  */
 public final class PatchBenchmark {
 

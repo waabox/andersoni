@@ -53,7 +53,7 @@ import org.testcontainers.kafka.KafkaContainer;
  * <p>No snapshot store is configured, which is deliberate for the same
  * reason: it keeps the fallback path anchored to the database.
  *
- * @author waabox(waabox[at]gmail[dot]com)
+ * @author borafael
  */
 class ClusterPatchPropagationIT {
 

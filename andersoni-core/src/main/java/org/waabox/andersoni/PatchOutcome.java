@@ -16,7 +16,7 @@ package org.waabox.andersoni;
  * {@code boolean}, because without a leader question only found and
  * not-found are possible there.
  *
- * @author waabox(waabox[at]gmail[dot]com)
+ * @author borafael
  */
 public enum PatchOutcome {
 
@@ -43,7 +43,7 @@ public enum PatchOutcome {
    *
    * @return true if this outcome is {@link #APPLIED}
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public boolean applied() {
     return this == APPLIED;

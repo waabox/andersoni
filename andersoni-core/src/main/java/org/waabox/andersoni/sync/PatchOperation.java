@@ -9,7 +9,7 @@ package org.waabox.andersoni.sync;
  * they never have to repeat a decision that depends on state they may not
  * share.
  *
- * @author waabox(waabox[at]gmail[dot]com)
+ * @author borafael
  */
 public enum PatchOperation {
 

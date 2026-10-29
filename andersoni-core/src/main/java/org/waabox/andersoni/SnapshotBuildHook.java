@@ -65,7 +65,7 @@ public interface SnapshotBuildHook<T> {
    *
    * @return true if the hook is safe to run per patched item
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   default boolean supportsPatch() {
     return false;

@@ -58,7 +58,7 @@ import java.util.Objects;
  * @param operations   the changes to apply in order, never null or empty
  * @param timestamp    the instant of the patch, never null
  *
- * @author waabox(waabox[at]gmail[dot]com)
+ * @author borafael
  */
 public record PatchEvent(
     String catalogName,

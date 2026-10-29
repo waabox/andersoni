@@ -14,7 +14,7 @@ import java.util.Objects;
  * The batch is therefore abandoned before anything is swapped in, and this
  * names the operation that could not be satisfied.
  *
- * @author waabox(waabox[at]gmail[dot]com)
+ * @author borafael
  */
 public final class PatchTargetNotFoundException extends RuntimeException {
 

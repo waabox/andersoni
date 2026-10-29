@@ -16,7 +16,7 @@ import java.util.Objects;
  *
  * @param <T> the catalog item type
  *
- * @author waabox(waabox[at]gmail[dot]com)
+ * @author borafael
  */
 public sealed interface PatchOp<T> {
 

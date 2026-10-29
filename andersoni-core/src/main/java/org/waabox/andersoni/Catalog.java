@@ -408,7 +408,7 @@ public final class Catalog<T> {
    *
    * @throws NullPointerException if item is null
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public void insert(final T item) {
     Objects.requireNonNull(item, "item must not be null");
@@ -446,7 +446,7 @@ public final class Catalog<T> {
    * @throws IndexNotFoundException        if the index is not declared
    * @throws AmbiguousPatchTargetException if the lookup matched more than one
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public boolean remove(final String indexName, final Object key) {
     return removeAndCapture(indexName, key).isPresent();
@@ -473,7 +473,7 @@ public final class Catalog<T> {
    * @throws IndexNotFoundException        if the index is not declared
    * @throws AmbiguousPatchTargetException if the lookup matched more than one
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public boolean upsert(final String indexName, final Object key,
       final T item) {
@@ -524,7 +524,7 @@ public final class Catalog<T> {
    * @throws AmbiguousPatchTargetException if a lookup matched more than one
    * @throws PatchTargetNotFoundException  if a replace matched nothing
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public void apply(final List<PatchOp<T>> ops) {
     applyAndCapture(ops);
@@ -1349,7 +1349,7 @@ public final class Catalog<T> {
    *
    * @return true if patches are applied surgically
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public boolean appliesPatchesSurgically() {
     return surgicalPatchAllowed;

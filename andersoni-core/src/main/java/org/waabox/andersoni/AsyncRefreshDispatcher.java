@@ -37,6 +37,8 @@ import org.slf4j.LoggerFactory;
  * </ul>
  *
  * <p>Uses Java 21 virtual threads for lightweight async execution.
+ *
+ * @author waabox(waabox[at]gmail[dot]com)
  */
 final class AsyncRefreshDispatcher {
 

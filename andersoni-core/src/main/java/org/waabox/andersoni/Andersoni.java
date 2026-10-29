@@ -853,7 +853,7 @@ public final class Andersoni {
    * @throws AmbiguousPatchTargetException if a lookup matched more than one
    * @throws PatchTargetNotFoundException  if a replace matched nothing
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   @SuppressWarnings("unchecked")
   public <T> PatchOutcome applyAndSync(final String catalogName,
@@ -881,7 +881,7 @@ public final class Andersoni {
    *                                  serializer
    * @throws IllegalArgumentException if no such catalog is registered
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public PatchOutcome insertAndSync(final String catalogName,
       final Object newItem) {
@@ -909,7 +909,7 @@ public final class Andersoni {
    * @throws IllegalArgumentException      if no such catalog is registered
    * @throws AmbiguousPatchTargetException if the lookup matched more than one
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public PatchOutcome removeAndSync(final String catalogName,
       final String indexName, final Object key) {
@@ -937,7 +937,7 @@ public final class Andersoni {
    * @throws IllegalArgumentException      if no such catalog is registered
    * @throws AmbiguousPatchTargetException if the lookup matched more than one
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public PatchOutcome upsertAndSync(final String catalogName,
       final String indexName, final Object key, final Object newItem) {
@@ -960,7 +960,7 @@ public final class Andersoni {
    * @throws IllegalArgumentException     if no such catalog is registered
    * @throws CatalogNotAvailableException if the catalog failed to bootstrap
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   @SuppressWarnings("unchecked")
   public void insert(final String catalogName, final Object newItem) {
@@ -998,7 +998,7 @@ public final class Andersoni {
    * @throws CatalogNotAvailableException  if the catalog failed to bootstrap
    * @throws AmbiguousPatchTargetException if the lookup matched more than one
    *
-   * @author waabox(waabox[at]gmail[dot]com)
+   * @author borafael
    */
   public boolean remove(final String catalogName, final String indexName,
       final Object key) {
