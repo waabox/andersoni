@@ -426,7 +426,8 @@ Metrics (names before prefix; every metric also carries `node:<nodeId>` once sta
 | (none) | - | - | the 1.13.0 patch callbacks (`patchApplied`, `patchDiscarded`, `patchFellBack`, `patchOversized`) are not overridden by this module, so no patch metric is emitted; `sync.published`/`sync.received`/`sync.publish.failed` still count patch traffic |
 | `index.memory.bytes` | gauge | `catalog`, `index` | after refresh/bootstrap and every poll |
 | `catalog.items` | gauge | `catalog` | every poll |
-| `catalog.memory.bytes` | gauge | `catalog` | every poll |
+| `catalog.memory.bytes` | gauge | `catalog` | every poll; whole catalog footprint, items plus indices (`CatalogInfo.totalEstimatedSizeBytes()`) |
+| `catalog.index.memory.bytes` | gauge | `catalog` | every poll; index structures only (`CatalogInfo.indexEstimatedSizeBytes()`) |
 | `catalog.version` | gauge | `catalog` | every poll |
 | `catalog.in_sync` | gauge (1/0) | `catalog` | every poll; 0 after drift detected until repaired |
 | `index.keys` | gauge | `catalog`, `index` | every poll (unique keys) |

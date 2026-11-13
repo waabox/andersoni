@@ -563,7 +563,10 @@ class CatalogTest {
     assertEquals("events", info.catalogName());
     assertEquals(3, info.itemCount());
     assertEquals(2, info.indices().size());
-    assertTrue(info.totalEstimatedSizeBytes() > 0);
+    assertTrue(info.dataEstimatedSizeBytes() > 0);
+    assertTrue(info.indexEstimatedSizeBytes() > 0);
+    assertEquals(info.dataEstimatedSizeBytes() + info.indexEstimatedSizeBytes(),
+        info.totalEstimatedSizeBytes());
     assertTrue(info.totalEstimatedSizeMB() > 0);
   }
 

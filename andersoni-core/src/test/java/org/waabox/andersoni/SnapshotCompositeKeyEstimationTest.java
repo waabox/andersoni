@@ -23,10 +23,8 @@ class SnapshotCompositeKeyEstimationTest {
     final List<IndexInfo> infos = snapshot.indexInfo();
     final IndexInfo info = infos.getFirst();
 
-    // CompositeKey with 2 string components ("AR" len=2, "deportes" len=8):
-    // Each key: 40 (CK overhead) + (40+2) + (40+8) = 130 bytes
-    // With 2 keys: total key size > 260
-    // DEFAULT_KEY_SIZE (50) * 2 = 100 would be the old underestimate
+    // The keys are not referenced by the items, so each CompositeKey and
+    // its two String components must be counted on top of the map itself.
     assertTrue(info.estimatedSizeBytes() > 200,
         "CompositeKey estimation should be > 200 bytes for 2 keys"
             + " with string components, got: "

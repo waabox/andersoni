@@ -71,8 +71,8 @@ public record AndersoniStatus(
    *                        other nodes; {@code false} if the hash falls back
    *                        to {@code toString()} and is node-local only
    * @param itemCount       the number of items in the current snapshot
-   * @param estimatedSizeMB the estimated in-memory size of the catalog's
-   *                        indices, in megabytes
+   * @param estimatedSizeMB the estimated in-memory size of the catalog,
+   *                        items plus indices, in megabytes
    * @param syncState        whether this catalog matched the snapshot store at
    *                         the last reconciliation pass; {@code UNKNOWN} when
    *                         reconciliation is inactive for it

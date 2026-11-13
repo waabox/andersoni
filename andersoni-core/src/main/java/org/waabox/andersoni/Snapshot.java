@@ -64,6 +64,12 @@ public final class Snapshot<T> {
   /** The instant when this snapshot was created. */
   private final Instant createdAt;
 
+  /** Lazily computed index statistics; null until first requested. */
+  private volatile List<IndexInfo> indexInfoCache;
+
+  /** Lazily computed data size in bytes; negative until first requested. */
+  private volatile long dataSizeCache = -1L;
+
   /**
    * Creates a new snapshot.
    *
@@ -1356,98 +1362,44 @@ public final class Snapshot<T> {
   // Index info and memory estimation
   // -----------------------------------------------------------------------
 
-  /** Base overhead of a HashMap instance. */
-  private static final long HASHMAP_BASE = 48L;
-
-  /** Size of a reference in the bucket array. */
-  private static final long BUCKET_REF = 8L;
-
-  /** Size of a HashMap.Node (hash + key + value + next + header). */
-  private static final long ENTRY_NODE = 32L;
-
-  /** Base overhead of an ArrayList instance + internal Object[] header. */
-  private static final long ARRAYLIST_HEADER = 40L;
-
-  /** Size of an object reference within an array. */
-  private static final long REFERENCE = 8L;
-
-  /** Estimated size of a boxed Number key. */
-  private static final long NUMBER_KEY_SIZE = 16L;
-
-  /** Default estimated size for keys of unknown type. */
-  private static final long DEFAULT_KEY_SIZE = 50L;
-
-  /** Base overhead of a String object. */
-  private static final long STRING_BASE = 40L;
-
   /**
    * Computes statistics for each index in this snapshot, including an
-   * estimated memory footprint based on JVM structural heuristics.
+   * estimate of the memory the index structures take.
    *
-   * <p>The estimation accounts for HashMap overhead (base, bucket array,
-   * Entry nodes), key object sizes, ArrayList headers per bucket, and
-   * object references for each entry. Items in the lists are shared
-   * references to the data list and are not counted as duplicated memory.
+   * <p>The estimate covers the hash map, the per-key item lists, index
+   * keys that the items do not already hold and, for sorted indices, the
+   * sorted and reversed-key trees. Items themselves are shared by every
+   * index and are counted by {@link #estimatedDataSizeBytes()} instead.
+   *
+   * <p>Computed once per snapshot and cached.
    *
    * @return an unmodifiable list of IndexInfo, one per index, never null
    */
   public List<IndexInfo> indexInfo() {
-    if (indices.isEmpty()) {
-      return Collections.emptyList();
+    List<IndexInfo> result = indexInfoCache;
+    if (result == null) {
+      result = SnapshotSizeEstimator.indexInfo(ObjectSizer.DEFAULT,
+          indices, sortedIndices, reversedKeyIndices);
+      indexInfoCache = result;
     }
-    final List<IndexInfo> result = new ArrayList<>();
-    for (final Map.Entry<String, Map<Object,
-        List<AndersoniCatalogItem<T>>>> entry : indices.entrySet()) {
-      result.add(computeIndexInfo(entry.getKey(), entry.getValue()));
-    }
-    return Collections.unmodifiableList(result);
+    return result;
   }
 
-  private static <T> IndexInfo computeIndexInfo(final String indexName,
-      final Map<Object, List<AndersoniCatalogItem<T>>> index) {
-    final int uniqueKeys = index.size();
-    int totalEntries = 0;
-    long keySizeSum = 0;
-    for (final Map.Entry<Object, List<AndersoniCatalogItem<T>>> entry
-        : index.entrySet()) {
-      totalEntries += entry.getValue().size();
-      keySizeSum += estimateKeySize(entry.getKey());
+  /**
+   * Returns the estimated memory held by the items in this snapshot,
+   * including the objects they reference and their precomputed views,
+   * excluding index structures.
+   *
+   * <p>Computed once per snapshot and cached.
+   *
+   * @return the estimated size in bytes, zero for an empty snapshot
+   */
+  public long estimatedDataSizeBytes() {
+    long result = dataSizeCache;
+    if (result < 0) {
+      result = SnapshotSizeEstimator.dataBytes(ObjectSizer.DEFAULT, items, data);
+      dataSizeCache = result;
     }
-    final long tableBuckets = nextPowerOfTwo(
-        Math.max(16, (long) (uniqueKeys / 0.75) + 1));
-    final long estimatedBytes = HASHMAP_BASE
-        + tableBuckets * BUCKET_REF
-        + uniqueKeys * (ENTRY_NODE + ARRAYLIST_HEADER)
-        + keySizeSum
-        + totalEntries * REFERENCE;
-    return new IndexInfo(indexName, uniqueKeys, totalEntries, estimatedBytes);
-  }
-
-  private static long estimateKeySize(final Object key) {
-    if (key instanceof CompositeKey ck) {
-      long size = 40L; // object header + List overhead + hash field
-      for (final Object component : ck.components()) {
-        size += estimateKeySize(component);
-      }
-      return size;
-    }
-    if (key instanceof String s) {
-      return STRING_BASE + s.length();
-    }
-    if (key instanceof Number) {
-      return NUMBER_KEY_SIZE;
-    }
-    return DEFAULT_KEY_SIZE;
-  }
-
-  private static long nextPowerOfTwo(final long value) {
-    long n = value - 1;
-    n |= n >>> 1;
-    n |= n >>> 2;
-    n |= n >>> 4;
-    n |= n >>> 8;
-    n |= n >>> 16;
-    n |= n >>> 32;
-    return n + 1;
+    return result;
   }
 }

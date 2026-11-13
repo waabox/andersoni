@@ -1178,13 +1178,14 @@ public final class Catalog<T> {
   public CatalogInfo info() {
     final Snapshot<T> snapshot = current.get();
     final List<IndexInfo> indexInfos = snapshot.indexInfo();
-    final long totalSize = indexInfos.stream()
+    final long indexSize = indexInfos.stream()
         .mapToLong(IndexInfo::estimatedSizeBytes).sum();
     final List<String> viewTypeNames = viewDefinitions.stream()
         .map(v -> v.viewType().getSimpleName())
         .toList();
     return new CatalogInfo(name, snapshot.data().size(), indexInfos,
-        totalSize, viewDefinitions.size(), viewTypeNames);
+        snapshot.estimatedDataSizeBytes(), indexSize,
+        viewDefinitions.size(), viewTypeNames);
   }
 
   /**

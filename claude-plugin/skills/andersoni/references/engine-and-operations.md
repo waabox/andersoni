@@ -271,6 +271,7 @@ public enum SyncState { IN_SYNC, DRIFTED, UNKNOWN }
 | `hashComparable` | true when the catalog has a serializer; without one the hash is built from `toString()` and is node-local |
 | `syncState` | `IN_SYNC` last pass matched store; `DRIFTED` mismatch, repair dispatched/pending; `UNKNOWN` reconciliation inactive for it or no pass yet |
 | `lastReconciledAt` | last pass that checked the catalog |
+| `estimatedSizeMB` | estimated catalog footprint, items plus indices (`CatalogInfo.totalEstimatedSizeMB()`) |
 
 ```java
 final AndersoniStatus status = andersoni.status();
@@ -282,7 +283,7 @@ for (final AndersoniStatus.CatalogStatus c : status.catalogs()) {
 ```
 
 ### CatalogInfo / IndexInfo (`andersoni.info(name)`)
-`record CatalogInfo(String catalogName, int itemCount, List<IndexInfo> indices, long totalEstimatedSizeBytes, int viewCount, List<String> viewTypeNames)` + `double totalEstimatedSizeMB()`.
+`record CatalogInfo(String catalogName, int itemCount, List<IndexInfo> indices, long dataEstimatedSizeBytes, long indexEstimatedSizeBytes, int viewCount, List<String> viewTypeNames)` + `long totalEstimatedSizeBytes()` (data + indices) + `double totalEstimatedSizeMB()`. See `catalog-dsl.md` for what each estimate covers.
 `record IndexInfo(String name, int uniqueKeys, int totalEntries, long estimatedSizeBytes)` + `double estimatedSizeMB()`.
 
 ### AndersoniMetrics (`org.waabox.andersoni.metrics`)
