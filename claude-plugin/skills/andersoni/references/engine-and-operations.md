@@ -1,4 +1,4 @@
-# Andersoni engine and operations (core, 1.13.0)
+# Andersoni engine and operations (core, 1.14.0-RC1)
 
 Artifact `io.github.waabox:andersoni-core`. Engine class `org.waabox.andersoni.Andersoni`.
 Concrete sync / leader / snapshot modules are in `cluster-modules.md`; this file covers the core API they plug into.
@@ -436,4 +436,4 @@ All unchecked. Package `org.waabox.andersoni`.
 | Some pods stay stale after a patch; their logs show deserialization errors on sync messages | Those pods run 1.12.2 or earlier and cannot decode `PatchEvent` | Upgrade every node before calling any patch method; until then keep call sites on `refreshAndSync` |
 | Every patch rebuilds the whole snapshot (`appliesPatchesSurgically()` false) | A registered `SnapshotBuildHook` (any lambda hook) has `supportsPatch()` = `false` | Override `supportsPatch()` to `true` on per-item hooks |
 | Patches through a custom `SyncStrategy` never reach peers; the transport refuses large messages | The strategy does not override `maxMessageBytes()`, so the leader only caps at `maxPatchPayloadBytes` (256 KB) | Override `maxMessageBytes()` with the transport's limit, or lower `maxPatchPayloadBytes`, so oversized patches degrade to a full-refresh `EVENT` |
-| `refreshAndSync` slow/blocking with broker down | Transport `publish` blocks (e.g. Kafka producer metadata wait) | Raw `KafkaSyncStrategy` does not expose producer timeouts in 1.13.0 (Kafka default `max.block.ms` = 60s applies). With Spring Kafka sync, define your own `ProducerFactory<String, String>` bean named `andersoniProducerFactory` (the auto-config backs off by name) and set `max.block.ms` / `delivery.timeout.ms` there. Call `refreshAndSync` off the request thread. |
+| `refreshAndSync` slow/blocking with broker down | Transport `publish` blocks (e.g. Kafka producer metadata wait) | Raw `KafkaSyncStrategy` does not expose producer timeouts in 1.14.0-RC1 (Kafka default `max.block.ms` = 60s applies). With Spring Kafka sync, define your own `ProducerFactory<String, String>` bean named `andersoniProducerFactory` (the auto-config backs off by name) and set `max.block.ms` / `delivery.timeout.ms` there. Call `refreshAndSync` off the request thread. |
