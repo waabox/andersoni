@@ -1,4 +1,4 @@
-# Catalog DSL Reference (Andersoni 1.13.0)
+# Catalog DSL Reference (Andersoni 1.14.0-RC1)
 
 1. [Builder chain](#builder-chain) and [build() validation](#build-validation)
 2. [Index types](#index-types): `index`, `indexSorted`, `indexMulti` (graph: see `graph-index.md`)
@@ -6,7 +6,7 @@
 4. [Lifecycle, Snapshot, CatalogInfo](#lifecycle)
 5. [Common mistakes](#common-mistakes)
 
-All types live in `org.waabox.andersoni` unless noted. Maven: `io.github.waabox:andersoni-core:1.13.0`.
+All types live in `org.waabox.andersoni` unless noted. Maven: `io.github.waabox:andersoni-core:1.14.0-RC1`.
 
 ## Builder chain
 
@@ -167,13 +167,18 @@ final Catalog<Event> catalog = Catalog.of(Event.class)
 
 ```java
 public record CatalogInfo(String catalogName, int itemCount, List<IndexInfo> indices,
-    long totalEstimatedSizeBytes, int viewCount, List<String> viewTypeNames) { double totalEstimatedSizeMB(); }
+    long dataEstimatedSizeBytes, long indexEstimatedSizeBytes, int viewCount, List<String> viewTypeNames) {
+  long totalEstimatedSizeBytes(); // data + indices
+  double totalEstimatedSizeMB();
+}
 public record IndexInfo(String name, int uniqueKeys, int totalEntries, long estimatedSizeBytes) { double estimatedSizeMB(); }
 ```
 
-- `viewTypeNames` holds the simple class names of the views. `totalEstimatedSizeBytes` is the sum of `IndexInfo.estimatedSizeBytes`.
-- `IndexInfo` has one entry per index (regular, sorted, multi, graph). The estimate is a structural heuristic. It counts: the HashMap base (48 B), buckets (8 B each), a node plus a list header per key (32 + 40 B), the key size (String: 40 + length, Number: 16, CompositeKey: 40 + its components, other: 50) and 8 B per entry.
-- The estimate **excludes** the items themselves, the materialized views, and the extra sorted/reversed `TreeMap`s. Use it to compare indexes, not as heap usage.
+- `viewTypeNames` holds the simple class names of the views. `indexEstimatedSizeBytes` is the sum of `IndexInfo.estimatedSizeBytes`; `totalEstimatedSizeBytes()` is the whole catalog footprint, items plus indices.
+- `dataEstimatedSizeBytes` covers the items, everything they reference and their materialized views. Up to 1,000 items are measured and scaled to the item count; objects shared between items (e.g. a reused venue name) are counted once.
+- `IndexInfo` has one entry per index (regular, sorted, multi, graph). It counts the hash map, the per-key item lists and any key the item does not already hold (a key read straight from a field costs nothing extra; a computed key such as `String::toUpperCase` or a `CompositeKey` does). A sorted index also includes its sorted `TreeMap` and, for String keys, the reversed-key `TreeMap` used by `endsWith`, which is often the largest structure in the catalog.
+- Sizes use the running JVM's object layout (compressed references, header size, alignment), so they track real heap usage, typically within a few percent. Computed once per snapshot and cached.
+- 1.13.0 and earlier reported index overhead only, assumed 8-byte references, and left out items and sorted trees, so their figure was roughly half the real footprint. The 6-argument `CatalogInfo` constructor is deprecated and treats its size as index size.
 
 ## Common mistakes
 

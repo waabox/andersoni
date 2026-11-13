@@ -13,6 +13,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import org.waabox.andersoni.Catalog;
+import org.waabox.andersoni.CatalogInfo;
 
 import com.timgroup.statsd.StatsDClient;
 
@@ -338,6 +339,7 @@ class DatadogAndersoniMetricsTest {
         .index("by-length").by(s -> s, String::length)
         .build();
     catalog.bootstrap();
+    final CatalogInfo info = catalog.info();
 
     // Expect catalog-level gauges
     client.gauge(eq("catalog.items"), eq(3L),
@@ -345,7 +347,11 @@ class DatadogAndersoniMetricsTest {
     expectLastCall().once();
 
     client.gauge(eq("catalog.memory.bytes"),
-        org.easymock.EasyMock.anyLong(),
+        eq(info.totalEstimatedSizeBytes()),
+        eq("catalog:cities"), eq("node:node-1"));
+    expectLastCall().once();
+    client.gauge(eq("catalog.index.memory.bytes"),
+        eq(info.indexEstimatedSizeBytes()),
         eq("catalog:cities"), eq("node:node-1"));
     expectLastCall().once();
 
@@ -445,6 +451,9 @@ class DatadogAndersoniMetricsTest {
         eq("catalog:cities"), eq("node:node-1"));
     expectLastCall().once();
     client.gauge(eq("catalog.memory.bytes"), org.easymock.EasyMock.anyLong(),
+        eq("catalog:cities"), eq("node:node-1"));
+    expectLastCall().once();
+    client.gauge(eq("catalog.index.memory.bytes"), org.easymock.EasyMock.anyLong(),
         eq("catalog:cities"), eq("node:node-1"));
     expectLastCall().once();
     client.gauge(eq("catalog.version"), org.easymock.EasyMock.anyLong(),

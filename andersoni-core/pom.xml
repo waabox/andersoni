@@ -10,7 +10,7 @@
     <artifactId>andersoni</artifactId>
 
 
-    <version>1.13.0</version>
+    <version>1.14.0-RC1</version>
 
   </parent>
 
@@ -52,6 +52,27 @@
       <scope>test</scope>
     </dependency>
 
+    <!-- Measures real object graph sizes to check the memory estimates. -->
+    <dependency>
+      <groupId>org.openjdk.jol</groupId>
+      <artifactId>jol-core</artifactId>
+      <version>0.17</version>
+      <scope>test</scope>
+    </dependency>
+
   </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- JOL attaches its agent to read record and JDK field offsets. -->
+          <argLine>-Djdk.attach.allowAttachSelf=true -XX:+EnableDynamicAgentLoading</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 
 </project>
