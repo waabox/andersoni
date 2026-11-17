@@ -53,6 +53,7 @@
     <module>andersoni-spring-boot-starter</module>
     <module>andersoni-admin</module>
     <module>andersoni-metrics-datadog</module>
+    <module>andersoni-metrics-http</module>
     <module>andersoni-cluster-it</module>
   </modules>
 
@@ -75,6 +76,12 @@
       <dependency>
         <groupId>io.github.waabox</groupId>
         <artifactId>andersoni-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>io.github.waabox</groupId>
+        <artifactId>andersoni-metrics-http</artifactId>
         <version>${project.version}</version>
       </dependency>
 

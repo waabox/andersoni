@@ -34,7 +34,28 @@
       <version>3.4.2</version>
     </dependency>
 
+    <!-- Optional: GET /andersoni/status on the app's Spring MVC server -->
+    <dependency>
+      <groupId>io.github.waabox</groupId>
+      <artifactId>andersoni-metrics-http</artifactId>
+      <optional>true</optional>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-web</artifactId>
+      <version>6.2.2</version>
+      <optional>true</optional>
+    </dependency>
+
     <!-- Test dependencies -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+      <version>3.4.2</version>
+      <scope>test</scope>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>

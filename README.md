@@ -330,6 +330,33 @@ Datadog: counters `reconcile.drift_detected`, `reconcile.drift_repaired`, `recon
 
 Decision table, leader-promotion semantics, cost and the Docker-verified failure scenarios are on the wiki: **[Cluster Self-Healing](https://github.com/waabox/andersoni/wiki/Cluster-Self-Healing)**.
 
+## Status Endpoint
+
+Add `andersoni-metrics-http` to a Spring MVC application that uses the starter and the node serves `GET /andersoni/status` on the application's own port: everything `andersoni.status()` reports plus, per catalog, its views and the size of every index.
+
+```xml
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-metrics-http</artifactId>
+</dependency>
+```
+
+```json
+{
+  "nodeId": "orders-7d9f-x2", "leader": true, "inSync": true,
+  "catalogs": [{
+    "name": "events", "available": true, "version": 3, "hash": "9f2c...",
+    "hashComparable": true, "itemCount": 1200, "estimatedSizeMB": 1.4,
+    "syncState": "IN_SYNC", "lastReconciledAt": "2026-11-17T15:00:00Z",
+    "views": ["EventSummary"],
+    "indices": [{"name": "by-venue", "uniqueKeys": 40, "totalEntries": 1200,
+                 "estimatedSizeBytes": 98304, "estimatedSizeMB": 0.09}]
+  }]
+}
+```
+
+Turn it off with `andersoni.http.enabled=false`. Outside Spring, `AndersoniStatusJson.render(andersoni)` returns the same document for any web stack. Rendering walks every index, so scrape it every few seconds at most, not per request.
+
 ## Snapshot Patches
 
 > **Since 1.13.0**
@@ -590,6 +617,7 @@ Without the plugin system, copy `claude-plugin/skills/andersoni/` into your proj
 | `andersoni-snapshot-fs` | Filesystem snapshot (dev/test) |
 | `andersoni-spring-boot-starter` | Spring Boot auto-configuration |
 | `andersoni-metrics-datadog` | Datadog DogStatsD metrics |
+| `andersoni-metrics-http` | `GET /andersoni/status` JSON endpoint (auto-configured on Spring MVC) |
 | `andersoni-admin` | K8s admin console |
 
 ## Used by

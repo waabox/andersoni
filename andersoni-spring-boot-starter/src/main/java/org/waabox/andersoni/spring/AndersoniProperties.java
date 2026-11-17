@@ -27,6 +27,9 @@ public class AndersoniProperties {
   /** Reconciliation settings. */
   private final Reconciliation reconciliation = new Reconciliation();
 
+  /** HTTP endpoint settings. */
+  private final Http http = new Http();
+
   /**
    * Returns the configured node identifier.
    *
@@ -54,6 +57,15 @@ public class AndersoniProperties {
    */
   public Reconciliation getReconciliation() {
     return reconciliation;
+  }
+
+  /**
+   * Returns the HTTP endpoint settings.
+   *
+   * @return the HTTP settings, never null
+   */
+  public Http getHttp() {
+    return http;
   }
 
   /**
@@ -102,6 +114,36 @@ public class AndersoniProperties {
      */
     public void setInterval(final Duration interval) {
       this.interval = interval;
+    }
+  }
+
+  /**
+   * HTTP endpoint settings, bound from {@code andersoni.http.*}.
+   *
+   * <p>Only effective when {@code andersoni-metrics-http} is on the
+   * classpath of a Spring MVC application.
+   */
+  public static class Http {
+
+    /** Whether GET /andersoni/status is exposed. */
+    private boolean enabled = true;
+
+    /**
+     * Returns whether the HTTP endpoints are exposed.
+     *
+     * @return true if the endpoints are exposed
+     */
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    /**
+     * Sets whether the HTTP endpoints are exposed.
+     *
+     * @param enabled true to expose the endpoints, false to hide them
+     */
+    public void setEnabled(final boolean enabled) {
+      this.enabled = enabled;
     }
   }
 }

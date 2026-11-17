@@ -1,1 +1,2 @@
 org.waabox.andersoni.spring.AndersoniAutoConfiguration
+org.waabox.andersoni.spring.AndersoniHttpAutoConfiguration

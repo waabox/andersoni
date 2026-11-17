@@ -30,6 +30,7 @@ Multi-module Maven project. Version managed in parent pom, inherited by all chil
 | `andersoni-json-serializer` | Jackson-based `SnapshotSerializer` implementation |
 | `andersoni-spring-boot-starter` | Spring Boot auto-configuration |
 | `andersoni-metrics-datadog` | Datadog DogStatsD metrics |
+| `andersoni-metrics-http` | Status JSON (`AndersoniStatusJson`), served at `GET /andersoni/status` by the starter on Spring MVC apps |
 | `andersoni-admin` | K8s admin console (Spring Boot app, not published) |
 | `andersoni-cluster-it` | Docker-based multi-node integration test (Testcontainers; not published) |
 | `andersoni-example` | Full-stack demo app (standalone, not in parent modules) |
@@ -53,6 +54,7 @@ org.waabox.andersoni.leader             # LeaderElectionStrategy
 org.waabox.andersoni.leader.k8s         # K8s Lease leader election
 org.waabox.andersoni.metrics            # AndersoniMetrics
 org.waabox.andersoni.metrics.datadog    # Datadog DogStatsD metrics
+org.waabox.andersoni.metrics.http       # Status JSON for HTTP endpoints
 org.waabox.andersoni.spring             # Spring Boot auto-configuration
 org.waabox.andersoni.admin              # Admin console
 org.waabox.andersoni.example            # Example app

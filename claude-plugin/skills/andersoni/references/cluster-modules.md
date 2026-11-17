@@ -16,8 +16,9 @@ All artifacts: groupId `io.github.waabox`, version `1.14.0`. Every module depend
 9. [andersoni-snapshot-fs](#andersoni-snapshot-fs)
 10. [andersoni-json-serializer](#andersoni-json-serializer)
 11. [andersoni-metrics-datadog](#andersoni-metrics-datadog)
-12. [andersoni-admin](#andersoni-admin)
-13. [Recommended production topologies](#recommended-production-topologies)
+12. [andersoni-metrics-http](#andersoni-metrics-http)
+13. [andersoni-admin](#andersoni-admin)
+14. [Recommended production topologies](#recommended-production-topologies)
 
 ## How the pieces plug in
 
@@ -434,11 +435,29 @@ Metrics (names before prefix; every metric also carries `node:<nodeId>` once sta
 
 Emission failures are logged and swallowed. Poll thread: `andersoni-metrics-datadog-<nodeId>`.
 
+## andersoni-metrics-http
+
+```xml
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-metrics-http</artifactId>
+  <version>1.13.0</version>
+</dependency>
+```
+Runtime: `andersoni-core` and `org.json` only. Opens no port and starts no server; it is not an `AndersoniMetrics` implementation, so it combines with Datadog.
+
+- `org.waabox.andersoni.metrics.http.AndersoniStatusJson.render(Andersoni)` -> JSON string; `toJson(Andersoni)` -> `JSONObject`. Plain Java: call it from any web handler.
+- Spring Boot: the starter's `AndersoniHttpAutoConfiguration` registers `AndersoniStatusController` serving `GET /andersoni/status` (`application/json`, always 200) on the app's own server. Conditions: this module on the classpath, a servlet (Spring MVC) web app, an `Andersoni` bean, `andersoni.http.enabled` not `false`. WebFlux apps get nothing; call `render` yourself off the event loop.
+- Document: top level `nodeId`, `leader`, `inSync`, `catalogs[]`. Per catalog every `AndersoniStatus.CatalogStatus` field (`name`, `available`, `version`, `hash`, `hashComparable`, `itemCount`, `estimatedSizeMB`, `syncState`, `lastReconciledAt` as ISO-8601 or `null`) plus `views[]` (view simple class names) and `indices[]` (`name`, `uniqueKeys`, `totalEntries`, `estimatedSizeBytes`, `estimatedSizeMB`).
+- A catalog without a readable snapshot (failed bootstrap) is reported `available=false` with empty `views`/`indices`; the document never fails because of one catalog.
+- Status and index stats are read one after the other, so a concurrent refresh can make them describe consecutive snapshots.
+- Cost: every render walks every index of every catalog (twice: `status()` and `info()`). Fine for a scrape every few seconds; do not call it per user request.
+
 ## andersoni-admin
 
 Standalone Spring Boot web app (Vue + Tailwind dashboard) that monitors Andersoni pods in a Kubernetes namespace. **Not published to Maven Central** (`maven.deploy.skip=true`): build from the repo (`mvn clean package` in `andersoni-admin`, `Dockerfile` provided) and deploy as its own pod, or run locally with a kubeconfig.
 - Listens on port 9090. API: `GET /api/cluster` -> namespace, `leaderIdentity`, and per pod `podName`, `podIp`, `phase`, `ready`, `leader`, `info`, `status`.
-- Reads the Lease holder, lists pods by label, and fetches each pod's info path through the API-server pod proxy on port **8080** (hard-coded). Your app must expose a JSON info endpoint on 8080 (e.g. returning `andersoni.status()` / `info(...)`).
+- Reads the Lease holder, lists pods by label, and fetches each pod's info path through the API-server pod proxy on port **8080** (hard-coded). Your app must expose a JSON info endpoint on 8080 (e.g. returning `andersoni.status()` / `info(...)`, or `/andersoni/status` from `andersoni-metrics-http` with `ADMIN_INFO_PATH=/andersoni/status`).
 - Env: `ADMIN_NAMESPACE` (`andersoni-example`), `ADMIN_LABEL_SELECTOR` (`app=andersoni-example`), `ADMIN_LEASE_NAME` (`andersoni-example-leader`), `ADMIN_INFO_PATH` (`/events/info`).
 - RBAC: `pods` list, `pods/proxy` get (core), `leases` get (`coordination.k8s.io`).
 

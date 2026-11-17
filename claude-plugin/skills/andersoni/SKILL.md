@@ -1,6 +1,6 @@
 ---
 name: andersoni
-description: Use when a Java project depends on or wants to adopt Andersoni (io.github.waabox, package org.waabox.andersoni) — defining catalogs, regular/sorted/multi/graph indexes, search/range/compound/graph queries, views, build hooks, Spring Boot starter, Kafka/HTTP/DB sync, K8s lease leader election, S3/filesystem snapshots, reconciliation, single-item patches (replace/insert/remove/upsert, replaceAndSync, PatchOp batches), Datadog metrics — or when diagnosing CatalogNotAvailableException, IndexKeyLimitExceededException, AmbiguousPatchTargetException, empty graph query results, nodes out of sync, refreshAndSync having no effect, or a patch returning NOT_LEADER.
+description: Use when a Java project depends on or wants to adopt Andersoni (io.github.waabox, package org.waabox.andersoni) — defining catalogs, regular/sorted/multi/graph indexes, search/range/compound/graph queries, views, build hooks, Spring Boot starter, Kafka/HTTP/DB sync, K8s lease leader election, S3/filesystem snapshots, reconciliation, single-item patches (replace/insert/remove/upsert, replaceAndSync, PatchOp batches), Datadog metrics, the /andersoni/status HTTP endpoint — or when diagnosing CatalogNotAvailableException, IndexKeyLimitExceededException, AmbiguousPatchTargetException, empty graph query results, nodes out of sync, refreshAndSync having no effect, or a patch returning NOT_LEADER.
 ---
 
 # Andersoni
@@ -17,7 +17,7 @@ In-memory indexed cache for Java 21. A `Catalog<T>` loads a dataset with a `Data
 | `search`, `query` (ranges, startsWith/endsWith/contains), `compound` (AND across indexes), result guarantees, errors | `references/querying.md` |
 | Graph index: traversals, hotpaths, `CompositeKey`, `graphQuery`, query planner, design recipe | `references/graph-index.md` |
 | `Andersoni.builder()`, lifecycle, `refresh` vs `refreshAndSync`, cluster patches (`replaceAndSync`, `applyAndSync`, `PatchOutcome`), leader/follower, retry, reconciliation, `status()`, metrics SPI, custom `SyncStrategy`/`SnapshotStore`/`LeaderElectionStrategy`, troubleshooting | `references/engine-and-operations.md` |
-| Kafka / HTTP / DB sync, K8s lease, S3 / FS store, Jackson serializer, Datadog, admin console, production topologies, infra (topic, DDL, RBAC, IAM) | `references/cluster-modules.md` |
+| Kafka / HTTP / DB sync, K8s lease, S3 / FS store, Jackson serializer, Datadog, HTTP status endpoint, admin console, production topologies, infra (topic, DDL, RBAC, IAM) | `references/cluster-modules.md` |
 | Spring Boot starter, `CatalogRegistrar`, properties, Spring Kafka sync, wiring modules as beans, tests | `references/spring-boot.md` |
 
 ## Integration workflow
@@ -34,12 +34,13 @@ In-memory indexed cache for Java 21. A `Catalog<T>` loads a dataset with a `Data
    | Snapshot store | `andersoni-snapshot-s3` (prod) / `andersoni-snapshot-fs` (dev) |
    | Serializer (required for any store) | `andersoni-json-serializer` |
    | Metrics | `andersoni-metrics-datadog` |
+   | HTTP status endpoint (`GET /andersoni/status`) | `andersoni-metrics-http` |
 
-   Only the starter and spring-sync-kafka are auto-configured; every other module is declared as a `@Bean` (see `spring-boot.md`).
+   Only the starter and spring-sync-kafka are auto-configured (the starter also mounts the `andersoni-metrics-http` endpoint on Spring MVC apps); every other module is declared as a `@Bean` (see `spring-boot.md`).
 3. **Map each query the user needs to an index type**: exact key → `index`; key collection → `indexMulti`; range/prefix/suffix → `indexSorted`; AND of several → `compound`; composite keys across relationships (`A → B[] → C`, category paths) → `indexGraph`. Add a `view` for each projection returned by an API.
 4. **Build the catalog** (`catalog-dsl.md`), then register and start it: plain Java `andersoni.register(c); andersoni.start();`, Spring through a `CatalogRegistrar` bean.
 5. **Cluster** (only if >1 node): stable unique `nodeId` per node (pod name), one sync strategy, a leader election, a snapshot store, and a `.serializer(...)` on every catalog. Trigger reloads after writes with `andersoni.refreshAndSync(name)`. Since 1.13.0 a single-item write can instead go through `andersoni.replaceAndSync(name, index, key, item)` (and `insertAndSync`/`removeAndSync`/`upsertAndSync`/`applyAndSync`), which patches the snapshot copy-on-write and broadcasts only the delta over Kafka or HTTP sync; every node must already run 1.13.0+ before the first patch call (`engine-and-operations.md`, section 4).
-6. **Verify**: `andersoni.status()` (per-catalog `available`, `syncState`, `inSync()`), `andersoni.info(name)` for index sizes and memory.
+6. **Verify**: `andersoni.status()` (per-catalog `available`, `syncState`, `inSync()`), `andersoni.info(name)` for index sizes and memory; over HTTP, `GET /andersoni/status` with `andersoni-metrics-http`.
 
 ## Minimal shape (compiles against 1.14.0)
 
