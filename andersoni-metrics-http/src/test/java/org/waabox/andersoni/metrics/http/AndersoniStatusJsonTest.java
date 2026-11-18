@@ -47,6 +47,11 @@ class AndersoniStatusJsonTest {
       assertFalse(catalog.getString("hash").isEmpty());
       assertEquals("UNKNOWN", catalog.getString("syncState"));
       assertTrue(catalog.isNull("lastReconciledAt"));
+      assertTrue(catalog.getLong("dataEstimatedSizeBytes") > 0);
+      assertTrue(catalog.getLong("indexEstimatedSizeBytes") > 0);
+      assertEquals(catalog.getLong("dataEstimatedSizeBytes")
+              + catalog.getLong("indexEstimatedSizeBytes"),
+          catalog.getLong("totalEstimatedSizeBytes"));
       assertEquals(List.of("EventSummary"),
           catalog.getJSONArray("views").toList());
     } finally {
@@ -96,6 +101,7 @@ class AndersoniStatusJsonTest {
       assertEquals("broken", catalog.getString("name"));
       assertFalse(catalog.getBoolean("available"));
       assertEquals(0, catalog.getInt("itemCount"));
+      assertTrue(catalog.getJSONArray("indices").isEmpty());
     } finally {
       andersoni.stop();
     }

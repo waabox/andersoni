@@ -30,6 +30,9 @@ import org.waabox.andersoni.IndexInfo;
  *       "hashComparable": true,
  *       "itemCount": 1200,
  *       "estimatedSizeMB": 1.4,
+ *       "dataEstimatedSizeBytes": 1376256,
+ *       "indexEstimatedSizeBytes": 98304,
+ *       "totalEstimatedSizeBytes": 1474560,
  *       "syncState": "IN_SYNC",
  *       "lastReconciledAt": "2026-11-17T15:00:00Z",
  *       "views": ["EventSummary"],
@@ -47,16 +50,20 @@ import org.waabox.andersoni.IndexInfo;
  * }
  * }</pre>
  *
- * <p>{@code lastReconciledAt} is {@code null} when reconciliation has not
- * run for the catalog. A catalog whose statistics cannot be read, for
- * example one that never bootstrapped, is reported with empty
- * {@code views} and {@code indices} instead of failing the whole document.
+ * <p>{@code estimatedSizeMB} is the catalog's whole footprint, items plus
+ * indices; the three {@code *EstimatedSizeBytes} fields split it into the
+ * items and the index structures. {@code lastReconciledAt} is {@code null}
+ * when reconciliation has not run for the catalog. A catalog whose
+ * statistics cannot be read, for example one that never bootstrapped, is
+ * reported with empty {@code views} and {@code indices} and {@code null}
+ * byte sizes instead of failing the whole document.
  *
  * <p>Status and index statistics are read one after the other, so a
  * refresh in between can make them describe consecutive snapshots.
  *
- * <p>Rendering walks every index of every catalog, so its cost grows with
- * the catalogs' size; avoid polling it at a high rate.
+ * <p>Sizes are estimated once per snapshot and cached, so the first render
+ * after a refresh walks the new snapshot's object graph and later renders
+ * are cheap.
  */
 public final class AndersoniStatusJson {
 
@@ -112,12 +119,18 @@ public final class AndersoniStatusJson {
       final AndersoniStatus.CatalogStatus status) {
     final JSONArray views = new JSONArray();
     final JSONArray indices = new JSONArray();
+    Object dataBytes = JSONObject.NULL;
+    Object indexBytes = JSONObject.NULL;
+    Object totalBytes = JSONObject.NULL;
     final CatalogInfo info = readInfo(andersoni, status.catalogName());
     if (info != null) {
       info.viewTypeNames().forEach(views::put);
       for (final IndexInfo index : info.indices()) {
         indices.put(indexJson(index));
       }
+      dataBytes = info.dataEstimatedSizeBytes();
+      indexBytes = info.indexEstimatedSizeBytes();
+      totalBytes = info.totalEstimatedSizeBytes();
     }
     return new JSONObject()
         .put("name", status.catalogName())
@@ -127,6 +140,9 @@ public final class AndersoniStatusJson {
         .put("hashComparable", status.hashComparable())
         .put("itemCount", status.itemCount())
         .put("estimatedSizeMB", status.estimatedSizeMB())
+        .put("dataEstimatedSizeBytes", dataBytes)
+        .put("indexEstimatedSizeBytes", indexBytes)
+        .put("totalEstimatedSizeBytes", totalBytes)
         .put("syncState", status.syncState().name())
         .put("lastReconciledAt", status.lastReconciledAt()
             .<Object>map(Object::toString).orElse(JSONObject.NULL))

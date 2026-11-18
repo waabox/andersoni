@@ -441,17 +441,17 @@ Emission failures are logged and swallowed. Poll thread: `andersoni-metrics-data
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-metrics-http</artifactId>
-  <version>1.13.0</version>
+  <version>1.14.0</version>
 </dependency>
 ```
 Runtime: `andersoni-core` and `org.json` only. Opens no port and starts no server; it is not an `AndersoniMetrics` implementation, so it combines with Datadog.
 
 - `org.waabox.andersoni.metrics.http.AndersoniStatusJson.render(Andersoni)` -> JSON string; `toJson(Andersoni)` -> `JSONObject`. Plain Java: call it from any web handler.
-- Spring Boot: the starter's `AndersoniHttpAutoConfiguration` registers `AndersoniStatusController` serving `GET /andersoni/status` (`application/json`, always 200) on the app's own server. Conditions: this module on the classpath, a servlet (Spring MVC) web app, an `Andersoni` bean, `andersoni.http.enabled` not `false`. WebFlux apps get nothing; call `render` yourself off the event loop.
-- Document: top level `nodeId`, `leader`, `inSync`, `catalogs[]`. Per catalog every `AndersoniStatus.CatalogStatus` field (`name`, `available`, `version`, `hash`, `hashComparable`, `itemCount`, `estimatedSizeMB`, `syncState`, `lastReconciledAt` as ISO-8601 or `null`) plus `views[]` (view simple class names) and `indices[]` (`name`, `uniqueKeys`, `totalEntries`, `estimatedSizeBytes`, `estimatedSizeMB`).
-- A catalog without a readable snapshot (failed bootstrap) is reported `available=false` with empty `views`/`indices`; the document never fails because of one catalog.
+- Spring Boot: the starter's `AndersoniHttpAutoConfiguration` registers `AndersoniStatusController` serving `GET /andersoni/status` (`application/json`, always 200) on the app's own server. Conditions: this module on the classpath, a servlet (Spring MVC) web app, an `Andersoni` bean, `andersoni.http.enabled` not `false`. WebFlux apps get nothing; call `render` yourself off the event loop (the first render after a refresh estimates sizes).
+- Document: top level `nodeId`, `leader`, `inSync`, `catalogs[]`. Per catalog every `AndersoniStatus.CatalogStatus` field (`name`, `available`, `version`, `hash`, `hashComparable`, `itemCount`, `estimatedSizeMB` (items plus indices), `dataEstimatedSizeBytes`, `indexEstimatedSizeBytes`, `totalEstimatedSizeBytes` (from `CatalogInfo`), `syncState`, `lastReconciledAt` as ISO-8601 or `null`) plus `views[]` (view simple class names) and `indices[]` (`name`, `uniqueKeys`, `totalEntries`, `estimatedSizeBytes`, `estimatedSizeMB`).
+- A catalog without a readable snapshot (failed bootstrap) is reported `available=false` with empty `views`/`indices` and `null` byte sizes; the document never fails because of one catalog.
 - Status and index stats are read one after the other, so a concurrent refresh can make them describe consecutive snapshots.
-- Cost: every render walks every index of every catalog (twice: `status()` and `info()`). Fine for a scrape every few seconds; do not call it per user request.
+- Cost: sizes are estimated once per snapshot and cached; the first render after a refresh walks that snapshot's object graph, later renders are cheap.
 
 ## andersoni-admin
 

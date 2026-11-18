@@ -347,6 +347,8 @@ Add `andersoni-metrics-http` to a Spring MVC application that uses the starter a
   "catalogs": [{
     "name": "events", "available": true, "version": 3, "hash": "9f2c...",
     "hashComparable": true, "itemCount": 1200, "estimatedSizeMB": 1.4,
+    "dataEstimatedSizeBytes": 1376256, "indexEstimatedSizeBytes": 98304,
+    "totalEstimatedSizeBytes": 1474560,
     "syncState": "IN_SYNC", "lastReconciledAt": "2026-11-17T15:00:00Z",
     "views": ["EventSummary"],
     "indices": [{"name": "by-venue", "uniqueKeys": 40, "totalEntries": 1200,
@@ -355,7 +357,7 @@ Add `andersoni-metrics-http` to a Spring MVC application that uses the starter a
 }
 ```
 
-Turn it off with `andersoni.http.enabled=false`. Outside Spring, `AndersoniStatusJson.render(andersoni)` returns the same document for any web stack. Rendering walks every index, so scrape it every few seconds at most, not per request.
+Turn it off with `andersoni.http.enabled=false`. Outside Spring, `AndersoniStatusJson.render(andersoni)` returns the same document for any web stack. Sizes are estimated once per snapshot and cached, so only the first call after a refresh pays for the estimate.
 
 ## Snapshot Patches
 
