@@ -1,4 +1,4 @@
-# Graph Indexes and Graph Queries (Andersoni 1.14.1-RC1)
+# Graph Indexes and Graph Queries (Andersoni 1.14.1)
 
 All types are in package `org.waabox.andersoni` (artifact `io.github.waabox:andersoni-core`).
 
@@ -158,7 +158,7 @@ Consequences:
 
 ## 8. Worked example
 
-Verified against 1.14.1-RC1.
+Verified against 1.14.1.
 
 ```java
 import java.util.List;
