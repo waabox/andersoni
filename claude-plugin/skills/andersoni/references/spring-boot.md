@@ -1,4 +1,4 @@
-# Andersoni + Spring Boot (1.14.0)
+# Andersoni + Spring Boot (1.14.1)
 
 1. [Dependencies](#dependencies)
 2. [What the starter auto-configures](#what-the-starter-auto-configures)
@@ -16,13 +16,13 @@
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-spring-boot-starter</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 <!-- optional: Spring Kafka broadcast sync, auto-configured -->
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-spring-sync-kafka</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 
@@ -30,10 +30,11 @@
 |---|---|---|
 | `andersoni-spring-boot-starter` | `andersoni-core` (slf4j-api, org.json), `spring-boot-autoconfigure` 3.4.2 | Built and tested against Spring Boot 3.4.2; Java 21+. Your Boot BOM/parent overrides the autoconfigure version. Does NOT bring `spring-boot-starter`, web, actuator, Kafka, Jackson, or any sync/leader/snapshot module. |
 | `andersoni-spring-sync-kafka` | `andersoni-core`, `spring-kafka` 3.3.2 (brings `kafka-clients`) | `spring-boot-autoconfigure` is `optional` here; it comes from the starter / your app. |
+| `andersoni-metrics-http` | `andersoni-core`, `org.json` | No auto-configuration of its own: the starter detects it and, on a Spring MVC app, serves `GET /andersoni/status` (see below). |
 | `andersoni-leader-k8s`, `andersoni-snapshot-s3`, `andersoni-snapshot-fs`, `andersoni-json-serializer`, `andersoni-metrics-datadog`, `andersoni-sync-kafka`, `andersoni-sync-http`, `andersoni-sync-db` | their own clients | **No Spring auto-configuration.** Declare them as `@Bean`s yourself (see below). |
 
-Only two auto-configurations exist (registered in `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`):
-`org.waabox.andersoni.spring.AndersoniAutoConfiguration` and `org.waabox.andersoni.sync.kafka.spring.SpringKafkaSyncAutoConfiguration`.
+Only three auto-configurations exist (registered in `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`):
+`org.waabox.andersoni.spring.AndersoniAutoConfiguration`, `org.waabox.andersoni.spring.AndersoniHttpAutoConfiguration` (status endpoint, needs `andersoni-metrics-http` + Spring MVC) and `org.waabox.andersoni.sync.kafka.spring.SpringKafkaSyncAutoConfiguration`.
 
 ## What the starter auto-configures
 
@@ -72,6 +73,7 @@ Bound by `org.waabox.andersoni.spring.AndersoniProperties` (prefix `andersoni`).
 | `andersoni.node-id` | `String` | unset -> env `HOSTNAME` if non-blank (pod name in K8s), else random UUID | Node identity (`andersoni.nodeId()`). Blank is treated as unset. |
 | `andersoni.reconciliation.enabled` | `boolean` | `true` | `true` -> `ReconciliationPolicy.of(interval)`; `false` -> `ReconciliationPolicy.disabled()`. Only effective when a `SnapshotStore` bean exists. |
 | `andersoni.reconciliation.interval` | `Duration` | `30s` | Base interval between anti-entropy passes. Must be positive (else `IllegalArgumentException` at startup). |
+| `andersoni.http.enabled` | `boolean` | `true` | Serves `GET /andersoni/status` when `andersoni-metrics-http` is on the classpath of a Spring MVC app. `false` -> no endpoint. |
 
 Anything else (retry, catalog refresh interval, leader election, S3, K8s) is NOT a property: it is a bean or catalog DSL option.
 
@@ -250,6 +252,8 @@ public class ProductController {
     andersoni.refreshAndSync("products");
   }
 
+  // For a ready-made status endpoint with per-index detail, add
+  // andersoni-metrics-http instead: GET /andersoni/status.
   @GetMapping("/admin/andersoni/status")
   public AndersoniStatus status() {
     return andersoni.status(); // record: nodeId, leader, catalogs[...]; inSync()

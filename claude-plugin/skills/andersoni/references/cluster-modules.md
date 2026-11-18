@@ -1,7 +1,7 @@
-# Andersoni cluster modules (1.14.0)
+# Andersoni cluster modules (1.14.1)
 
 Pluggable modules for multi-node sync, leader election, snapshot persistence, serialization and metrics.
-All artifacts: groupId `io.github.waabox`, version `1.14.0`. Every module depends on `andersoni-core` transitively.
+All artifacts: groupId `io.github.waabox`, version `1.14.1`. Every module depends on `andersoni-core` transitively.
 
 ## Contents
 
@@ -16,8 +16,9 @@ All artifacts: groupId `io.github.waabox`, version `1.14.0`. Every module depend
 9. [andersoni-snapshot-fs](#andersoni-snapshot-fs)
 10. [andersoni-json-serializer](#andersoni-json-serializer)
 11. [andersoni-metrics-datadog](#andersoni-metrics-datadog)
-12. [andersoni-admin](#andersoni-admin)
-13. [Recommended production topologies](#recommended-production-topologies)
+12. [andersoni-metrics-http](#andersoni-metrics-http)
+13. [andersoni-admin](#andersoni-admin)
+14. [Recommended production topologies](#recommended-production-topologies)
 
 ## How the pieces plug in
 
@@ -59,7 +60,7 @@ Rules of thumb: Kafka already in the stack -> Kafka. Few static nodes, no broker
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-sync-kafka</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 Runtime: brings `org.apache.kafka:kafka-clients:3.9.0` (compile scope). No Spring.
@@ -105,7 +106,7 @@ Infra: create the topic (or rely on broker auto-create). Any partition count wor
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-spring-sync-kafka</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 Runtime: `org.springframework.kafka:spring-kafka:3.3.2`; `spring-boot-autoconfigure` is optional (the Boot app provides it).
@@ -117,7 +118,7 @@ Summary only (details in `spring-boot.md`): `SpringKafkaSyncAutoConfiguration` a
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-sync-http</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 Runtime: none beyond the JDK (`com.sun.net.httpserver.HttpServer` + `java.net.http.HttpClient`).
@@ -157,7 +158,7 @@ final Andersoni andersoni = Andersoni.builder()
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-sync-db</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 Runtime: you provide a `javax.sql.DataSource` and the JDBC driver (no driver is shipped; H2 is test scope only).
@@ -210,7 +211,7 @@ final Andersoni andersoni = Andersoni.builder()
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-leader-k8s</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 Runtime: brings `io.kubernetes:client-java:21.0.2` and `io.kubernetes:client-java-extended:21.0.2` (official Kubernetes Java client, not fabric8). Credentials via `Config.defaultClient()`: in-cluster service account, else `KUBECONFIG` / `~/.kube/config`.
@@ -267,7 +268,7 @@ subjects:
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-snapshot-s3</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 Runtime: brings `software.amazon.awssdk:s3:2.29.51` and `software.amazon.awssdk:sts:2.29.51`. Region type: `software.amazon.awssdk.regions.Region`.
@@ -316,7 +317,7 @@ In Spring, a `S3SnapshotStore` bean is closed automatically (inferred `close()`)
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-snapshot-fs</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 Runtime: none. Dev/test, or nodes sharing one volume.
@@ -338,7 +339,7 @@ final Andersoni andersoni = Andersoni.builder()
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-json-serializer</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 Runtime: brings `jackson-databind:2.18.2` and `jackson-datatype-jsr310:2.18.2`.
@@ -377,7 +378,7 @@ Requirements on `T`:
 <dependency>
   <groupId>io.github.waabox</groupId>
   <artifactId>andersoni-metrics-datadog</artifactId>
-  <version>1.14.0</version>
+  <version>1.14.1</version>
 </dependency>
 ```
 Runtime: brings `com.datadoghq:java-dogstatsd-client:4.4.5`. Needs a DogStatsD agent (UDP).
@@ -419,7 +420,7 @@ Metrics (names before prefix; every metric also carries `node:<nodeId>` once sta
 | `sync.requested` | count | `catalog` | follower published a `REQUEST` |
 | `sync.received` | count | `catalog` | accepted an incoming `EVENT` |
 | `sync.publish.failed` | count | `catalog` | publish threw |
-| `sync.receive.failed` | count | - | declared; not emitted by core 1.14.0 |
+| `sync.receive.failed` | count | - | declared; not emitted by core 1.14.1 |
 | `reconcile.drift_detected` | count | `catalog` | reconciler found drift |
 | `reconcile.drift_repaired` | count | `catalog` | drift repaired |
 | `reconcile.failed` | count | `catalog` | reconciliation pass failed |
@@ -434,11 +435,29 @@ Metrics (names before prefix; every metric also carries `node:<nodeId>` once sta
 
 Emission failures are logged and swallowed. Poll thread: `andersoni-metrics-datadog-<nodeId>`.
 
+## andersoni-metrics-http
+
+```xml
+<dependency>
+  <groupId>io.github.waabox</groupId>
+  <artifactId>andersoni-metrics-http</artifactId>
+  <version>1.14.1</version>
+</dependency>
+```
+Runtime: `andersoni-core` and `org.json` only. Opens no port and starts no server; it is not an `AndersoniMetrics` implementation, so it combines with Datadog.
+
+- `org.waabox.andersoni.metrics.http.AndersoniStatusJson.render(Andersoni)` -> JSON string; `toJson(Andersoni)` -> `JSONObject`. Plain Java: call it from any web handler.
+- Spring Boot: the starter's `AndersoniHttpAutoConfiguration` registers `AndersoniStatusController` serving `GET /andersoni/status` (`application/json`, always 200) on the app's own server. Conditions: this module on the classpath, a servlet (Spring MVC) web app, an `Andersoni` bean, `andersoni.http.enabled` not `false`. WebFlux apps get nothing; call `render` yourself off the event loop (the first render after a refresh estimates sizes).
+- Document: top level `nodeId`, `leader`, `inSync`, `catalogs[]`. Per catalog every `AndersoniStatus.CatalogStatus` field (`name`, `available`, `version`, `hash`, `hashComparable`, `itemCount`, `estimatedSizeMB` (items plus indices), `dataEstimatedSizeBytes`, `indexEstimatedSizeBytes`, `totalEstimatedSizeBytes` (from `CatalogInfo`), `syncState`, `lastReconciledAt` as ISO-8601 or `null`) plus `views[]` (view simple class names) and `indices[]` (`name`, `uniqueKeys`, `totalEntries`, `estimatedSizeBytes`, `estimatedSizeMB`).
+- A catalog without a readable snapshot (failed bootstrap) is reported `available=false` with empty `views`/`indices` and `null` byte sizes; the document never fails because of one catalog.
+- Status and index stats are read one after the other, so a concurrent refresh can make them describe consecutive snapshots.
+- Cost: sizes are estimated once per snapshot and cached; the first render after a refresh walks that snapshot's object graph, later renders are cheap.
+
 ## andersoni-admin
 
 Standalone Spring Boot web app (Vue + Tailwind dashboard) that monitors Andersoni pods in a Kubernetes namespace. **Not published to Maven Central** (`maven.deploy.skip=true`): build from the repo (`mvn clean package` in `andersoni-admin`, `Dockerfile` provided) and deploy as its own pod, or run locally with a kubeconfig.
 - Listens on port 9090. API: `GET /api/cluster` -> namespace, `leaderIdentity`, and per pod `podName`, `podIp`, `phase`, `ready`, `leader`, `info`, `status`.
-- Reads the Lease holder, lists pods by label, and fetches each pod's info path through the API-server pod proxy on port **8080** (hard-coded). Your app must expose a JSON info endpoint on 8080 (e.g. returning `andersoni.status()` / `info(...)`).
+- Reads the Lease holder, lists pods by label, and fetches each pod's info path through the API-server pod proxy on port **8080** (hard-coded). Your app must expose a JSON info endpoint on 8080 (e.g. returning `andersoni.status()` / `info(...)`, or `/andersoni/status` from `andersoni-metrics-http` with `ADMIN_INFO_PATH=/andersoni/status`).
 - Env: `ADMIN_NAMESPACE` (`andersoni-example`), `ADMIN_LABEL_SELECTOR` (`app=andersoni-example`), `ADMIN_LEASE_NAME` (`andersoni-example-leader`), `ADMIN_INFO_PATH` (`/events/info`).
 - RBAC: `pods` list, `pods/proxy` get (core), `leases` get (`coordination.k8s.io`).
 
