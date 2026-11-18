@@ -217,8 +217,8 @@ public class EventController {
    *   <li>{@code itemCount} - the number of events in the snapshot</li>
    *   <li>{@code indices} - per-index statistics including estimated
    *       memory size in MB</li>
-   *   <li>{@code totalEstimatedSizeMB} - total estimated memory for all
-   *       indices</li>
+   *   <li>{@code totalEstimatedSizeMB} - total estimated memory of the
+   *       catalog, items plus indices</li>
    * </ul>
    *
    * <p>If the events catalog is not found, only the {@code nodeId} is

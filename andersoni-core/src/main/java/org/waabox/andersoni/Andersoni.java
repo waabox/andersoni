@@ -1614,8 +1614,7 @@ public final class Andersoni {
    *                never null
    */
   private void reportIndexSizes(final Catalog<?> catalog) {
-    final CatalogInfo info = catalog.info();
-    for (final IndexInfo indexInfo : info.indices()) {
+    for (final IndexInfo indexInfo : catalog.currentSnapshot().indexInfo()) {
       metrics.indexSizeReported(catalog.name(), indexInfo.name(),
           indexInfo.estimatedSizeBytes());
     }

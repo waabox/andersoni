@@ -28,6 +28,10 @@ import com.timgroup.statsd.StatsDClient;
  * configurable polling interval (item counts, memory usage, index sizes,
  * and whether each catalog is currently in sync with the snapshot store).
  *
+ * <p>{@code catalog.memory.bytes} is the estimated footprint of the whole
+ * catalog (items plus indices); {@code catalog.index.memory.bytes} is the
+ * index structures alone.
+ *
  * <p>Three factory methods are available:
  * <ul>
  *   <li>{@link #create()} -- zero-config K8s autodiscovery</li>
@@ -412,6 +416,8 @@ public final class DatadogAndersoniMetrics implements AndersoniMetrics {
     client.gauge("catalog.items", info.itemCount(),
         catalogTag, nodeTag);
     client.gauge("catalog.memory.bytes", info.totalEstimatedSizeBytes(),
+        catalogTag, nodeTag);
+    client.gauge("catalog.index.memory.bytes", info.indexEstimatedSizeBytes(),
         catalogTag, nodeTag);
     client.gauge("catalog.version",
         catalog.currentSnapshot().version(),
