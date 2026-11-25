@@ -34,7 +34,7 @@
       <version>3.4.2</version>
     </dependency>
 
-    <!-- Optional: GET /andersoni/status on the app's Spring MVC server -->
+    <!-- Optional: GET /andersoni/status on the app's servlet container -->
     <dependency>
       <groupId>io.github.waabox</groupId>
       <artifactId>andersoni-metrics-http</artifactId>
@@ -42,9 +42,8 @@
     </dependency>
 
     <dependency>
-      <groupId>org.springframework</groupId>
-      <artifactId>spring-web</artifactId>
-      <version>6.2.2</version>
+      <groupId>jakarta.servlet</groupId>
+      <artifactId>jakarta.servlet-api</artifactId>
       <optional>true</optional>
     </dependency>
 
