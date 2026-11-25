@@ -10,7 +10,7 @@
     <artifactId>andersoni</artifactId>
 
 
-    <version>1.14.1</version>
+    <version>1.15.0</version>
 
   </parent>
 
@@ -18,7 +18,7 @@
 
   <name>Andersoni Metrics HTTP</name>
   <description>
-    JSON status report of an Andersoni node, for HTTP endpoints.
+    JSON status report of an Andersoni node, and a servlet serving it.
   </description>
 
   <dependencies>
@@ -31,6 +31,13 @@
     <dependency>
       <groupId>org.json</groupId>
       <artifactId>json</artifactId>
+    </dependency>
+
+    <!-- Supplied by the application's servlet container -->
+    <dependency>
+      <groupId>jakarta.servlet</groupId>
+      <artifactId>jakarta.servlet-api</artifactId>
+      <scope>provided</scope>
     </dependency>
 
     <!-- Test dependencies -->

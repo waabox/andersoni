@@ -1,11 +1,8 @@
 package org.waabox.andersoni.spring;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.List;
 
@@ -15,14 +12,14 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
+import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+import org.waabox.andersoni.Andersoni;
 import org.waabox.andersoni.Catalog;
-import org.waabox.andersoni.metrics.http.AndersoniStatusJson;
+import org.waabox.andersoni.metrics.http.AndersoniStatusServlet;
 
 /** Tests for {@link AndersoniHttpAutoConfiguration}. */
 class AndersoniHttpAutoConfigurationTest {
@@ -36,36 +33,48 @@ class AndersoniHttpAutoConfigurationTest {
           .withUserConfiguration(TestCatalogConfig.class);
 
   @Test
-  void whenContextLoads_givenServletWebApp_shouldRegisterStatusController() {
-    webRunner.run(context ->
-        assertTrue(context.containsBean("andersoniStatusController")));
+  void whenContextLoads_givenServletWebApp_shouldRegisterStatusServlet() {
+    webRunner.run(context -> {
+      final ServletRegistrationBean<?> registration =
+          context.getBean("andersoniStatusServlet",
+              ServletRegistrationBean.class);
+      assertTrue(registration.getServlet() instanceof AndersoniStatusServlet);
+      assertEquals(List.of("/andersoni/status"),
+          List.copyOf(registration.getUrlMappings()));
+    });
   }
 
   @Test
-  void whenContextLoads_givenHttpDisabled_shouldNotRegisterStatusController() {
+  void whenContextLoads_givenHttpDisabled_shouldNotRegisterStatusServlet() {
     webRunner.withPropertyValues("andersoni.http.enabled=false")
-        .run(context -> assertTrue(
-            context.getBeansOfType(AndersoniStatusController.class)
-                .isEmpty()));
+        .run(context -> assertFalse(
+            context.containsBean("andersoniStatusServlet")));
   }
 
   @Test
-  void whenContextLoads_givenModuleNotOnClasspath_shouldNotRegisterStatusController() {
-    webRunner.withClassLoader(new FilteredClassLoader(AndersoniStatusJson.class))
-        .run(context -> assertTrue(
-            context.getBeansOfType(AndersoniStatusController.class)
-                .isEmpty()));
+  void whenContextLoads_givenModuleNotOnClasspath_shouldNotRegisterStatusServlet() {
+    webRunner.withClassLoader(
+            new FilteredClassLoader(AndersoniStatusServlet.class))
+        .run(context -> assertFalse(
+            context.containsBean("andersoniStatusServlet")));
   }
 
   @Test
-  void whenContextLoads_givenNonWebApp_shouldNotRegisterStatusController() {
+  void whenContextLoads_givenNonWebApp_shouldNotRegisterStatusServlet() {
     new ApplicationContextRunner()
         .withConfiguration(AutoConfigurations.of(
             AndersoniAutoConfiguration.class,
             AndersoniHttpAutoConfiguration.class))
-        .run(context -> assertTrue(
-            context.getBeansOfType(AndersoniStatusController.class)
-                .isEmpty()));
+        .run(context -> assertFalse(
+            context.containsBean("andersoniStatusServlet")));
+  }
+
+  @Test
+  void whenContextLoads_givenUserDefinedRegistration_shouldKeepIt() {
+    webRunner.withUserConfiguration(CustomServletConfig.class)
+        .run(context -> assertEquals(List.of("/ops/cache"),
+            List.copyOf(context.getBean("andersoniStatusServlet",
+                ServletRegistrationBean.class).getUrlMappings())));
   }
 
   @Test
@@ -73,17 +82,17 @@ class AndersoniHttpAutoConfigurationTest {
       throws Exception {
     webRunner.withPropertyValues("andersoni.node-id=node-7")
         .run(context -> {
-          final MockMvc mvc = MockMvcBuilders.standaloneSetup(
-              context.getBean(AndersoniStatusController.class)).build();
+          final MockHttpServletResponse response = new MockHttpServletResponse();
+          servlet(context.getBean("andersoniStatusServlet",
+              ServletRegistrationBean.class)).service(
+                  new MockHttpServletRequest("GET", "/andersoni/status"),
+                  response);
 
-          final MvcResult result = mvc.perform(get("/andersoni/status"))
-              .andExpect(status().isOk())
-              .andExpect(content().contentTypeCompatibleWith(
-                  MediaType.APPLICATION_JSON))
-              .andReturn();
-
+          assertEquals(200, response.getStatus());
+          assertEquals("application/json;charset=UTF-8",
+              response.getContentType());
           final JSONObject json = new JSONObject(
-              result.getResponse().getContentAsString());
+              response.getContentAsString());
           assertEquals("node-7", json.getString("nodeId"));
           final JSONObject catalog = json.getJSONArray("catalogs")
               .getJSONObject(0);
@@ -98,12 +107,45 @@ class AndersoniHttpAutoConfigurationTest {
   void whenPostingStatus_givenStartedNode_shouldRejectMethod()
       throws Exception {
     webRunner.run(context -> {
-      final MockMvc mvc = MockMvcBuilders.standaloneSetup(
-          context.getBean(AndersoniStatusController.class)).build();
+      final MockHttpServletResponse response = new MockHttpServletResponse();
+      servlet(context.getBean("andersoniStatusServlet",
+          ServletRegistrationBean.class)).service(
+              new MockHttpServletRequest("POST", "/andersoni/status"),
+              response);
 
-      mvc.perform(post("/andersoni/status"))
-          .andExpect(status().isMethodNotAllowed());
+      assertEquals(405, response.getStatus());
     });
+  }
+
+  /**
+   * Returns the registered status servlet.
+   *
+   * @param registration the registration, never null
+   *
+   * @return the servlet, never null
+   */
+  private static AndersoniStatusServlet servlet(
+      final ServletRegistrationBean<?> registration) {
+    return (AndersoniStatusServlet) registration.getServlet();
+  }
+
+  /** Registers the status servlet under a custom path. */
+  @Configuration
+  static class CustomServletConfig {
+
+    /**
+     * Creates a registration at a custom path.
+     *
+     * @param andersoni the node to report on, never null
+     *
+     * @return the registration, never null
+     */
+    @Bean
+    ServletRegistrationBean<AndersoniStatusServlet> andersoniStatusServlet(
+        final Andersoni andersoni) {
+      return new ServletRegistrationBean<>(
+          new AndersoniStatusServlet(andersoni), "/ops/cache");
+    }
   }
 
   /** Registers one catalog with one index. */

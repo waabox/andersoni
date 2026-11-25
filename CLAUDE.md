@@ -30,7 +30,7 @@ Multi-module Maven project. Version managed in parent pom, inherited by all chil
 | `andersoni-json-serializer` | Jackson-based `SnapshotSerializer` implementation |
 | `andersoni-spring-boot-starter` | Spring Boot auto-configuration |
 | `andersoni-metrics-datadog` | Datadog DogStatsD metrics |
-| `andersoni-metrics-http` | Status JSON (`AndersoniStatusJson`), served at `GET /andersoni/status` by the starter on Spring MVC apps |
+| `andersoni-metrics-http` | Status JSON (`AndersoniStatusJson`) and `AndersoniStatusServlet` (Servlet 5+, no Spring); the starter registers the servlet at `GET /andersoni/status` on servlet web apps |
 | `andersoni-admin` | K8s admin console (Spring Boot app, not published) |
 | `andersoni-cluster-it` | Docker-based multi-node integration test (Testcontainers; not published) |
 | `andersoni-example` | Full-stack demo app (standalone, not in parent modules) |

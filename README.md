@@ -332,7 +332,7 @@ Decision table, leader-promotion semantics, cost and the Docker-verified failure
 
 ## Status Endpoint
 
-Add `andersoni-metrics-http` to a Spring MVC application that uses the starter and the node serves `GET /andersoni/status` on the application's own port: everything `andersoni.status()` reports plus, per catalog, its views and the size of every index.
+Add `andersoni-metrics-http` to a servlet web application (Spring MVC) that uses the starter and the node serves `GET /andersoni/status` on the application's own port: everything `andersoni.status()` reports plus, per catalog, its views and the size of every index.
 
 ```xml
 <dependency>
@@ -357,7 +357,16 @@ Add `andersoni-metrics-http` to a Spring MVC application that uses the starter a
 }
 ```
 
-Turn it off with `andersoni.http.enabled=false`. Outside Spring, `AndersoniStatusJson.render(andersoni)` returns the same document for any web stack. Sizes are estimated once per snapshot and cached, so only the first call after a refresh pays for the estimate.
+Turn it off with `andersoni.http.enabled=false`. The starter registers it as a servlet beside Spring MVC's `DispatcherServlet`, so the path follows `server.servlet.context-path` but not `spring.mvc.servlet.path`, and servlet filters such as Spring Security still apply.
+
+Outside Spring, register `AndersoniStatusServlet` on any Servlet 5+ (`jakarta.servlet`) container, or call `AndersoniStatusJson.render(andersoni)` from any other web stack:
+
+```java
+context.addServlet(new AndersoniStatusServlet(andersoni))
+    .addMapping("/andersoni/status");
+```
+
+Sizes are estimated once per snapshot and cached, so only the first call after a refresh pays for the estimate.
 
 ## Snapshot Patches
 
@@ -535,7 +544,7 @@ Andersoni fits when you have **read-heavy reference data** queried by multiple c
 <dependency>
     <groupId>io.github.waabox</groupId>
     <artifactId>andersoni-core</artifactId>
-    <version>1.14.1</version>
+    <version>1.15.0</version>
 </dependency>
 ```
 
@@ -619,7 +628,7 @@ Without the plugin system, copy `claude-plugin/skills/andersoni/` into your proj
 | `andersoni-snapshot-fs` | Filesystem snapshot (dev/test) |
 | `andersoni-spring-boot-starter` | Spring Boot auto-configuration |
 | `andersoni-metrics-datadog` | Datadog DogStatsD metrics |
-| `andersoni-metrics-http` | `GET /andersoni/status` JSON endpoint (auto-configured on Spring MVC) |
+| `andersoni-metrics-http` | `GET /andersoni/status` JSON servlet (auto-registered by the starter on servlet web apps) |
 | `andersoni-admin` | K8s admin console |
 
 ## Used by
